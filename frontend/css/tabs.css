@@ -1,0 +1,28 @@
+/* ─── Tabs Nav ───────────────────────────────────────────────────────────── */
+.tabs-nav {
+  display: flex; align-items: center; gap: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 24px; padding-bottom: 0;
+}
+.tab-btn {
+  display: flex; align-items: center; gap: 7px;
+  padding: 11px 18px; font-size: 0.85rem; font-weight: 600;
+  color: var(--text-secondary); border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: all var(--transition-fast);
+}
+.tab-btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+.tab-btn:hover { color: var(--text-primary); background: var(--border-subtle); }
+.tab-btn.active { color: var(--brand-primary); border-bottom-color: var(--brand-primary); }
+
+/* ─── Tab Panels ─────────────────────────────────────────────────────────── */
+.tab-panel { display: none; animation: fadeInUp 0.25s ease; }
+.tab-panel.active { display: block; }
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── More Stories section ───────────────────────────────────────────────── */
+.more-stories { margin-top: 32px; }

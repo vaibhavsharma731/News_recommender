@@ -1,0 +1,84 @@
+/* ─── Design Tokens ──────────────────────────────────────────────────────── */
+:root {
+  /* Brand */
+  --brand-primary:   #a855f7;
+  --brand-secondary: #ec4899;
+  --brand-gradient:  linear-gradient(135deg, #a855f7 0%, #ec4899 100%);
+  --brand-glow:      0 0 24px rgba(168,85,247,0.35);
+
+  /* Background layers */
+  --bg-base:        #0d0d14;
+  --bg-surface:     #13131f;
+  --bg-card:        #1a1a2e;
+  --bg-card-hover:  #20203a;
+  --bg-glass:       rgba(26,26,46,0.72);
+
+  /* Borders */
+  --border-subtle:  rgba(255,255,255,0.06);
+  --border-default: rgba(255,255,255,0.10);
+  --border-accent:  rgba(168,85,247,0.40);
+
+  /* Text */
+  --text-primary:   #f1f1f8;
+  --text-secondary: #9b9bb8;
+  --text-muted:     #5e5e7a;
+  --text-accent:    #a855f7;
+
+  /* Semantic */
+  --color-live:     #ef4444;
+  --color-success:  #22c55e;
+  --color-warning:  #f59e0b;
+  --color-info:     #38bdf8;
+  --color-danger:   #ef4444;
+
+  /* Category colours */
+  --cat-politics:     #f59e0b;
+  --cat-sports:       #22c55e;
+  --cat-technology:   #38bdf8;
+  --cat-business:     #a78bfa;
+  --cat-health:       #fb7185;
+  --cat-entertainment:#f472b6;
+  --cat-environment:  #4ade80;
+  --cat-education:    #60a5fa;
+  --cat-default:      #94a3b8;
+
+  /* Sizing */
+  --navbar-h:       64px;
+  --sidebar-w:      280px;
+  --rpanel-w:       300px;
+  --radius-sm:      6px;
+  --radius-md:      12px;
+  --radius-lg:      18px;
+  --radius-xl:      24px;
+
+  /* Shadows */
+  --shadow-sm:  0 1px 3px rgba(0,0,0,0.5);
+  --shadow-md:  0 4px 16px rgba(0,0,0,0.6);
+  --shadow-lg:  0 8px 32px rgba(0,0,0,0.7);
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-med:  250ms ease;
+  --transition-slow: 400ms ease;
+
+  /* Scrollbar */
+  --scrollbar-thumb: rgba(168,85,247,0.3);
+  --scrollbar-track: rgba(255,255,255,0.04);
+}
+
+/* Light theme */
+[data-theme="light"] {
+  --bg-base:        #f0f0f8;
+  --bg-surface:     #ffffff;
+  --bg-card:        #ffffff;
+  --bg-card-hover:  #f5f5ff;
+  --bg-glass:       rgba(255,255,255,0.85);
+  --border-subtle:  rgba(0,0,0,0.06);
+  --border-default: rgba(0,0,0,0.10);
+  --text-primary:   #1a1a2e;
+  --text-secondary: #4b4b6b;
+  --text-muted:     #9b9bb8;
+  --shadow-sm:  0 1px 3px rgba(0,0,0,0.1);
+  --shadow-md:  0 4px 16px rgba(0,0,0,0.12);
+  --shadow-lg:  0 8px 32px rgba(0,0,0,0.15);
+}

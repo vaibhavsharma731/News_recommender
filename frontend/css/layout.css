@@ -1,0 +1,57 @@
+/* ─── App Layout ─────────────────────────────────────────────────────────── */
+#app { display: flex; flex-direction: column; min-height: 100vh; }
+
+.body-wrap {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr var(--rpanel-w);
+  min-height: calc(100vh - var(--navbar-h));
+  margin-top: var(--navbar-h);
+}
+
+/* ─── Main Content ───────────────────────────────────────────────────────── */
+.main-content {
+  padding: 20px 24px 60px;
+  overflow-y: auto;
+  min-width: 0;
+  background: var(--bg-base);
+}
+
+/* ─── Panel Headers ──────────────────────────────────────────────────────── */
+.panel-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  margin-bottom: 20px;
+}
+.panel-title {
+  font-size: 1.15rem; font-weight: 700; color: var(--text-primary);
+  display: flex; align-items: center; gap: 8px;
+}
+.panel-icon {
+  background: var(--brand-gradient); -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent; font-size: 1.1rem;
+}
+.panel-sub { font-size: 0.82rem; color: var(--text-muted); margin-top: 3px; }
+.panel-title-sm { font-size: 1rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+
+/* ─── Cards Grid ─────────────────────────────────────────────────────────── */
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.cards-grid-sm {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+/* ─── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 1200px) {
+  .body-wrap { grid-template-columns: var(--sidebar-w) 1fr; }
+  .right-panel { display: none; }
+}
+@media (max-width: 860px) {
+  .body-wrap { grid-template-columns: 1fr; }
+  .sidebar { position: fixed; left: -100%; z-index: 500; transition: left var(--transition-med); }
+  .sidebar.open { left: 0; }
+}

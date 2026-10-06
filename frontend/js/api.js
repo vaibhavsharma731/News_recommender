@@ -1,0 +1,77 @@
+/**
+ * api.js — All HTTP calls to the Flask backend.
+ * Centralised so the URL is changed in exactly one place.
+ */
+const API_BASE = 'http://localhost:5000/api';
+
+const Api = (() => {
+
+  async function _fetch(path, opts = {}) {
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opts,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  /** Engine status + config */
+  async function status() {
+    return _fetch('/status');
+  }
+
+  /** Trending / hero articles */
+  async function trending(n = 6) {
+    return _fetch(`/articles/trending?n=${n}`);
+  }
+
+  /** Paginated article list */
+  async function articles({ page = 1, perPage = 20, section = '', sort = 'date' } = {}) {
+    const params = new URLSearchParams({ page, per_page: perPage, section, sort });
+    return _fetch(`/articles?${params}`);
+  }
+
+  /** All sections */
+  async function sections() {
+    return _fetch('/sections');
+  }
+
+  /** Single article */
+  async function getArticle(id) {
+    return _fetch(`/articles/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * Unified recommend endpoint.
+   * Pass exactly one of: query, articleId, userHistory.
+   */
+  async function recommend({
+    query      = null,
+    articleId  = null,
+    userHistory = null,
+    topK       = 10,
+    method     = 'hybrid+rerank',
+    useBoosts  = true,
+    diversify  = true,
+    section    = null,
+  } = {}) {
+    return _fetch('/recommend', {
+      method: 'POST',
+      body: JSON.stringify({
+        query,
+        article_id:   articleId,
+        user_history: userHistory,
+        top_k:        topK,
+        method,
+        use_boosts:   useBoosts,
+        diversify,
+        section,
+      }),
+    });
+  }
+
+  return { status, trending, articles, sections, getArticle, recommend };
+})();
