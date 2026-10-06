@@ -62,7 +62,7 @@ const Tabs = (() => {
         <div class="empty-state" style="grid-column: 1 / -1">
           <div class="empty-icon">⚠️</div>
           <h3>Failed to load recommendations</h3>
-          <p>${err.message || 'Make sure the backend Flask server is running.'}</p>
+          <p>${err.message || 'Make sure the backend server is running.'}</p>
         </div>`;
     }
   }

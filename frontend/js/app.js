@@ -254,8 +254,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.error('Failed to initialize app with backend:', err);
     if (loadingText) {
       loadingText.innerHTML = `
-        <span style="color:#ef4444">Could not connect to Flask API backend</span><br/>
-        <small style="color:var(--text-muted);font-size:0.8rem">Ensure Flask is running at <code>http://localhost:5000</code></small>
+        <span style="color:#ef4444">Could not connect to API backend</span><br/>
+        <small style="color:var(--text-muted);font-size:0.8rem">Ensure the server is running at <code>http://localhost:5000</code></small>
       `;
     }
 
@@ -263,7 +263,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setTimeout(() => {
       if (loadingOverlay) loadingOverlay.classList.add('fade-out');
       if (appContainer) appContainer.classList.remove('hidden');
-      showToast('Backend offline. Please start the Flask API server.', 'warn', 6000);
+      showToast('Backend offline. Please start the API server.', 'warn', 6000);
     }, 1500);
   }
 });

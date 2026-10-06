@@ -1,5 +1,5 @@
 /**
- * api.js — All HTTP calls to the Flask backend.
+ * api.js — All HTTP calls to the FastAPI backend.
  * Centralised so the URL is changed in exactly one place.
  */
 const API_BASE = 'http://localhost:5000/api';

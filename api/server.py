@@ -1,27 +1,59 @@
 """
-Flask REST API - News Recommender Backend
-Exposes all recommender functionality as JSON endpoints for the React frontend.
+FastAPI REST API — News Recommender Backend
+Exposes all recommender functionality as JSON endpoints for the frontend.
+Run:  uvicorn api.server:app --reload --port 5000
 """
 import sys
 import os
+from pathlib import Path
+from typing import Optional, List
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from flask import Flask, jsonify, request, send_from_directory
-from flask_cors import CORS
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
 import config
 from src.data_loader import load_articles
 from src.recommender import METHODS, Recommender
 
-app = Flask(__name__, static_folder="../frontend", static_url_path="")
-CORS(app)
+# ─── App setup ──────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="AI News Recommender API",
+    description="AI-powered news recommendation engine built on Indian Express articles.",
+    version="2.0.0",
+)
 
-# ─── Globals ────────────────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ─── Globals (loaded once at startup) ───────────────────────────────────────
 print("📂 Loading articles...")
 df = load_articles(config.DATA_PATH)
 print("🧠 Building recommender (may take a moment for embeddings)...")
 rec = Recommender(df)
 articles = rec.articles
 print(f"✅ Engine ready: {rec.engine_summary} | {len(articles)} articles indexed")
+
+
+# ─── Pydantic request/response models ──────────────────────────────────────
+class RecommendRequest(BaseModel):
+    query: Optional[str] = None
+    article_id: Optional[str] = None
+    user_history: Optional[List[str]] = None
+    top_k: int = config.TOP_K
+    method: str = "hybrid+rerank"
+    use_boosts: bool = True
+    diversify: bool = True
+    section: Optional[str] = None
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -40,13 +72,29 @@ def _article_dict(a: dict) -> dict:
     }
 
 
+def _row_to_dict(row) -> dict:
+    """Convert a DataFrame row to a serialisable article dict."""
+    snippet = row["description"] or row["body"][:200]
+    return {
+        "id":         row["id"],
+        "title":      row["title"],
+        "snippet":    snippet,
+        "section":    row["section"],
+        "subsection": row["subsection"],
+        "date":       row["date"].strftime("%d %b %Y") if hasattr(row["date"], "strftime") else str(row["date"]),
+        "url":        row["url"],
+        "image":      row["image"],
+        "is_live":    bool(row["is_live"]),
+    }
+
+
 def _result_json(result, method: str) -> dict:
     return {
-        "method":        method,
-        "engine":        rec.engine_summary,
+        "method":         method,
+        "engine":         rec.engine_summary,
         "low_confidence": result.low_confidence,
         "best_relevance": round(result.best_relevance, 4),
-        "notes":         result.notes,
+        "notes":          result.notes,
         "recommendations": [
             {
                 "article": _article_dict(r.article),
@@ -58,45 +106,36 @@ def _result_json(result, method: str) -> dict:
     }
 
 
-# ─── Routes ──────────────────────────────────────────────────────────────────
+# ─── API Routes ──────────────────────────────────────────────────────────────
 
-@app.route("/")
-def index():
-    """Serve the React frontend."""
-    return send_from_directory(app.static_folder, "index.html")
-
-
-@app.route("/api/status")
+@app.get("/api/status")
 def status():
     """Engine health-check + metadata."""
     sections = sorted(articles["section"].dropna().unique().tolist())
-    return jsonify({
-        "engine":       rec.engine_summary,
+    return {
+        "engine":         rec.engine_summary,
         "total_articles": int(len(articles)),
-        "methods":      METHODS,
-        "sections":     sections,
-        "notes":        rec.notes,
+        "methods":        METHODS,
+        "sections":       sections,
+        "notes":          rec.notes,
         "config": {
-            "top_k":           config.TOP_K,
-            "n_retrieve":      config.N_RETRIEVE,
-            "n_candidates":    config.N_CANDIDATES,
-            "mmr_lambda":      config.MMR_LAMBDA,
-            "use_neural":      config.USE_NEURAL_MODELS,
-        }
-    })
+            "top_k":        config.TOP_K,
+            "n_retrieve":   config.N_RETRIEVE,
+            "n_candidates": config.N_CANDIDATES,
+            "mmr_lambda":   config.MMR_LAMBDA,
+            "use_neural":   config.USE_NEURAL_MODELS,
+        },
+    }
 
 
-@app.route("/api/articles")
-def get_articles():
-    """
-    Return a paginated list of articles.
-    Query params: page (default 1), per_page (default 20), section (optional), sort (date|title)
-    """
-    page     = int(request.args.get("page", 1))
-    per_page = int(request.args.get("per_page", 20))
-    section  = request.args.get("section", "")
-    sort     = request.args.get("sort", "date")
-
+@app.get("/api/articles")
+def get_articles(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    section: str = Query(""),
+    sort: str = Query("date"),
+):
+    """Return a paginated list of articles."""
     df_view = articles.copy()
     if section:
         df_view = df_view[df_view["section"] == section]
@@ -106,110 +145,83 @@ def get_articles():
     else:
         df_view = df_view.sort_values("date", ascending=False)
 
-    total   = len(df_view)
-    start   = (page - 1) * per_page
-    end     = start + per_page
-    subset  = df_view.iloc[start:end]
+    total = len(df_view)
+    start = (page - 1) * per_page
+    end   = start + per_page
+    subset = df_view.iloc[start:end]
 
-    rows = []
-    for _, row in subset.iterrows():
-        snippet = row["description"] or row["body"][:200]
-        rows.append({
-            "id":         row["id"],
-            "title":      row["title"],
-            "snippet":    snippet,
-            "section":    row["section"],
-            "subsection": row["subsection"],
-            "date":       row["date"].strftime("%d %b %Y") if hasattr(row["date"], "strftime") else str(row["date"]),
-            "url":        row["url"],
-            "image":      row["image"],
-            "is_live":    bool(row["is_live"]),
-        })
-
-    return jsonify({"total": total, "page": page, "per_page": per_page, "articles": rows})
+    rows = [_row_to_dict(row) for _, row in subset.iterrows()]
+    return {"total": total, "page": page, "per_page": per_page, "articles": rows}
 
 
-@app.route("/api/articles/trending")
-def trending():
-    """Return the N most recent articles (hero/spotlight)."""
-    n = int(request.args.get("n", 6))
+@app.get("/api/articles/trending")
+def trending(n: int = Query(6, ge=1, le=20)):
+    """Return the N most recent articles (hero / spotlight)."""
     top = articles.sort_values("date", ascending=False).head(n)
-    rows = []
-    for _, row in top.iterrows():
-        snippet = row["description"] or row["body"][:200]
-        rows.append({
-            "id":         row["id"],
-            "title":      row["title"],
-            "snippet":    snippet,
-            "section":    row["section"],
-            "subsection": row["subsection"],
-            "date":       row["date"].strftime("%d %b %Y") if hasattr(row["date"], "strftime") else str(row["date"]),
-            "url":        row["url"],
-            "image":      row["image"],
-            "is_live":    bool(row["is_live"]),
-        })
-    return jsonify({"articles": rows})
+    rows = [_row_to_dict(row) for _, row in top.iterrows()]
+    return {"articles": rows}
 
 
-@app.route("/api/articles/<article_id>")
-def get_article(article_id):
+@app.get("/api/articles/{article_id}")
+def get_article(article_id: str):
     """Return a single article by ID."""
     try:
-        return jsonify({"article": _article_dict(rec.get_article(article_id))})
+        return {"article": _article_dict(rec.get_article(article_id))}
     except KeyError:
-        return jsonify({"error": "Article not found"}), 404
+        raise HTTPException(status_code=404, detail="Article not found")
 
 
-@app.route("/api/recommend", methods=["POST"])
-def recommend():
+@app.post("/api/recommend")
+def recommend(body: RecommendRequest):
     """
     Unified recommendation endpoint.
-    Body (JSON):
-      - query:        str   (free-text semantic search)
-      - article_id:   str   (item-to-item similarity)
-      - user_history: list  (personalised feed — list of article IDs)
-      - top_k:        int   (default from config)
-      - method:       str   (bm25 | semantic | hybrid | hybrid+rerank)
-      - use_boosts:   bool
-      - diversify:    bool
-      - section:      str   (category filter, empty = all)
+    Pass exactly one of: query, article_id, user_history.
     """
-    data = request.get_json(force=True, silent=True) or {}
-
-    top_k        = int(data.get("top_k", config.TOP_K))
-    method       = data.get("method", "hybrid+rerank")
-    use_boosts   = bool(data.get("use_boosts", True))
-    diversify    = bool(data.get("diversify", True))
-    section      = data.get("section") or None
-    query        = data.get("query") or None
-    article_id   = data.get("article_id") or None
-    user_history = data.get("user_history") or None
-
-    if not query and not article_id and not user_history:
-        return jsonify({"error": "Provide at least one of: query, article_id, user_history"}), 400
+    if not body.query and not body.article_id and not body.user_history:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one of: query, article_id, user_history",
+        )
 
     try:
         result = rec.recommend(
-            query=query,
-            article_id=article_id,
-            user_history=user_history,
-            top_k=top_k,
-            method=method,
-            use_boosts=use_boosts,
-            diversify=diversify,
-            section=section,
+            query=body.query,
+            article_id=body.article_id,
+            user_history=body.user_history,
+            top_k=body.top_k,
+            method=body.method,
+            use_boosts=body.use_boosts,
+            diversify=body.diversify,
+            section=body.section,
         )
-        return jsonify(_result_json(result, method))
+        return _result_json(result, body.method)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.route("/api/sections")
+@app.get("/api/sections")
 def sections():
     """Return all distinct section names."""
     secs = sorted(articles["section"].dropna().unique().tolist())
-    return jsonify({"sections": secs})
+    return {"sections": secs}
 
 
+# ─── Serve Frontend Static Files ────────────────────────────────────────────
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
+
+@app.get("/")
+def serve_index():
+    """Serve the frontend index.html."""
+    return FileResponse(FRONTEND_DIR / "index.html")
+
+
+# Mount static dirs for CSS and JS (must come after explicit routes)
+app.mount("/css", StaticFiles(directory=FRONTEND_DIR / "css"), name="css")
+app.mount("/js",  StaticFiles(directory=FRONTEND_DIR / "js"),  name="js")
+
+
+# ─── Entry point ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(debug=True, port=5000, host="0.0.0.0")
+    import uvicorn
+    uvicorn.run("api.server:app", host="0.0.0.0", port=5000, reload=True)

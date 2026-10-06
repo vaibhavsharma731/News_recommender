@@ -1,5 +1,7 @@
 pandas
 numpy
 scikit-learn
-streamlit>=1.32
 sentence-transformers
+fastapi
+uvicorn[standard]
+python-dotenv

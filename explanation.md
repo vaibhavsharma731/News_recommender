@@ -2,7 +2,7 @@
 
 > **Project Name:** `news_recommender`
 > **Domain:** AI-Powered Content-Based News Recommendation
-> **Tech Stack:** Python · Streamlit · Sentence-Transformers · Scikit-learn · Pandas · NumPy · PyTorch
+> **Tech Stack:** Python · FastAPI · Sentence-Transformers · Scikit-learn · Pandas · NumPy · PyTorch
 > **Data Source:** Indian Express articles dataset (`articles.csv`, ~699 unique articles)
 
 ---
@@ -17,10 +17,10 @@
 6. [Retrieval Engines — `src/retrieval.py`](#6-retrieval-engines--srcretrievalpy)
 7. [Cross-Encoder Reranker — `src/reranker.py`](#7-cross-encoder-reranker--srcrerankerpy)
 8. [Recommender Pipeline — `src/recommender.py`](#8-recommender-pipeline--srcrecommenderpy)
-9. [Streamlit Frontend — `app.py`](#9-streamlit-frontend--apppy)
-10. [Exploratory Data Analysis — `eda.py`](#10-exploratory-data-analysis--edapy)
-11. [Evaluation Harness — `evaluate.py`](#11-evaluation-harness--evaluatepy)
-12. [Streamlit Theme Configuration — `.streamlit/config.toml`](#12-streamlit-theme-configuration--streamlitconfigtoml)
+9. [FastAPI Backend — `api/server.py`](#9-fastapi-backend--apiserverpy)
+10. [HTML/CSS/JS Frontend — `frontend/`](#10-htmlcssjs-frontend--frontend)
+11. [Exploratory Data Analysis — `eda.py`](#11-exploratory-data-analysis--edapy)
+12. [Evaluation Harness — `evaluate.py`](#12-evaluation-harness--evaluatepy)
 13. [Embedding Cache — `data/cache/`](#13-embedding-cache--datacache)
 14. [End-to-End Data Flow & Pipeline Diagram](#14-end-to-end-data-flow--pipeline-diagram)
 15. [How to Run the Project](#15-how-to-run-the-project)
@@ -67,8 +67,31 @@ flowchart LR
 
 ```
 news_recommender/
-├── .streamlit/
-│   └── config.toml              # Streamlit dark theme configuration
+├── api/
+│   ├── __init__.py              # Package marker
+│   └── server.py                # FastAPI REST API backend
+├── frontend/
+│   ├── index.html               # Main HTML shell
+│   ├── css/                     # 12 modular CSS files
+│   │   ├── variables.css        # Design tokens & theme
+│   │   ├── base.css             # Reset, buttons, skeletons, badges
+│   │   ├── layout.css           # 3-column grid layout
+│   │   ├── sidebar.css          # Left sidebar styles
+│   │   ├── header.css           # Top navbar
+│   │   ├── hero.css             # Hero carousel
+│   │   ├── cards.css            # Article cards
+│   │   ├── tabs.css             # Tab navigation
+│   │   ├── rightpanel.css       # Right panel
+│   │   ├── search.css           # Search bar & pills
+│   │   ├── toast.css            # Toast notifications
+│   │   └── animations.css       # Keyframes & transitions
+│   └── js/                      # 6 modular JS files
+│       ├── api.js               # Centralised HTTP calls
+│       ├── state.js             # Reactive state management
+│       ├── ui.js                # Shared UI helpers (cards, toasts, history)
+│       ├── hero.js              # Hero carousel logic
+│       ├── tabs.js              # Tab switching & recommendation flows
+│       └── app.js               # Main orchestrator (theme, boot, controls)
 ├── data/
 │   ├── articles.csv             # Raw dataset (~3.69 MB, 738 rows → 699 after dedup)
 │   └── cache/
@@ -79,11 +102,11 @@ news_recommender/
 │   ├── retrieval.py             # BM25, Dense, TF-IDF indexes + RRF fusion (296 lines)
 │   ├── reranker.py              # Cross-encoder re-scoring (27 lines)
 │   └── recommender.py           # Full pipeline orchestrator (338 lines)
-├── app.py                       # Streamlit UI frontend (333 lines)
-├── config.py                    # All tunable hyperparameters (66 lines)
+├── .env                         # HuggingFace token (not tracked by git)
+├── config.py                    # All tunable hyperparameters (72 lines)
 ├── eda.py                       # Exploratory Data Analysis script (94 lines)
 ├── evaluate.py                  # Evaluation & benchmarking (89 lines)
-├── requirements.txt             # Python dependencies (5 packages)
+├── requirements.txt             # Python dependencies
 ├── README.md                    # Project README
 └── venv/                        # Python virtual environment
 ```
@@ -101,7 +124,9 @@ news_recommender/
 | `pandas` | DataFrame operations, CSV loading, data manipulation |
 | `numpy` | Numerical array operations, vector math, cosine similarity |
 | `scikit-learn` | TF-IDF vectorizer, English stop words list |
-| `streamlit>=1.32` | Web application framework (requires v1.32+ for `st.status`) |
+| `fastapi` | High-performance async REST API framework |
+| `uvicorn[standard]` | ASGI server for FastAPI |
+| `python-dotenv` | Load environment variables from `.env` file |
 | `sentence-transformers` | HuggingFace models for neural embeddings and cross-encoder |
 
 ### Implicit Dependencies (installed by `sentence-transformers`)
@@ -622,117 +647,112 @@ Converts a DataFrame row at position `pos` into a plain dict for the UI:
 
 ---
 
-## 9. Streamlit Frontend — [`app.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/app.py)
+## 9. FastAPI Backend — [`api/server.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/api/server.py)
 
-The UI is a **333-line Streamlit application** with zero search logic — all intelligence lives in the `src/` modules.
+The backend is a **FastAPI application** that exposes all recommender functionality as REST JSON endpoints and serves the frontend static files.
 
-### 9.1 Page Configuration (Lines 10–15)
+### 9.1 App Setup
 
 ```python
-st.set_page_config(
-    page_title="Indian Express AI | News Recommender",
-    page_icon="📰",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+app = FastAPI(title="AI News Recommender API", version="2.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], ...)
 ```
 
-### 9.2 Custom CSS Injection (Lines 18–107)
+- Uses Pydantic `BaseModel` for request validation
+- CORS enabled for cross-origin frontend access
+- Static files mounted for CSS/JS serving
 
-The app injects a premium dark-mode CSS theme:
+### 9.2 Pydantic Request Model
 
-| CSS Class | Purpose |
+```python
+class RecommendRequest(BaseModel):
+    query: Optional[str] = None
+    article_id: Optional[str] = None
+    user_history: Optional[List[str]] = None
+    top_k: int = config.TOP_K
+    method: str = "hybrid+rerank"
+    use_boosts: bool = True
+    diversify: bool = True
+    section: Optional[str] = None
+```
+
+### 9.3 API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`  | `/api/status` | Engine health-check, config, sections |
+| `GET`  | `/api/articles` | Paginated article list (query: page, per_page, section, sort) |
+| `GET`  | `/api/articles/trending` | Top N most recent articles for hero carousel |
+| `GET`  | `/api/articles/{id}` | Single article by ID |
+| `POST` | `/api/recommend` | Unified recommendation (query, article_id, or user_history) |
+| `GET`  | `/api/sections` | All distinct section names |
+| `GET`  | `/` | Serves `frontend/index.html` |
+
+Interactive API docs available at **http://localhost:5000/docs** (Swagger UI).
+
+### 9.4 Startup Initialization
+
+At module load, the server:
+1. Loads articles from `config.DATA_PATH`
+2. Builds the `Recommender` instance (embeddings, BM25 index, reranker)
+3. Prints engine summary to console
+
+---
+
+## 10. HTML/CSS/JS Frontend — [`frontend/`](file:///d:/indian%20express/Recommendation%20system/news_recommender/frontend)
+
+A professional modular vanilla HTML/CSS/JS frontend with zero framework dependencies.
+
+### 10.1 CSS Architecture (12 modules)
+
+| File | Purpose |
 |---|---|
-| `.main-header` | Top banner with gradient background (`#0F141C → #1E293B`) and red left border |
-| `.badge-live` | Red "LIVE" badge for live blog articles |
-| `.badge-section` | Blue-bordered section/subsection label |
-| `.badge-score` | Green gradient match score pill |
-| `.article-card` | Dark card container with hover border animation |
-| `.hero-card` | Larger gradient card for spotlight story |
+| `variables.css` | Design tokens (colors, spacing, shadows) + dark/light theme |
+| `base.css` | Reset, buttons, forms, skeletons, badges, loading overlay |
+| `layout.css` | 3-column responsive grid (sidebar + main + right panel) |
+| `sidebar.css` | Left sidebar with controls, history, engine info |
+| `header.css` | Top navbar with search bar, brand, theme toggle |
+| `hero.css` | Hero carousel slides and navigation |
+| `cards.css` | Article cards, preview cards, badges |
+| `tabs.css` | Tab navigation and panels |
+| `rightpanel.css` | Right panel with AI brief, categories, history |
+| `search.css` | Search bar, quick pills |
+| `toast.css` | Toast notification animations |
+| `animations.css` | Shared keyframes and stagger effects |
 
-**Typography**: Uses Google Fonts — `Outfit` (headers, 700 weight) and `Inter` (body, 300-600 weight).
+### 10.2 JavaScript Architecture (6 modules)
 
-### 9.3 Recommender Initialization (Lines 110–124)
+| File | Purpose |
+|---|---|
+| `api.js` | Centralised HTTP calls to `/api/*` endpoints |
+| `state.js` | Reactive state management with observer pattern |
+| `ui.js` | Shared UI helpers: card builder, toasts, history panel, category pills |
+| `hero.js` | Hero carousel with auto-play and navigation |
+| `tabs.js` | Tab switching + For You / Similar / Search recommendation flows |
+| `app.js` | Main orchestrator: theme toggle, sidebar, controls binding, API bootstrap |
 
-```python
-@st.cache_resource(show_spinner=False)
-def get_recommender() -> Recommender:
-```
-
-- Uses Streamlit's `@st.cache_resource` to initialize the recommender **once** and persist across reruns
-- Shows a `st.status()` widget with progress messages during first load
-- Returns the `Recommender` instance that persists in Streamlit's resource cache
-
-### 9.4 Session State Management (Lines 126–131)
-
-| State Key | Type | Purpose |
-|---|---|---|
-| `user_history` | `list[int]` | List of article IDs the user has "read" this session |
-| `_card_n` | `int` | Counter for generating unique Streamlit button keys |
-
-### 9.5 Sidebar Controls (Lines 134–169)
-
-| Control | Type | Default | Description |
-|---|---|---|---|
-| Indian Express logo | Image | — | Loaded from indianexpress.com CDN |
-| Recommendations Count | Slider | `TOP_K` (10) | Range: 3–15 |
-| Category Filter | Selectbox | "All" | Filters by section name |
-| Reading History | Display | — | Shows last 5 read article titles |
-| Clear History | Button | — | Resets `user_history` to empty list |
-| Retrieval Method | Selectbox | `hybrid+rerank` | From `METHODS` list |
-| Recency & Section Boosts | Checkbox | ✅ | Toggle metadata boosts |
-| MMR Diversity | Checkbox | ✅ | Toggle diversity filtering |
-| Show Images | Checkbox | ✅ | Toggle article image display |
-
-### 9.6 Article Card Component ([`show_article_card()`](file:///d:/indian%20express/Recommendation%20system/news_recommender/app.py#L188-L236))
-
-Renders a single article card with:
-- **Image** (optional, left column — 1.2:3 ratio)
-- **Badges**: section, subsection, LIVE indicator, match score
-- **Title**: Clickable link to original article
-- **Date**: Publication date
-- **Snippet**: Article description or first 200 body characters
-- **Reason**: "Why recommended" explanation (if available)
-- **"Read Story" button**: Adds to user history and triggers rerun
-- **"Full Article" link**: Direct link to indianexpress.com
-
-### 9.7 Results Display ([`display_results()`](file:///d:/indian%20express/Recommendation%20system/news_recommender/app.py#L239-L253))
-
-- Shows auto-correction messages (green success boxes)
-- Shows informational notes (blue info boxes)
-- Shows "no match" warning if `result.low_confidence` is True
-- Iterates over recommendations and renders article cards
-
-### 9.8 Featured Story (Lines 257–259)
-
-Displays the most recent article (by date) in a collapsible expander with "TODAY'S SPOTLIGHT BREAKING STORY" label and hero card styling.
-
-### 9.9 Three Navigation Tabs (Lines 262–332)
+### 10.3 Three Navigation Tabs
 
 #### Tab 1: 🎯 For You (Personalized Feed)
-
-- If user has reading history: calls `recommender.recommend(user_history=...)` and displays personalized results
-- If no history: shows a welcome message and displays recent trending stories (sorted by date, top-K)
+- If user has reading history: calls `POST /api/recommend` with `user_history` and displays personalized results
+- If no history: shows trending stories from `GET /api/articles/trending`
 
 #### Tab 2: 📄 Item-to-Item Recommendations
-
-- Dropdown with all articles (sorted by date, formatted as `"Title  (Section)"`)
-- Displays the selected base article as a card
-- Calls `recommender.recommend(article_id=...)` and shows related articles below
+- Dropdown populated from `GET /api/articles`
+- Shows selected article preview
+- Calls `POST /api/recommend` with `article_id` and shows related articles
 
 #### Tab 3: 🔎 AI Semantic Search
+- Quick-search pills (6 preset queries)
+- Text input with Enter key and button support
+- Calls `POST /api/recommend` with `query` and displays results with meta bar
 
-- **Quick-search buttons** (4 preset queries):
-  - 🗳️ Akhilesh Yadav (UP)
-  - 🏏 Virat Kohli (Cricket)
-  - ⚖️ Supreme Court (SIR/EC)
-  - 🥇 Asian Games Medals
-- **Text input** with placeholder showing typo examples
-- Calls `recommender.recommend(query=...)` and displays results
-
-### 9.10 UI Helper: [`add_to_history()`](file:///d:/indian%20express/Recommendation%20system/news_recommender/app.py#L182-L185)
-
-Adds an article ID to session history (avoiding duplicates) and shows a toast notification.
+### 10.4 Features
+- **Dark/Light theme** toggle with localStorage persistence
+- **Responsive layout** (3-column → 2-column → 1-column)
+- **Skeleton loading** states for all content areas
+- **Toast notifications** for user actions
+- **Session-based reading history** stored in sessionStorage
 
 ---
 
@@ -805,23 +825,6 @@ If `data/eval_labels.json` exists (format: `{"article_id": [relevant_id_1, relev
 
 ---
 
-## 12. Streamlit Theme Configuration — [`.streamlit/config.toml`](file:///d:/indian%20express/Recommendation%20system/news_recommender/.streamlit/config.toml)
-
-```toml
-[theme]
-primaryColor = "#E50914"              # Indian Express red (Netflix-inspired accent)
-backgroundColor = "#0F141C"           # Deep dark blue-black
-secondaryBackgroundColor = "#1A212D"  # Slightly lighter dark blue
-textColor = "#F1F5F9"                 # Near-white text (Slate-100)
-font = "sans serif"                   # System sans-serif
-
-[server]
-headless = true                       # No browser auto-open
-
-[runner]
-magicEnabled = false                  # Disable Streamlit's magic (auto-display of expressions)
-```
-
 ---
 
 ## 13. Embedding Cache — `data/cache/`
@@ -874,7 +877,7 @@ flowchart TB
         S6 --> S7["Step 7: Explanation\nshared topics, section, time"]
     end
 
-    subgraph UI["Streamlit UI"]
+    subgraph UI["FastAPI + HTML/CSS/JS Frontend"]
         S7 --> TAB1["🎯 For You\nPersonalized Feed"]
         S7 --> TAB2["📄 Item-to-Item\nSimilar Articles"]
         S7 --> TAB3["🔎 Semantic Search\nFree Text Query"]
@@ -905,8 +908,10 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # Launch the application
-streamlit run app.py
+python api/server.py
 ```
+
+Open **http://localhost:5000** in your browser. Interactive API docs at **http://localhost:5000/docs**.
 
 ### First Run Behavior
 1. Downloads `BAAI/bge-base-en-v1.5` (~440 MB) and `BAAI/bge-reranker-base` (~1.1 GB)
@@ -917,13 +922,12 @@ streamlit run app.py
 
 ```powershell
 # Windows PowerShell
-$env:NEWSREC_NEURAL=0
-streamlit run app.py
+$env:NEWSREC_NEURAL="0"; python api/server.py
 ```
 
 ```bash
 # Linux/Mac
-NEWSREC_NEURAL=0 streamlit run app.py
+NEWSREC_NEURAL=0 python api/server.py
 ```
 
 Uses TF-IDF instead of neural embeddings. Lower quality but no internet or GPU required.
@@ -959,4 +963,4 @@ python evaluate.py
 ---
 
 > [!TIP]
-> **Recommended reading order** for understanding the codebase: [`config.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/config.py) → [`data_loader.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/src/data_loader.py) → [`retrieval.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/src/retrieval.py) → [`reranker.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/src/reranker.py) → [`recommender.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/src/recommender.py) → [`app.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/app.py)
+> **Recommended reading order** for understanding the codebase: [`config.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/config.py) → [`data_loader.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/src/data_loader.py) → [`retrieval.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/src/retrieval.py) → [`reranker.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/src/reranker.py) → [`recommender.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/src/recommender.py) → [`api/server.py`](file:///d:/indian%20express/Recommendation%20system/news_recommender/api/server.py)
