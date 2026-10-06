@@ -58,8 +58,6 @@ function buildArticleCard(article, { score = null, reason = null, compact = fals
   const color   = sectionColor(article.section);
   const emoji   = sectionEmoji(article.section);
   const imgSrc  = article.image || '';
-  const history = State.get().userHistory;
-  const isRead  = history.includes(article.id);
 
   const scoreHTML = score !== null
     ? `<span class="badge badge-score">Match: ${Math.round(score * 100)}%</span>` : '';
