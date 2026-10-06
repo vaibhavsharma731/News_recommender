@@ -25,8 +25,8 @@ from src.recommender import METHODS, Recommender
 
 # ─── App setup ──────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="AI News Recommender API",
-    description="AI-powered news recommendation engine built on Indian Express articles.",
+    title="News Recommender API",
+    description="News recommendation engine built on Indian Express articles.",
     version="2.0.0",
 )
 
@@ -51,7 +51,6 @@ print(f"[READY] Engine ready: {rec.engine_summary} | {len(articles)} articles in
 class RecommendRequest(BaseModel):
     query: Optional[str] = None
     article_id: Optional[str] = None
-    user_history: Optional[List[str]] = None
     top_k: int = config.TOP_K
     method: str = "hybrid+rerank"
     use_boosts: bool = True
@@ -204,40 +203,24 @@ def get_article(article_id: str):
 @app.post("/api/recommend")
 def recommend(body: RecommendRequest):
     """
-    Unified recommendation endpoint.
-    Pass query, article_id, or user_history.
-    If none provided (cold start), returns top stories with welcoming note.
+    Recommendation endpoint supporting two discovery modes:
+    1. query: Semantic/hybrid search
+    2. article_id: Item-to-item similar articles
     """
-    # Cold start: user has no history and gave no search query or article ID
-    if not body.query and not body.article_id and (not body.user_history or len(body.user_history) == 0):
-        recent_df = articles.sort_values("date", ascending=False)
-        if body.section:
-            recent_df = recent_df[recent_df["section"] == body.section]
-        recent_df = recent_df.head(body.top_k)
-        recs = [
-            {
-                "article": _row_to_dict(row),
-                "score": 1.0,
-                "reason": "Top trending story -- start reading to build your personalized feed",
-            }
-            for _, row in recent_df.iterrows()
-        ]
-        return {
-            "method": "trending",
-            "engine": rec.engine_summary,
-            "low_confidence": False,
-            "best_relevance": 1.0,
-            "notes": ["Welcome! Here are top stories to get you started. Read articles to build your personalized feed."],
-            "recommendations": recs,
-        }
+    if not body.query and not body.article_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide either 'query' (for search) or 'article_id' (for similar articles)."
+        )
 
     try:
         aid = int(body.article_id) if (body.article_id and str(body.article_id).isdigit()) else body.article_id
-        hist = [int(x) if str(x).isdigit() else x for x in body.user_history] if body.user_history else None
+        if aid is not None and aid not in rec.id_to_pos and str(aid) not in rec.id_to_pos:
+            raise HTTPException(status_code=404, detail="Article ID not found in index")
+
         result = rec.recommend(
             query=body.query,
             article_id=aid,
-            user_history=hist,
             top_k=body.top_k,
             method=body.method,
             use_boosts=body.use_boosts,
@@ -245,6 +228,8 @@ def recommend(body: RecommendRequest):
             section=body.section,
         )
         return _result_json(result, body.method)
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()

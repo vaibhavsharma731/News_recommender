@@ -48,13 +48,11 @@ const Api = (() => {
   }
 
   /**
-   * Unified recommend endpoint.
-   * Pass exactly one of: query, articleId, userHistory.
+   * Recommend endpoint: supports query or articleId.
    */
   async function recommend({
     query      = null,
     articleId  = null,
-    userHistory = null,
     topK       = 10,
     method     = 'hybrid+rerank',
     useBoosts  = true,
@@ -66,7 +64,6 @@ const Api = (() => {
       body: JSON.stringify({
         query,
         article_id:   articleId,
-        user_history: userHistory,
         top_k:        topK,
         method,
         use_boosts:   useBoosts,

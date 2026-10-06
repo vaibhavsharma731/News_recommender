@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI News Recommender | Smarter News, Just for You</title>
-  <meta name="description" content="AI-powered news recommendation engine built on Indian Express articles. Personalized, relevant news discovery with semantic search, BM25 retrieval, and cross-encoder reranking." />
+  <title>News Recommender | Indian Express Discovery</title>
+  <meta name="description" content="News recommendation engine built on Indian Express articles. Relevant news discovery with semantic search, BM25 retrieval, and cross-encoder reranking." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
@@ -31,10 +31,10 @@
     <div class="loading-content">
       <div class="loading-logo">
         <span class="logo-icon">✦</span>
-        <span>AI News</span>
+        <span>News Recommender</span>
       </div>
       <div class="loading-bar"><div class="loading-fill"></div></div>
-      <p id="loading-text">Loading AI engine...</p>
+      <p id="loading-text">Loading recommendation engine...</p>
     </div>
   </div>
 
@@ -50,12 +50,12 @@
         <div class="brand">
           <div class="brand-icon">✦</div>
           <div class="brand-text">
-            <span class="brand-name">AI News Recommender</span>
-            <span class="brand-sub">Smarter News, Just for You</span>
+            <span class="brand-name">News Recommender</span>
+            <span class="brand-sub">Indian Express Discovery</span>
           </div>
         </div>
         <div class="powered-badge">
-          <span class="ai-dot"></span> Powered by AI
+          <span class="ai-dot"></span> Neural &amp; Hybrid Search
         </div>
       </div>
 
@@ -156,27 +156,12 @@
             </div>
           </section>
 
-          <!-- Reading History -->
-          <section class="sidebar-section sidebar-history">
-            <div class="sidebar-section-header">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-              <span>Your Reading History</span>
-            </div>
-            <p class="history-count" id="history-count">0 articles read this session</p>
-            <div id="history-list" class="history-list">
-              <p class="empty-history">Click "Read Story" on any article to personalise your feed.</p>
-            </div>
-            <button class="btn btn-danger btn-sm" id="clear-history-btn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-              Clear History
-            </button>
-          </section>
-
+          <!-- Engine Badge -->
           <div class="ai-learn-badge">
             <span class="ai-badge-icon">✦</span>
             <div>
-              <strong>Better Recommendations</strong><br/>
-              <small>Powered by AI. Your interests, Our algorithms.</small>
+              <strong>Hybrid Search &amp; Ranking</strong><br/>
+              <small>Neural embeddings + BM25 + Cross-Encoder reranker</small>
             </div>
           </div>
 
@@ -202,52 +187,18 @@
 
         <!-- Tabs -->
         <nav class="tabs-nav" id="tabs-nav">
-          <button class="tab-btn active" data-tab="foryou">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-            For You
-          </button>
-          <button class="tab-btn" data-tab="similar">
+          <button class="tab-btn active" data-tab="similar">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
             Similar Articles
           </button>
           <button class="tab-btn" data-tab="search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-            AI Search
+            Semantic Search
           </button>
         </nav>
 
-        <!-- Tab: For You -->
-        <section class="tab-panel active" id="tab-foryou">
-          <div class="panel-header">
-            <div>
-              <h2 class="panel-title">
-                <span class="panel-icon">✦</span> Top Recommendations
-              </h2>
-              <p class="panel-sub">Powered by AI · Based on your interests</p>
-            </div>
-          </div>
-          <div class="cards-grid" id="foryou-grid">
-            <div class="skeleton-grid">
-              <div class="skeleton skeleton-card"></div>
-              <div class="skeleton skeleton-card"></div>
-              <div class="skeleton skeleton-card"></div>
-              <div class="skeleton skeleton-card"></div>
-            </div>
-          </div>
-          <div class="more-stories">
-            <div class="panel-header">
-              <div>
-                <h3 class="panel-title-sm">
-                  <span class="panel-icon">🔥</span> More Stories for You
-                </h3>
-              </div>
-            </div>
-            <div class="cards-grid-sm" id="more-stories-grid"></div>
-          </div>
-        </section>
-
         <!-- Tab: Similar Articles -->
-        <section class="tab-panel" id="tab-similar">
+        <section class="tab-panel active" id="tab-similar">
           <div class="panel-header">
             <div>
               <h2 class="panel-title">
@@ -274,7 +225,7 @@
             <div>
               <h2 class="panel-title">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-                AI Semantic Search
+                Semantic Search
               </h2>
               <p class="panel-sub">Search articles by concept, event, or keyword — typos are auto-corrected</p>
             </div>
@@ -292,7 +243,7 @@
               <span class="pill" data-q="Supreme Court Election Commission">⚖️ Supreme Court</span>
               <span class="pill" data-q="Asian Games gold medals India">🥇 Asian Games</span>
               <span class="pill" data-q="India budget economy">💰 Budget 2025</span>
-              <span class="pill" data-q="AI technology India">🤖 AI & Tech</span>
+              <span class="pill" data-q="technology innovation India">💻 Technology</span>
             </div>
           </div>
 
@@ -312,23 +263,17 @@
       <!-- ── RIGHT PANEL ── -->
       <aside class="right-panel">
 
-        <!-- AI Brief -->
-        <div class="rp-card ai-brief-card">
+        <!-- Discovery Modes Info -->
+        <div class="rp-card">
           <div class="rp-card-header">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-            <span>Your AI News Brief</span>
-            <span class="beta-badge">BETA</span>
+            <span>Discovery Modes</span>
           </div>
-          <p class="rp-card-sub">Personalised. Relevant. Just for you.</p>
-          <p class="rp-brief-text" id="ai-brief-text">Read a few articles to activate your personalised AI brief.</p>
-          <button class="btn btn-gradient btn-full" id="refresh-brief-btn">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            Refresh Recommendations
-          </button>
-          <p class="rp-learn-note">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-            AI learns from your behaviour
-          </p>
+          <p class="rp-card-sub" style="margin-bottom:0.75rem;">Explore our two core recommendation modes:</p>
+          <div style="font-size:0.83rem;color:var(--text-secondary);display:flex;flex-direction:column;gap:0.6rem;">
+            <div><strong style="color:var(--text-primary)">1. Similar Articles:</strong> Item-to-item neural matching based on content embeddings.</div>
+            <div><strong style="color:var(--text-primary)">2. Semantic Search:</strong> Hybrid retrieval combining BM25 keyword matching and dense vector search with Cross-Encoder reranking.</div>
+          </div>
         </div>
 
         <!-- Filter by Category -->
@@ -341,25 +286,6 @@
           <div class="category-pills" id="category-pills">
             <button class="cat-pill active" data-section="">All</button>
           </div>
-        </div>
-
-        <!-- Reading History -->
-        <div class="rp-card">
-          <div class="rp-card-header">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <span>Your Reading History</span>
-            <span class="rp-count" id="rp-history-count">0 articles</span>
-          </div>
-          <div id="rp-history-list" class="rp-history-list">
-            <p class="rp-empty">No articles read yet.</p>
-          </div>
-          <button class="rp-clear-btn" id="rp-clear-btn">Clear History</button>
-        </div>
-
-        <!-- AI Footer -->
-        <div class="rp-ai-footer">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          <span>AI is not just recommending news…<br/><strong>It's understanding you.</strong></span>
         </div>
 
       </aside>

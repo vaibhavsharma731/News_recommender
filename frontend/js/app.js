@@ -46,11 +46,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // ─── 3. LOAD SAVED USER HISTORY ─────────────────────────────────────────────
-  State.loadHistory();
-  refreshHistoryUI();
-
-  // ─── 4. RECSYS CONTROLS BINDING ─────────────────────────────────────────────
+  // ─── 3. RECSYS CONTROLS BINDING ─────────────────────────────────────────────
   const topKSlider = document.getElementById('top-k-slider');
   const topKValue = document.getElementById('top-k-value');
   const sectionFilter = document.getElementById('section-filter');
@@ -99,7 +95,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // ─── 5. GLOBAL SEARCH BAR IN NAVBAR ────────────────────────────────────────
+  // ─── 4. GLOBAL SEARCH BAR IN NAVBAR ────────────────────────────────────────
   const globalSearchInput = document.getElementById('global-search-input');
   const searchClearBtn = document.getElementById('search-clear-btn');
 
@@ -128,7 +124,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // ─── 6. CATEGORIES & RIGHT PANEL PILLS ─────────────────────────────────────
+  // ─── 5. CATEGORIES & RIGHT PANEL PILLS ─────────────────────────────────────
   const categoryPillsContainer = document.getElementById('category-pills');
   const viewAllBtn = document.getElementById('rp-view-all');
 
@@ -148,58 +144,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // ─── 7. HISTORY CLEAR & REFRESH BUTTONS ─────────────────────────────────────
-  const clearHistoryBtn = document.getElementById('clear-history-btn');
-  const rpClearBtn = document.getElementById('rp-clear-btn');
-  const refreshBriefBtn = document.getElementById('refresh-brief-btn');
-
-  function handleClearHistory() {
-    State.clearHistory();
-    State.saveHistory();
-    refreshHistoryUI();
-    showToast('Reading history cleared. Feed reset.', 'info');
-    triggerActiveTabReload();
-  }
-
-  if (clearHistoryBtn) clearHistoryBtn.addEventListener('click', handleClearHistory);
-  if (rpClearBtn) rpClearBtn.addEventListener('click', handleClearHistory);
-
-  if (refreshBriefBtn) {
-    refreshBriefBtn.addEventListener('click', () => {
-      showToast('Refreshing recommendations…', 'info');
-      Tabs.loadForYou();
-    });
-  }
-
-  // ─── 8. HELPER: RELOAD ACTIVE TAB ──────────────────────────────────────────
+  // ─── 6. HELPER: RELOAD ACTIVE TAB ──────────────────────────────────────────
   function triggerActiveTabReload() {
-    const { activeTab } = State.get();
-    if (activeTab === 'foryou') {
-      Tabs.loadForYou();
-    } else if (activeTab === 'search') {
-      const q = document.getElementById('search-query-input')?.value;
-      if (q) Tabs.performSearch(q);
-    }
+    Tabs.reloadCurrentTab();
   }
 
-  // ─── 9. STATE SUBSCRIPTION ─────────────────────────────────────────────────
-  let prevHistoryLen = State.get().userHistory.length;
-  State.subscribe((newState) => {
-    if (newState.userHistory.length !== prevHistoryLen) {
-      prevHistoryLen = newState.userHistory.length;
-      if (newState.activeTab === 'foryou') {
-        Tabs.loadForYou();
-      }
-    }
-  });
-
-  // ─── 10. SYSTEM INITIALIZATION & API BOOTSTRAP ─────────────────────────────
+  // ─── 7. SYSTEM INITIALIZATION & API BOOTSTRAP ─────────────────────────────
   const loadingOverlay = document.getElementById('loading-overlay');
   const appContainer = document.getElementById('app');
   const loadingText = document.getElementById('loading-text');
 
   try {
-    if (loadingText) loadingText.textContent = 'Connecting to AI Engine...';
+    if (loadingText) loadingText.textContent = 'Connecting to Recommendation Engine...';
 
     // 1. Fetch Engine Status
     const statusData = await Api.status();
@@ -259,7 +215,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       `;
     }
 
-    // Even if backend fails, reveal app shell so user can see UI
     setTimeout(() => {
       if (loadingOverlay) loadingOverlay.classList.add('fade-out');
       if (appContainer) appContainer.classList.remove('hidden');

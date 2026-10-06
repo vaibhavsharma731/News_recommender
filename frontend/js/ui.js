@@ -93,25 +93,18 @@ function buildArticleCard(article, { score = null, reason = null, compact = fals
         <span>📅 ${article.date || ''}</span>
       </div>
       <div class="card-actions">
-        <button class="card-read-btn ${isRead ? 'reading' : ''}" data-id="${article.id}">
-          ${isRead ? '✓ Read' : '📖 Read Story'}
-        </button>
+        ${article.url ? `<a href="${article.url}" target="_blank" rel="noopener" class="card-read-btn" style="text-decoration:none">📖 Read Story</a>` : `<button class="card-read-btn" data-id="${article.id}">📖 Read Story</button>`}
         ${article.url ? `<a href="${article.url}" target="_blank" rel="noopener" class="card-bookmark" title="Open full article">🔗</a>` : ''}
       </div>
     </div>`;
 
-  // Read button handler
-  card.querySelector('.card-read-btn').addEventListener('click', (e) => {
-    e.stopPropagation();
-    const added = State.addToHistory(article.id);
-    State.saveHistory();
-    if (added) {
-      showToast(`"${article.title.slice(0, 60)}…" added to history. Feed updating!`, 'success');
-      e.currentTarget.textContent = '✓ Read';
-      e.currentTarget.classList.add('reading');
-      refreshHistoryUI();
-    }
-  });
+  const btn = card.querySelector('button.card-read-btn');
+  if (btn) {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showToast(`Selected "${article.title.slice(0, 50)}…"`, 'info');
+    });
+  }
 
   return card;
 }
@@ -165,64 +158,6 @@ function renderResultMeta(container, result) {
     <span class="badge badge-method">${result.method}</span>
     ${result.best_relevance ? `<span>Best match: <strong>${Math.round(result.best_relevance*100)}%</strong></span>` : ''}
   `;
-}
-
-// ─── History UI (both sidebar + right panel) ─────────────────────────────────
-function refreshHistoryUI() {
-  const { userHistory } = State.get();
-
-  // Sidebar
-  const sideCount  = document.getElementById('history-count');
-  const sideList   = document.getElementById('history-list');
-  if (sideCount) sideCount.textContent = `${userHistory.length} article${userHistory.length !== 1 ? 's' : ''} read this session`;
-  if (sideList) {
-    if (userHistory.length === 0) {
-      sideList.innerHTML = '<p class="empty-history">Click "Read Story" on any article to personalise your feed.</p>';
-    } else {
-      sideList.innerHTML = '';
-      const recent = [...userHistory].reverse().slice(0, 5);
-      recent.forEach(id => {
-        const item = document.createElement('div');
-        item.className = 'history-item';
-        item.innerHTML = `<div class="history-thumb">📰</div><span class="history-title">${id}</span>`;
-        sideList.appendChild(item);
-      });
-    }
-  }
-
-  // Right Panel
-  const rpCount = document.getElementById('rp-history-count');
-  const rpList  = document.getElementById('rp-history-list');
-  if (rpCount) rpCount.textContent = `${userHistory.length} article${userHistory.length !== 1 ? 's' : ''}`;
-  if (rpList) {
-    if (userHistory.length === 0) {
-      rpList.innerHTML = '<p class="rp-empty">No articles read yet.</p>';
-    } else {
-      rpList.innerHTML = '';
-      const recent = [...userHistory].reverse().slice(0, 5);
-      recent.forEach(id => {
-        const item = document.createElement('div');
-        item.className = 'rp-history-item';
-        item.innerHTML = `
-          <div class="rp-history-thumb"><div class="rp-history-thumb-fallback">📰</div></div>
-          <div class="rp-history-body">
-            <div class="rp-history-title">${id}</div>
-            <div class="rp-history-time">Just now</div>
-          </div>`;
-        rpList.appendChild(item);
-      });
-    }
-  }
-
-  // Update AI Brief text
-  const briefText = document.getElementById('ai-brief-text');
-  if (briefText) {
-    if (userHistory.length === 0) {
-      briefText.textContent = 'Read a few articles to activate your personalised AI brief.';
-    } else {
-      briefText.textContent = `Based on ${userHistory.length} article${userHistory.length !== 1 ? 's' : ''} you've read, we've curated your top picks.`;
-    }
-  }
 }
 
 // ─── Category pills builder ───────────────────────────────────────────────────

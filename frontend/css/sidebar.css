@@ -103,7 +103,7 @@
 .history-title { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .empty-history { font-size: 0.78rem; color: var(--text-muted); padding: 8px 0; }
 
-/* ─── AI Learn Badge ─────────────────────────────────────────────────────── */
+/* ─── Engine Specs Badge ─────────────────────────────────────────────────── */
 .ai-learn-badge {
   margin-top: 16px;
   display: flex; align-items: flex-start; gap: 10px;

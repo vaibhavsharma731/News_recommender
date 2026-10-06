@@ -1,6 +1,6 @@
 /**
- * tabs.js — Tab switching and tab-specific recommendation flows.
- * Handles "For You", "Similar Articles", and "AI Search".
+ * tabs.js — Tab switching and recommendation flows.
+ * Handles "Similar Articles" and "Semantic Search".
  */
 
 const Tabs = (() => {
@@ -21,66 +21,10 @@ const Tabs = (() => {
 
     State.set({ activeTab: tabName });
 
-    if (tabName === 'foryou') {
-      loadForYou();
-    } else if (tabName === 'similar') {
+    if (tabName === 'similar') {
       if (allArticlesCache.length === 0) {
         populateArticlePicker();
       }
-    }
-  }
-
-  // ─── FOR YOU TAB ────────────────────────────────────────────────────────────
-  async function loadForYou() {
-    const grid = document.getElementById('foryou-grid');
-    const moreGrid = document.getElementById('more-stories-grid');
-    if (!grid) return;
-
-    showSpinner(grid, 4);
-
-    const { userHistory, topK, method, useBoosts, diversify, activeSection } = State.get();
-
-    try {
-      const data = await Api.recommend({
-        userHistory: userHistory.length > 0 ? userHistory : null,
-        topK,
-        method,
-        useBoosts,
-        diversify,
-        section: activeSection || null,
-      });
-
-      renderNotes(grid, data.notes || [], data.low_confidence || false);
-      renderCards(grid, data.recommendations || []);
-
-      // Also populate the "More Stories" secondary grid
-      if (moreGrid) {
-        loadMoreStories(activeSection);
-      }
-    } catch (err) {
-      grid.innerHTML = `
-        <div class="empty-state" style="grid-column: 1 / -1">
-          <div class="empty-icon">⚠️</div>
-          <h3>Failed to load recommendations</h3>
-          <p>${err.message || 'Make sure the backend server is running.'}</p>
-        </div>`;
-    }
-  }
-
-  async function loadMoreStories(section = '') {
-    const moreGrid = document.getElementById('more-stories-grid');
-    if (!moreGrid) return;
-
-    try {
-      const data = await Api.articles({
-        page: 1,
-        perPage: 6,
-        section: section || '',
-        sort: 'date',
-      });
-      renderCards(moreGrid, (data.articles || []).map(a => ({ article: a })), { compact: true });
-    } catch (_) {
-      // silently ignore secondary grid error
     }
   }
 
@@ -100,6 +44,13 @@ const Tabs = (() => {
         opt.textContent = `[${art.section || 'General'}] ${art.title.slice(0, 90)}`;
         picker.appendChild(opt);
       });
+
+      // Automatically select first article on startup if not chosen yet
+      if (allArticlesCache.length > 0 && !picker.value) {
+        const first = allArticlesCache[0];
+        picker.value = first.id;
+        onArticleSelected(first.id);
+      }
     } catch (err) {
       picker.innerHTML = '<option value="">Could not load articles list</option>';
     }
@@ -117,7 +68,7 @@ const Tabs = (() => {
       return;
     }
 
-    const article = allArticlesCache.find(a => a.id === articleId);
+    const article = allArticlesCache.find(a => String(a.id) === String(articleId));
     if (article && preview) {
       preview.classList.remove('hidden');
       const emoji = sectionEmoji(article.section);
@@ -166,7 +117,7 @@ const Tabs = (() => {
     if (!query || !query.trim()) return;
     query = query.trim();
 
-    // Ensure we are on search tab
+    // Switch to search tab
     switchTab('search');
 
     const searchInput = document.getElementById('search-query-input');
@@ -264,12 +215,22 @@ const Tabs = (() => {
       });
     });
 
-    // Populate article picker early in the background
+    // Populate article picker & load first recommendation set
     populateArticlePicker();
-
-    // Initial load of default tab (For You)
-    loadForYou();
   }
 
-  return { init, switchTab, loadForYou, performSearch, populateArticlePicker };
+  function reloadCurrentTab() {
+    const { activeTab } = State.get();
+    if (activeTab === 'similar') {
+      const picker = document.getElementById('article-picker');
+      if (picker && picker.value) {
+        onArticleSelected(picker.value);
+      }
+    } else if (activeTab === 'search') {
+      const q = document.getElementById('search-query-input')?.value;
+      if (q) performSearch(q);
+    }
+  }
+
+  return { init, switchTab, onArticleSelected, performSearch, populateArticlePicker, reloadCurrentTab };
 })();
