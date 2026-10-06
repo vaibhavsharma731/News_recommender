@@ -42,7 +42,10 @@ class Result:
 class Recommender:
     def __init__(self, articles: pd.DataFrame, use_neural: bool = config.USE_NEURAL_MODELS):
         self.articles = articles.reset_index(drop=True)
-        self.id_to_pos = {aid: i for i, aid in enumerate(self.articles["id"])}
+        self.id_to_pos = {}
+        for i, aid in enumerate(self.articles["id"]):
+            self.id_to_pos[aid] = i
+            self.id_to_pos[str(aid)] = i
         self.notes = []
 
         self.bm25 = BM25Index(self.articles["text_bm25"])

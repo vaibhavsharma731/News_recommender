@@ -2,7 +2,9 @@
  * api.js — All HTTP calls to the FastAPI backend.
  * Centralised so the URL is changed in exactly one place.
  */
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = (window.location.protocol.startsWith('http'))
+  ? `${window.location.origin}/api`
+  : 'http://localhost:5000/api';
 
 const Api = (() => {
 
@@ -13,7 +15,8 @@ const Api = (() => {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(err.error || `HTTP ${res.status}`);
+      const msg = (typeof err.detail === 'string' ? err.detail : null) || err.error || err.message || `HTTP ${res.status}`;
+      throw new Error(msg);
     }
     return res.json();
   }
