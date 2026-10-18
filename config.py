@@ -42,6 +42,11 @@ RERANKER_MODEL = os.getenv("NEWSREC_RERANKER", "BAAI/bge-reranker-base")
 EMBED_MAX_SEQ_LEN = 256     # same for ingestion AND live search, so vectors are consistent
 RERANK_MAX_LEN = 160
 
+# Optional: Remote Cloud GPU Worker (e.g. Google Colab + Cloudflare Tunnel).
+# When set to a valid URL (e.g. https://xxx.trycloudflare.com), embeddings and rerankings
+# run remotely on free cloud GPU instead of local CPU. If empty, runs locally.
+REMOTE_MODEL_URL = os.getenv("REMOTE_MODEL_URL", "").strip().rstrip("/")
+
 # --- Ingestion / precompute ---
 PRECOMPUTE_CANDIDATES = 20  # fused candidates sent to the reranker during ingestion (matches live N_CANDIDATES)
 PRECOMPUTE_COMMIT_EVERY = 5 # progress update + DB commit every N articles
