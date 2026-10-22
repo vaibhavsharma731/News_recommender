@@ -624,6 +624,18 @@ def render_method_comparison(results: List[dict], has_ground_truth: bool):
 # Baseline Save / Compare
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _detect_device() -> str:
+    """Best-effort description of where scoring actually ran, so baselines
+    produced on CPU are never compared against ones produced on a GPU."""
+    if config.REMOTE_MODEL_URL:
+        return f"remote:{config.REMOTE_MODEL_URL}"
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "unknown"
+
+
 def save_baseline(result: dict, filepath: str = "baseline_evaluation.json"):
     """Saves evaluation results as a JSON baseline for future comparison."""
     # Remove internal drill-down data
@@ -631,15 +643,43 @@ def save_baseline(result: dict, filepath: str = "baseline_evaluation.json"):
     saveable["timestamp"] = datetime.now().isoformat()
     saveable["version"] = "1.0"
     saveable["config"] = {
+        # ── Models (pinned) ──────────────────────────────────────────────
         "embedding_model": config.EMBEDDING_MODEL,
+        "embedding_revision": config.EMBEDDING_REVISION,
         "reranker_model": config.RERANKER_MODEL,
+        "reranker_revision": config.RERANKER_REVISION,
+        # ── Token budgeting: 512 pair cap = 254 + 254 content + 4 special ──
         "embed_max_seq_len": config.EMBED_MAX_SEQ_LEN,
+        "embed_token_budget": config.EMBED_TOKEN_BUDGET,
         "rerank_max_len": config.RERANK_MAX_LEN,
+        "rerank_per_article_tokens": config.RERANK_PER_ARTICLE_TOKENS,
+        "rerank_token_budget_per_side": config.RERANK_TOKEN_BUDGET,
+        "text_recipe_version": config.TEXT_RECIPE_VERSION,
+        # ── Retrieval ────────────────────────────────────────────────────
         "n_retrieve": config.N_RETRIEVE,
         "n_candidates": config.N_CANDIDATES,
+        "precompute_candidates": config.PRECOMPUTE_CANDIDATES,
+        "rrf_k": config.RRF_K,
+        "top_k": config.TOP_K,
+        # ── Diversity + boosts (the "MEASURED" set) ───────────────────────
         "mmr_lambda": config.MMR_LAMBDA,
+        "mmr_theta": config.MMR_THETA,
+        "section_boost_mult": config.SECTION_BOOST_MULT,
+        "subsection_boost_mult": config.SUBSECTION_BOOST_MULT,
+        "popularity_boost_mult": config.POPULARITY_BOOST_MULT,
+        "recency_max_boost_mult": config.RECENCY_MAX_BOOST_MULT,
+        "boost_mode": config.BOOST_MODE,
+        "section_half_lives": dict(config.SECTION_HALF_LIVES),
+        # ── Relevance gates ──────────────────────────────────────────────
+        "min_raw_rerank_threshold": config.MIN_RAW_RERANK_THRESHOLD,
+        "article_discard_floor": config.ARTICLE_DISCARD_FLOOR,
+        # ── Retired word-based settings (kept so old/new diffs line up) ───
         "body_words_embed": config.BODY_WORDS_EMBED,
         "body_words_rerank": config.BODY_WORDS_RERANK,
+        # ── Provenance ───────────────────────────────────────────────────
+        "pipeline_version": config.get_pipeline_version(),
+        "neural_enabled": config.USE_NEURAL_MODELS,
+        "compute_device": _detect_device(),
     }
 
     save_path = os.path.join(config.ROOT, filepath)
@@ -701,6 +741,64 @@ def compare_baselines(current: dict, baseline_path: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PART 4: Human Evaluation Benchmark (Blind Labels)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def evaluate_human_labels(csv_path: str = "blind_labeling_sample.csv"):
+    """
+    Evaluates human relevance judgements from a blind labeling CSV.
+    Expected format: columns [pair_id, source_id, source_title, candidate_id, candidate_title, label]
+    Valid labels: 'relevant' (1.0), 'somewhat' (0.5), 'not' (0.0).
+    """
+    print_banner("PART 4: HUMAN EVALUATION BENCHMARK (BLIND LABELS)")
+    if not os.path.exists(csv_path):
+        print(f"  [Notice] Blind labeling file '{csv_path}' not found.")
+        print("  Run 'python run_experiments.py' to generate candidate pairs for human evaluation.\n")
+        return
+
+    try:
+        df_labels = pd.read_csv(csv_path)
+    except Exception as e:
+        print(f"  [Error] Failed to read '{csv_path}': {e}\n")
+        return
+
+    if "label" not in df_labels.columns:
+        print(f"  [Error] '{csv_path}' missing 'label' column.\n")
+        return
+
+    valid_mask = df_labels["label"].notna() & (df_labels["label"].astype(str).str.strip() != "")
+    labeled = df_labels[valid_mask].copy()
+    total_pairs = len(df_labels)
+    n_labeled = len(labeled)
+
+    print(f"  • Source file: '{csv_path}'")
+    print(f"  • Total pairs pooled: {total_pairs} | Labeled by human: {n_labeled}")
+
+    if n_labeled == 0:
+        print("  • Status: All pairs are currently UNLABELED.")
+        print("    👉 To benchmark against human perception, open 'blind_labeling_sample.csv' and")
+        print("       fill the 'label' column with: 'relevant', 'somewhat', or 'not'.\n")
+        return
+
+    norm_labels = labeled["label"].astype(str).str.strip().str.lower()
+    rel_count = int((norm_labels == "relevant").sum())
+    some_count = int((norm_labels == "somewhat").sum())
+    not_count = int((norm_labels == "not").sum())
+
+    score_map = {"relevant": 1.0, "somewhat": 0.5, "not": 0.0}
+    num_scores = norm_labels.map(score_map).fillna(0.0)
+
+    print(f"\n  • Human Rating Breakdown:")
+    print(f"      - Relevant (1.0) : {rel_count:3d} ({rel_count/n_labeled*100:5.1f}%)")
+    print(f"      - Somewhat (0.5) : {some_count:3d} ({some_count/n_labeled*100:5.1f}%)")
+    print(f"      - Not (0.0)      : {not_count:3d} ({not_count/n_labeled*100:5.1f}%)")
+    print(f"\n  • Summary Metrics:")
+    print(f"      - Human Relevance Score (avg) : {num_scores.mean():.4f}")
+    print(f"      - Strict Precision@K          : {rel_count / n_labeled:.4f}")
+    print(f"      - Relaxed (Strict+Partial)    : {(rel_count + some_count) / n_labeled:.4f}\n")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main Suite Execution
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -710,6 +808,8 @@ def run_evaluation_suite(
     sample_size: int = 100,
     save_as_baseline: bool = False,
     compare_to: Optional[str] = None,
+    labels_path: Optional[str] = "blind_labeling_sample.csv",
+    skip_methods: bool = False,
 ):
     print_banner("ARTICLE-TO-ARTICLE RECOMMENDATION QUALITY EVALUATION")
 
@@ -816,39 +916,52 @@ def run_evaluation_suite(
         )
         render_article_quality_report(primary_result)
 
+        # Persist the baseline IMMEDIATELY after Part 1.
+        # The baseline is *defined* as the Part 1 result; Part 2 is slow enough
+        # (~30 min of CPU cross-encoding) that a crash there must not lose the run.
+        if save_as_baseline:
+            save_baseline(primary_result, "baseline_evaluation.json")
+
+        if compare_to:
+            compare_baselines(primary_result, compare_to)
+
     # ═══════════════════════════════════════════════════════════════════════════
     # PART 2: Method Comparison (BM25 vs Semantic vs Hybrid vs Rerank)
     # ═══════════════════════════════════════════════════════════════════════════
-    print_banner("PART 2: METHOD COMPARISON BENCHMARKS")
-    print("  Running all retrieval methods on ground-truth articles...\n")
-    results = []
+    if skip_methods:
+        print_banner("PART 2: METHOD COMPARISON BENCHMARKS")
+        print("  Skipped (--skip-methods) — baseline already saved after Part 1.\n")
+    else:
+        print_banner("PART 2: METHOD COMPARISON BENCHMARKS")
+        print("  Running all retrieval methods on ground-truth articles...\n")
+        results = []
 
-    if primary_result:
-        # Add PostgreSQL precomputed as a method result for comparison
-        results.append({
-            "method": "PostgreSQL (Precomputed Top-10)",
-            "semantic_coherence_avg": primary_result["semantic_coherence_avg"],
-            "gt_p5": primary_result["gt_p5"],
-            "gt_hit10": primary_result["gt_hit10"],
-            "gt_ndcg10": primary_result["gt_ndcg10"],
-            "gt_mrr": primary_result["gt_mrr"],
-            "gt_map5": primary_result["gt_map5"],
-            "section_p5": primary_result["section_p5"],
-            "ild_avg": primary_result["ild_avg"],
-            "avg_latency_ms": primary_result["avg_latency_ms"],
-        })
+        if primary_result:
+            # Add PostgreSQL precomputed as a method result for comparison
+            results.append({
+                "method": "PostgreSQL (Precomputed Top-10)",
+                "semantic_coherence_avg": primary_result["semantic_coherence_avg"],
+                "gt_p5": primary_result["gt_p5"],
+                "gt_hit10": primary_result["gt_hit10"],
+                "gt_ndcg10": primary_result["gt_ndcg10"],
+                "gt_mrr": primary_result["gt_mrr"],
+                "gt_map5": primary_result["gt_map5"],
+                "section_p5": primary_result["section_p5"],
+                "ild_avg": primary_result["ild_avg"],
+                "avg_latency_ms": primary_result["avg_latency_ms"],
+            })
 
-    for idx, m in enumerate(METHODS, start=2 if primary_result else 1):
-        n_total = len(METHODS) + (2 if primary_result else 1)
-        print(f"  • Benchmarking [{idx}/{n_total}]: {m}...")
-        res = evaluate_recommender_method(rec, m, valid_linked, sample_articles, use_boosts=False, vectors_map=vectors_map)
-        results.append(res)
+        for idx, m in enumerate(METHODS, start=2 if primary_result else 1):
+            n_total = len(METHODS) + (2 if primary_result else 1)
+            print(f"  • Benchmarking [{idx}/{n_total}]: {m}...")
+            res = evaluate_recommender_method(rec, m, valid_linked, sample_articles, use_boosts=False, vectors_map=vectors_map)
+            results.append(res)
 
-    print(f"  • Benchmarking [{len(METHODS) + (2 if primary_result else 1)}/{len(METHODS) + (2 if primary_result else 1)}]: hybrid+rerank (+News Boosts)...")
-    res_boosted = evaluate_recommender_method(rec, "hybrid+rerank", valid_linked, sample_articles, use_boosts=True, vectors_map=vectors_map)
-    results.append(res_boosted)
+        print(f"  • Benchmarking [{len(METHODS) + (2 if primary_result else 1)}/{len(METHODS) + (2 if primary_result else 1)}]: hybrid+rerank (+News Boosts)...")
+        res_boosted = evaluate_recommender_method(rec, "hybrid+rerank", valid_linked, sample_articles, use_boosts=True, vectors_map=vectors_map)
+        results.append(res_boosted)
 
-    render_method_comparison(results, has_ground_truth=bool(valid_linked))
+        render_method_comparison(results, has_ground_truth=bool(valid_linked))
 
     # ═══════════════════════════════════════════════════════════════════════════
     # PART 3: Free-Text Search Demo
@@ -863,15 +976,14 @@ def run_evaluation_suite(
             print(f"            Reason: {r.reason}")
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # Save / Compare
+    # PART 4: Human Evaluation Benchmark (Blind Labels)
     # ═══════════════════════════════════════════════════════════════════════════
-    if primary_result:
-        if save_as_baseline:
-            save_baseline(primary_result, "baseline_evaluation.json")
+    if labels_path:
+        evaluate_human_labels(labels_path)
 
-        if compare_to:
-            compare_baselines(primary_result, compare_to)
-
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Save / Compare are handled right after Part 1 (see above).
+    # ═══════════════════════════════════════════════════════════════════════════
     if has_db and db_session:
         db_session.close()
 
@@ -890,10 +1002,15 @@ if __name__ == "__main__":
                         help="Number of articles to sample for section & diversity tests")
     parser.add_argument("--api-url", type=str, default="http://localhost:5000",
                         help="Base URL of running API server when using --source api")
+    parser.add_argument("--labels", type=str, default="blind_labeling_sample.csv",
+                        help="Path to blind human labeling CSV for Part 4")
     parser.add_argument("--save-baseline", action="store_true",
                         help="Save results as baseline_evaluation.json for future comparison")
     parser.add_argument("--compare", type=str, default=None, metavar="BASELINE_FILE",
                         help="Compare current results against a saved baseline JSON file")
+    parser.add_argument("--skip-methods", action="store_true",
+                        help="Skip Part 2 (4x live retrieval benchmarks, ~30 min on CPU). "
+                             "Part 1 — the part that --save-baseline records — still runs and is saved first.")
 
     args = parser.parse_args()
 
@@ -906,4 +1023,6 @@ if __name__ == "__main__":
             sample_size=args.samples,
             save_as_baseline=args.save_baseline,
             compare_to=args.compare,
+            labels_path=args.labels,
+            skip_methods=args.skip_methods,
         )

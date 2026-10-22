@@ -1,0 +1,11 @@
+# Exact pinned package versions matching local development environment
+# Used by Google Colab to guarantee deterministic parity with zero drift.
+
+torch==2.14.0
+transformers==5.19.0
+sentence-transformers==6.1.0
+numpy>=2.0.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic>=2.0.0
+
