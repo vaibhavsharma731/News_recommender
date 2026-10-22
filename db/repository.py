@@ -194,8 +194,10 @@ class ArticleRepository:
                 article_id=article_id,
                 recommended_article_id=item["recommended_article_id"],
                 rank=item["rank"],
+                rank_raw=item.get("rank_raw"),
                 score=item.get("score", 0.0),
                 rerank_score=item.get("rerank_score"),
+                pipeline_version=item.get("pipeline_version"),
                 method=item.get("method", "neural_hybrid_rerank"),
                 reason=item.get("reason", "High topic and semantic relevance"),
             )
@@ -222,8 +224,10 @@ class ArticleRepository:
         return [{
             "recommended_article_id": r.recommended_article_id,
             "rank": r.rank,
+            "rank_raw": r.rank_raw,
             "score": r.score,
             "rerank_score": r.rerank_score,
+            "pipeline_version": r.pipeline_version,
             "method": r.method,
             "reason": r.reason,
         } for r in rows]
@@ -232,24 +236,30 @@ class ArticleRepository:
     def get_precomputed_recommendations(
         db: Session,
         article_id: str,
-        limit: int = 10
+        limit: int = 10,
+        diversify: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Fast lookup: Retrieves precomputed top recommendations for an article
         in sub-5ms by joining with the articles table.
+        If diversify=True, orders by MMR-diversified rank.
+        If diversify=False, orders by pure relevance (rank_raw / score) without MMR penalty.
         """
+        from sqlalchemy import func
+        order_col = ArticleRecommendation.rank if diversify else func.coalesce(ArticleRecommendation.rank_raw, ArticleRecommendation.rank)
         recs = db.query(ArticleRecommendation, Article).join(
             Article, ArticleRecommendation.recommended_article_id == Article.id
         ).filter(
             ArticleRecommendation.article_id == article_id
         ).order_by(
-            ArticleRecommendation.rank
+            order_col
         ).limit(limit).all()
 
         results = []
         for rec, art in recs:
             art_dict = art.to_dict()
             art_dict["rank"] = rec.rank
+            art_dict["rank_raw"] = rec.rank_raw or rec.rank
             art_dict["score"] = rec.score
             art_dict["rerank_score"] = rec.rerank_score
             art_dict["method"] = rec.method
@@ -280,10 +290,17 @@ class ArticleRepository:
     # Ingestion Jobs (Editor Side Tracking)
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def create_job(db: Session, job_id: str, filename: str, total_articles: int = 0) -> IngestionJob:
+    def create_job(
+        db: Session,
+        job_id: str,
+        filename: str,
+        total_articles: int = 0,
+        pipeline_version: Optional[str] = None
+    ) -> IngestionJob:
         job = IngestionJob(
             id=job_id,
             filename=filename,
+            pipeline_version=pipeline_version,
             total_articles=total_articles,
             processed_articles=0,
             status="pending",
@@ -302,6 +319,7 @@ class ArticleRepository:
         total_articles: Optional[int] = None,
         processed_articles: Optional[int] = None,
         refreshed_articles: Optional[int] = None,
+        pipeline_version: Optional[str] = None,
         message: Optional[str] = None,
         error: Optional[str] = None
     ) -> Optional[IngestionJob]:
@@ -316,6 +334,8 @@ class ArticleRepository:
             job.processed_articles = processed_articles
         if refreshed_articles is not None:
             job.refreshed_articles = refreshed_articles
+        if pipeline_version is not None:
+            job.pipeline_version = pipeline_version
         if message:
             job.message = message
         if error:

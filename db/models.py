@@ -44,6 +44,12 @@ class Article(Base):
     text_bm25 = Column(Text, nullable=True)     # Weighted text for BM25 keyword matching
     text_rerank = Column(Text, nullable=True)   # Truncated lead text for Cross-Encoder reranker
 
+    # Token budgeting tracking metadata
+    embed_token_count = Column(Integer, default=0)
+    rerank_token_count = Column(Integer, default=0)
+    is_truncated = Column(Boolean, default=False)
+    recipe_version = Column(String(32), nullable=True)
+
     # BAAI/bge-base-en-v1.5 produces 768-dimensional dense vector embeddings
     embedding = Column(Vector(768), nullable=True)
 
@@ -82,6 +88,10 @@ class Article(Base):
             "is_live": bool(self.is_live),
             "pageViews": self.page_views or 0,
             "uniqueUsers": self.unique_users or 0,
+            "embed_token_count": self.embed_token_count or 0,
+            "rerank_token_count": self.rerank_token_count or 0,
+            "is_truncated": bool(self.is_truncated),
+            "recipe_version": self.recipe_version or "",
             "has_embedding": self.embedding is not None,
             "created_at": self.created_at.isoformat() if self.created_at else "",
         }
@@ -110,13 +120,15 @@ class ArticleRecommendation(Base):
         nullable=False,
         index=True
     )
-    rank = Column(Integer, nullable=False)   # 1 to 10
+    rank = Column(Integer, nullable=False)   # 1 to 10 (MMR diversified rank)
+    rank_raw = Column(Integer, nullable=True, index=True) # 1 to 10 (Pure relevance rank before MMR)
     score = Column(Float, nullable=True)     # Final blended relevance shown to the user (0.0 - 1.0)
     # Raw cross-encoder probability for THIS (source -> recommended) pair, computed
     # O-centrically (query = source article). It is the only score that is directly
     # comparable across lists, so the incremental "reverse push" uses it to decide
     # whether a newly ingested article can displace an old entry.
     rerank_score = Column(Float, nullable=True)
+    pipeline_version = Column(String(32), nullable=True)
     method = Column(String(50), default="neural_hybrid_rerank")
     reason = Column(Text, nullable=True)     # Human-readable explanation why recommended
     created_at = Column(DateTime, server_default=func.now())
@@ -139,6 +151,7 @@ class IngestionJob(Base):
 
     id = Column(String(64), primary_key=True)
     filename = Column(String(255), nullable=False)
+    pipeline_version = Column(String(32), nullable=True)
     status = Column(String(50), default="pending")  # pending, processing, completed, failed
     total_articles = Column(Integer, default=0)      # articles in THIS upload
     processed_articles = Column(Integer, default=0)
@@ -165,6 +178,7 @@ class IngestionJob(Base):
         return {
             "id": self.id,
             "filename": self.filename,
+            "pipeline_version": self.pipeline_version or "",
             "status": self.status,
             "total_articles": self.total_articles,
             "processed_articles": self.processed_articles,

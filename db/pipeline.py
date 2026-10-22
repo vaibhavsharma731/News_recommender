@@ -19,17 +19,9 @@ from .models import Article, ArticleRecommendation, IngestionJob
 from .repository import ArticleRepository
 from src.retrieval import BM25Index, tokenize, reciprocal_rank_fusion
 from src.model_registry import get_embedder
-from src.data_loader import (
-    normalise_text,
-    remove_links,
-    _short_description,
-    _headline_index,
-    strip_also_read,
-    _find_boilerplate,
-    _strip_boilerplate,
-    _subsection,
-    first_words
-)
+from src.data_loader import clean_dataframe
+from src.calibration import ConfidenceCalibrator
+from src.evidence import build_evidence_reason, evaluate_signal_agreement
 
 
 def _get_embedding_model():
@@ -136,11 +128,12 @@ def _precompute_for_article(
     if not cands:
         return [], []
 
-    # D. Cross-encoder reranking
+    # D. Cross-encoder reranking (article-to-article: 50/50 budget split)
     rerank_scores = np.asarray(
-        reranker.score(
+        reranker.score_pairs(
             row["text_rerank"],
             [records[c]["text_rerank"] for c in cands],
+            is_search=False,
             batch_size=32,
         ),
         dtype=np.float32,
@@ -158,34 +151,103 @@ def _precompute_for_article(
 
     # F. News metadata boosts and G. MMR diversity
     boosts = _calculate_boosts(row, [records[c] for c in cands], max_views, max_date)
+    boosted_relevance = relevance * boosts
+
+    # Raw relevance order (without MMR):
+    raw_sorted_indices = list(np.argsort(-boosted_relevance))
+    raw_rank_map = {idx: r + 1 for r, idx in enumerate(raw_sorted_indices)}
+
     order = _apply_mmr(
         cands,
-        relevance * boosts,
+        boosted_relevance,
         emb[cands],
         top_k=min(config.TOP_K, len(cands)),
         lam=config.MMR_LAMBDA,
     )
 
-    # H. Package ranked recommendations
-    title_toks = tokenize(str(row["title"]))
-    recs = []
-    for rank, rel_pos in enumerate(order, start=1):
+    # H. Filter out non-relatable stories below discard floor & package ranked recommendations
+    source_linked = row.get("linked_ids", [])
+    if isinstance(source_linked, str):
+        try:
+            source_linked = json.loads(source_linked)
+        except Exception:
+            source_linked = []
+    source_linked_set = set(str(x) for x in source_linked)
+
+    discard_floor = getattr(config, "ARTICLE_DISCARD_FLOOR", 0.05)
+    filtered_order = []
+    for rel_pos in order:
         c = cands[rel_pos]
+        cand_id = str(records[c]["id"])
+        raw_rerank = float(rerank_scores[rel_pos])
+        if raw_rerank < discard_floor and cand_id not in source_linked_set:
+            continue
+        filtered_order.append(rel_pos)
+
+    calibrator = ConfidenceCalibrator()
+    recs = []
+    current_ver = config.get_pipeline_version()
+    for rank, rel_pos in enumerate(filtered_order, start=1):
+        c = cands[rel_pos]
+        cand_id = str(records[c]["id"])
+        unboosted_score = float(np.clip(relevance[rel_pos], 0.0, 1.0))
+        next_score = float(np.clip(relevance[filtered_order[rank]], 0.0, 1.0)) if rank < len(filtered_order) else None
+
+        # Agreement signals
+        bm25_pos = bm25_rank.index(c) + 1 if c in bm25_rank else 999
+        dense_pos = dense_rank.index(c) + 1 if c in dense_rank else 999
+        raw_rerank = float(rerank_scores[rel_pos])
+        agree_count, signals = evaluate_signal_agreement(bm25_pos, dense_pos, raw_rerank)
+
+        conf_info = calibrator.calibrate(unboosted_score, next_score=next_score, agreement_count=agree_count)
+
+        raw_r = raw_rank_map.get(rel_pos, rank)
+        shift_note = f"relevance-only rank #{raw_r}, final rank #{rank} (promoted +{raw_r - rank})" if rank < raw_r else (
+            f"relevance-only rank #{raw_r}, final rank #{rank} (demoted -{rank - raw_r} by MMR diversity)" if rank > raw_r else
+            f"relevance-only rank #{raw_r}, final rank #{rank} (matches relevance)"
+        )
+
+        reason_str = build_evidence_reason(
+            source_row=row,
+            cand_row=records[c],
+            bm25_index=bm25,
+            bm25_rank=bm25_pos,
+            dense_rank=dense_pos,
+            rerank_score=raw_rerank,
+            editorial_link=(cand_id in source_linked_set),
+            confidence_info=conf_info,
+            score_breakdown={
+                "reranker_prob": round(raw_rerank, 4),
+                "bm25_rank": bm25_pos,
+                "dense_rank": dense_pos,
+                "blend": round(unboosted_score, 4),
+                "final": round(conf_info["calibrated_prob"], 4)
+            },
+            rank_relevance={
+                "rank_raw": raw_r,
+                "final_rank": rank,
+                "shift": raw_r - rank,
+                "description": shift_note
+            },
+            method_ranks={
+                "bm25": bm25_pos,
+                "dense": dense_pos,
+                "reranker": round(raw_rerank, 3),
+                "agreement_count": agree_count,
+                "status": "All three methods agree" if agree_count >= 3 else (f"{agree_count} of 3 methods agree" if agree_count >= 2 else "Single method lead")
+            },
+            margin_cutoff=conf_info.get("margin")
+        )
+
         recs.append({
-            "recommended_article_id": str(records[c]["id"]),
+            "recommended_article_id": cand_id,
             "rank": rank,
-            "score": round(float(np.clip(relevance[rel_pos], 0.0, 1.0)), 4),
-            "rerank_score": round(float(rerank_scores[rel_pos]), 6),
+            "rank_raw": raw_rank_map.get(rel_pos, rank),
+            "score": conf_info["calibrated_prob"],
+            "rerank_score": round(raw_rerank, 6),
+            "pipeline_version": current_ver,
             "method": "neural_hybrid_rerank",
-            "reason": _generate_reason(
-                row,
-                records[c],
-                title_toks,
-                bm25.docs[c],
-                bm25,
-                dense_sim=float(dense_norm[rel_pos]),
-                rerank_score=float(rerank_scores[rel_pos]),
-            ),
+            "reason": reason_str,
         })
     return recs, cands
 
@@ -204,8 +266,8 @@ def _reverse_push_for_old(
         can only be displaced by N if N is one of O's close neighbours too — so the
         candidate set found from N's side is exactly the set worth checking.
       * We reuse O's *stored* rerank scores for its current entries (no cross-encoder
-        needed for the old list) and only run the cross-encoder for the genuinely new
-        candidate pairs, with O as the query (O-centric scoring).
+        needed for the old list) if they match the current pipeline version, and
+        re-score if the model/configuration changed.
       * We then merge, re-apply boosts + MMR, and keep the top-K.
 
     Old articles that no new article matches are never touched.
@@ -228,6 +290,7 @@ def _reverse_push_for_old(
     total = len(reverse)
     report_every = max(1, total // 12)   # lively, but no more than ~12 log lines
     refreshed: List[Dict[str, Any]] = []
+    current_ver = config.get_pipeline_version()
 
     for done, (opos, new_neighbors) in enumerate(reverse.items(), start=1):
         if progress_cb and (done % report_every == 0 or done == total):
@@ -236,7 +299,8 @@ def _reverse_push_for_old(
         old_id = str(records[opos]["id"])
         stored = ArticleRepository.get_precomputed_rows(db, old_id, limit=config.TOP_K)
 
-        # 2. Seed the merged pool with O's current entries (reusing their rerank scores).
+        # 2. Seed the merged pool with O's current entries (reusing their rerank scores
+        #    only if they were computed under the current pipeline version).
         cand_positions, rerank_scores, seen = [], [], set()
         for r in stored:
             p = id_to_pos.get(str(r["recommended_article_id"]))
@@ -244,7 +308,8 @@ def _reverse_push_for_old(
                 continue
             seen.add(p)
             cand_positions.append(p)
-            rerank_scores.append(r.get("rerank_score"))
+            same_ver = (r.get("pipeline_version") == current_ver)
+            rerank_scores.append(r.get("rerank_score") if same_ver else None)
 
         # 3. Add the new neighbours (deduped); they still need an O-centric score.
         for npos in dict.fromkeys(new_neighbors):
@@ -255,12 +320,13 @@ def _reverse_push_for_old(
         if not cand_positions:
             continue
 
-        # 4. Score only the candidates that have no reusable score (new + legacy rows).
+        # 4. Score only the candidates that have no reusable score (new + legacy/version-mismatched rows).
         missing = [i for i, s in enumerate(rerank_scores) if s is None]
         if missing:
-            scored = reranker.score(
+            scored = reranker.score_pairs(
                 records[opos]["text_rerank"],
                 [records[cand_positions[i]]["text_rerank"] for i in missing],
+                is_search=False,
                 batch_size=32,
             )
             for k, i in enumerate(missing):
@@ -280,125 +346,76 @@ def _reverse_push_for_old(
 
         # 6. Boosts + diversity, then persist.
         boosts = _calculate_boosts(records[opos], [records[p] for p in cand_positions], max_views, max_date)
+        boosted_relevance = relevance * boosts
+
+        raw_sorted_indices = list(np.argsort(-boosted_relevance))
+        raw_rank_map = {idx: r + 1 for r, idx in enumerate(raw_sorted_indices)}
+
         order = _apply_mmr(
             cand_positions,
-            relevance * boosts,
+            boosted_relevance,
             emb[cand_positions],
             top_k=min(config.TOP_K, len(cand_positions)),
             lam=config.MMR_LAMBDA,
         )
 
-        title_toks = tokenize(str(records[opos]["title"]))
-        recs = []
-        for rank, rel_pos in enumerate(order, start=1):
+        old_row = records[opos]
+        old_linked = old_row.get("linked_ids", [])
+        if isinstance(old_linked, str):
+            try:
+                old_linked = json.loads(old_linked)
+            except Exception:
+                old_linked = []
+        old_linked_set = set(str(x) for x in old_linked)
+
+        discard_floor = getattr(config, "ARTICLE_DISCARD_FLOOR", 0.05)
+        filtered_order = []
+        for rel_pos in order:
             c = cand_positions[rel_pos]
+            cand_id = str(records[c]["id"])
+            raw_rerank = float(rerank_vec[rel_pos])
+            if raw_rerank < discard_floor and cand_id not in old_linked_set:
+                continue
+            filtered_order.append(rel_pos)
+
+        calibrator = ConfidenceCalibrator()
+        recs = []
+        for rank, rel_pos in enumerate(filtered_order, start=1):
+            c = cand_positions[rel_pos]
+            cand_id = str(records[c]["id"])
+            unboosted_score = float(np.clip(relevance[rel_pos], 0.0, 1.0))
+            next_score = float(np.clip(relevance[filtered_order[rank]], 0.0, 1.0)) if rank < len(filtered_order) else None
+
+            raw_rerank = float(rerank_vec[rel_pos])
+            agree_count, signals = evaluate_signal_agreement(rel_pos + 1, rel_pos + 1, raw_rerank)
+            conf_info = calibrator.calibrate(unboosted_score, next_score=next_score, agreement_count=agree_count)
+
+            reason_str = build_evidence_reason(
+                source_row=old_row,
+                cand_row=records[c],
+                bm25_index=bm25,
+                bm25_rank=rel_pos + 1,
+                dense_rank=rel_pos + 1,
+                rerank_score=raw_rerank,
+                editorial_link=(cand_id in old_linked_set),
+                confidence_info=conf_info,
+            )
+
             recs.append({
-                "recommended_article_id": str(records[c]["id"]),
+                "recommended_article_id": cand_id,
                 "rank": rank,
-                "score": round(float(np.clip(relevance[rel_pos], 0.0, 1.0)), 4),
-                "rerank_score": round(float(rerank_vec[rel_pos]), 6),
+                "rank_raw": raw_rank_map.get(rel_pos, rank),
+                "score": conf_info["calibrated_prob"],
+                "rerank_score": round(raw_rerank, 6),
+                "pipeline_version": current_ver,
                 "method": "neural_hybrid_rerank",
-                "reason": _generate_reason(
-                    records[opos], records[c], title_toks, bm25.docs[c], bm25,
-                    dense_sim=float(dense_norm[rel_pos]),
-                    rerank_score=float(rerank_vec[rel_pos]),
-                ),
+                "reason": reason_str,
             })
         ArticleRepository.save_recommendations(db, old_id, recs, commit=False)
         refreshed.append({"id": old_id, "title": str(records[opos].get("title", ""))})
     return refreshed
 
-def _as_bool(val) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return False
-    return str(val).strip().lower() in {"1", "true", "yes", "y", "t"}
 
-
-def clean_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Applies text cleaning and normalization with flexible column resolution
-    supporting diverse CSV structures.
-    """
-    raw = raw_df.copy()
-
-    # 1. Flexible Column Extractor
-    def _col(candidates: list, default="") -> pd.Series:
-        for c in candidates:
-            if c in raw.columns:
-                return raw[c]
-        return pd.Series([default] * len(raw))
-
-    # Resolve ID column & deduplicate
-    id_col = next((c for c in ["articleId", "id", "article_id", "ID"] if c in raw.columns), None)
-    if id_col:
-        raw = raw.drop_duplicates(subset=id_col, keep="last").reset_index(drop=True)
-        ids = raw[id_col].astype(str).tolist()
-    else:
-        raw = raw.reset_index(drop=True)
-        ids = [f"art_{i+1}" for i in range(len(raw))]
-
-    # Extract text fields
-    titles = _col(["articleTitle", "title", "headline", "articleName"]).map(normalise_text)
-    raw_desc = _col(["description", "snippet", "summary"])
-    raw_bodies = _col(["body_raw", "body", "content", "text"]).fillna("")
-
-    # If description is missing/empty, take first 200 chars of body
-    clean_desc = []
-    for d, b in zip(raw_desc, raw_bodies):
-        text = str(d).strip() if pd.notna(d) and str(d).strip() else str(b)[:200].strip()
-        clean_desc.append(_short_description(remove_links(normalise_text(text))))
-
-    headlines = _headline_index(titles, ids)
-    bodies, linked_ids = [], []
-    for article_id, body in zip(ids, raw_bodies):
-        body_clean = remove_links(normalise_text(body))
-        body_clean, linked = strip_also_read(body_clean, article_id, headlines)
-        bodies.append(body_clean)
-        linked_ids.append(sorted(set(linked)))
-
-    boilerplate = _find_boilerplate(bodies)
-    bodies = [_strip_boilerplate(b, boilerplate) for b in bodies]
-
-    sec_series = _col(["sectionName", "section1Slug", "section", "category"])
-    subsec_series = raw["section2Name"].map(_subsection) if "section2Name" in raw.columns else _col(["section2Slug", "subsection"])
-    pv_series = _col(["pageViews", "pageViews_latest", "pageViews_max", "views"], default=0)
-    uu_series = _col(["uniqueUsers", "uniqueUsers_latest", "uniqueUsers_max", "users"], default=0)
-    date_series = _col(["postPublishDate", "date", "published_at", "publishDate"], default=None)
-
-    clean_df = pd.DataFrame({
-        "id": ids,
-        "title": titles,
-        "description": clean_desc,
-        "section": sec_series.fillna(""),
-        "subsection": subsec_series.fillna(""),
-        "date": pd.to_datetime(date_series, utc=True, errors="coerce"),
-        "url": _col(["articleUrl", "url", "link"]).fillna(""),
-        "image": _col(["articleFeaturedImage", "image", "imageUrl", "img"]).fillna(""),
-        "is_live": _col(["liveBlog", "is_live"], default=False).map(_as_bool),
-        "body": bodies,
-        "linked_ids": [json.dumps(l) for l in linked_ids],
-        "page_views": pd.to_numeric(pv_series, errors="coerce").fillna(0).astype(int),
-        "unique_users": pd.to_numeric(uu_series, errors="coerce").fillna(0).astype(int),
-    })
-
-    # Text representations for neural embeddings
-    clean_df["text_embed"] = [
-        f"{t}. {d}. {first_words(b, config.BODY_WORDS_EMBED)}"
-        for t, d, b in zip(clean_df.title, clean_df.description, clean_df.body)
-    ]
-    # BM25 keyword representation: Title repeated 3x for entity salience
-    clean_df["text_bm25"] = [
-        f"{t}. {t}. {t}. {d}. {b}"
-        for t, d, b in zip(clean_df.title, clean_df.description, clean_df.body)
-    ]
-    # Reranker representation: Truncated lead text
-    clean_df["text_rerank"] = [
-        f"{t}. {d}. {first_words(b, config.BODY_WORDS_RERANK)}"
-        for t, d, b in zip(clean_df.title, clean_df.description, clean_df.body)
-    ]
-    return clean_df
 
 
 def _calculate_boosts(
@@ -560,6 +577,22 @@ def run_ingestion_pipeline(
         # column all exist before we start writing (safe on a fresh database).
         init_db()
         upd = lambda **kw: ArticleRepository.update_job(db, job_id, **kw)
+        current_version = config.get_pipeline_version()
+        upd(pipeline_version=current_version)
+
+        # Compare with previous completed ingestion job
+        last_job = db.query(IngestionJob).filter(
+            IngestionJob.status == "completed",
+            IngestionJob.id != job_id
+        ).order_by(IngestionJob.created_at.desc()).first()
+
+        if last_job and last_job.pipeline_version and last_job.pipeline_version != current_version:
+            if not recompute_all_recommendations:
+                print(
+                    f"[Pipeline] Notice: Pipeline configuration changed ({last_job.pipeline_version} -> {current_version}). "
+                    f"Forcing full recommendation recompute to maintain score scale integrity."
+                )
+                recompute_all_recommendations = True
 
         # 1. Parse CSV
         upd(status="processing", message="STAGE:PARSE|Parsing and validating CSV records...")
@@ -576,11 +609,41 @@ def run_ingestion_pipeline(
         n = len(df)
         if n == 0:
             raise ValueError("CSV contained no usable articles.")
-        upd(total_articles=n, message=f"STAGE:STORAGE|Saving {n} cleaned articles to PostgreSQL...")
 
-        # 3. Persist articles with batched INSERT ... ON CONFLICT
         records = df.to_dict("records")
         ids = [str(r["id"]) for r in records]
+
+        # Check existing state in PostgreSQL for validation and skip-unchanged optimization
+        existing_rows = db.query(Article.id, Article.text_embed, Article.embedding).filter(
+            Article.id.in_(ids)
+        ).all()
+        existing_map = {r[0]: (r[1], r[2]) for r in existing_rows}
+
+        existing_recs = db.query(ArticleRecommendation.article_id).filter(
+            ArticleRecommendation.article_id.in_(list(existing_map.keys())),
+            ArticleRecommendation.pipeline_version == current_version
+        ).distinct().all()
+        has_current_recs_set = {r[0] for r in existing_recs}
+
+        new_ids = set(ids) - set(existing_map.keys())
+        changed_ids = {
+            r["id"] for r in records
+            if r["id"] in existing_map and existing_map[r["id"]][0] != r["text_embed"]
+        }
+        needs_emb_ids = new_ids | changed_ids | {
+            aid for aid, (txt, emb) in existing_map.items() if emb is None
+        }
+
+        dup_count = len(raw_df) - len(df)
+        val_summary = (
+            f"{len(raw_df)} parsed -> {len(df)} unique articles "
+            f"({dup_count} dupes dropped, {len(new_ids)} new, {len(changed_ids)} modified, "
+            f"{len(existing_map) - len(changed_ids)} unchanged)"
+        )
+        print(f"[Pipeline] Validation: {val_summary}")
+        upd(total_articles=n, message=f"STAGE:STORAGE|Validation: {val_summary}. Saving to DB...")
+
+        # 3. Persist articles with batched INSERT ... ON CONFLICT
         ArticleRepository.bulk_upsert_articles_fast(db, [{
             "id": str(r["id"]),
             "title": str(r["title"]),
@@ -598,33 +661,41 @@ def run_ingestion_pipeline(
             "text_embed": str(r["text_embed"]),
             "text_bm25": str(r["text_bm25"]),
             "text_rerank": str(r["text_rerank"]),
+            "embed_token_count": int(r.get("embed_token_count", 0)),
+            "rerank_token_count": int(r.get("rerank_token_count", 0)),
+            "is_truncated": bool(r.get("is_truncated", False)),
+            "recipe_version": str(r.get("recipe_version", config.TEXT_RECIPE_VERSION)),
         } for r in records])
 
-        # 4. Build and persist embeddings
-        upd(message="STAGE:EMBEDDING|Loading embedding model (first run downloads ~440 MB)...")
-        embedder = _get_embedding_model()
+        # 4. Build and persist embeddings (only for new, modified, or missing-vector articles)
+        if needs_emb_ids:
+            upd(message=f"STAGE:EMBEDDING|Embedding {len(needs_emb_ids)} articles (skipping {len(ids) - len(needs_emb_ids)} unchanged)...")
+            embedder = _get_embedding_model()
+            emb_records = [r for r in records if r["id"] in needs_emb_ids]
+            emb_ids = [r["id"] for r in emb_records]
+            emb_texts = [r["text_embed"] for r in emb_records]
 
-        texts = df["text_embed"].tolist()
-        chunks, chunk_size, t0 = [], 128, time.time()
-        for i in range(0, n, chunk_size):
-            chunks.append(embedder.encode(
-                texts[i:i + chunk_size],
-                batch_size=32,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            ))
-            done = min(i + chunk_size, n)
-            eta = (time.time() - t0) / done * (n - done)
-            upd(
-                processed_articles=int(0.40 * done),
-                message=f"STAGE:EMBEDDING|Embedded {done}/{n} articles (ETA {_fmt_eta(eta)})...",
-            )
-        emb = np.vstack(chunks).astype(np.float32)
-        ArticleRepository.bulk_set_embeddings(db, ids, emb)
+            chunks, chunk_size, t0 = [], 128, time.time()
+            for i in range(0, len(emb_texts), chunk_size):
+                chunks.append(embedder.encode(
+                    emb_texts[i:i + chunk_size],
+                    batch_size=32,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                ))
+                done = min(i + chunk_size, len(emb_texts))
+                eta = (time.time() - t0) / done * (len(emb_texts) - done)
+                upd(
+                    processed_articles=int(0.40 * done),
+                    message=f"STAGE:EMBEDDING|Embedded {done}/{len(emb_texts)} articles (ETA {_fmt_eta(eta)})...",
+                )
+            emb = np.vstack(chunks).astype(np.float32)
+            ArticleRepository.bulk_set_embeddings(db, emb_ids, emb)
+        else:
+            print(f"[Pipeline] All {len(ids)} articles have up-to-date embeddings. Skipping embedding stage.")
+            upd(message="STAGE:EMBEDDING|All embeddings up-to-date. Skipped embedding step.")
 
         # 5. Build a FULL-corpus index (already-stored articles + the new ones).
-        #    New articles must be able to retrieve neighbours from the entire DB,
-        #    not just from the batch that was uploaded this time.
         upd(message="STAGE:INDEX|Building full-corpus BM25 index...")
         full_records, full_emb, id_to_pos = _load_full_corpus(db)
         n_total = len(full_records)
@@ -632,7 +703,30 @@ def run_ingestion_pipeline(
             print("[Pipeline] Only one article in the corpus; no neighbours to precompute.")
         bm25 = BM25Index([r["text_bm25"] for r in full_records])
 
-        # 6. Rerank candidates and save recommendations in batches
+        # 6. Determine articles needing recommendations
+        new_id_set = set(ids)
+        if recompute_all_recommendations:
+            target_positions = list(range(n_total))                       # Option A: full rebuild
+        else:
+            # Only articles that are brand new, had text changes, or don't have valid current recommendations
+            needs_recs_ids = new_ids | changed_ids | (set(ids) - has_current_recs_set)
+            target_positions = [id_to_pos[i] for i in needs_recs_ids if i in id_to_pos]
+
+        # Positions of genuinely new or changed articles that need to reverse-push into older articles
+        new_or_changed_positions = [id_to_pos[i] for i in (new_ids | changed_ids) if i in id_to_pos]
+
+        # Early exit if everything is already precomputed (perfectly idempotent re-upload)
+        if not target_positions and not new_or_changed_positions:
+            upd(
+                status="completed",
+                processed_articles=n,
+                refreshed_articles=0,
+                message=f"STAGE:COMPLETE|All {n} articles and recommendations already up-to-date ({val_summary}).",
+            )
+            print(f"[Pipeline] Idempotent upload: no articles needed embedding or recommendation recalculation.")
+            return job_id
+
+        # 6a. Rerank candidates and save recommendations in batches
         upd(message="STAGE:RERANK|Loading cross-encoder (first run downloads ~1 GB, can take minutes)...")
         reranker = _get_reranker_model()
 
@@ -640,13 +734,6 @@ def run_ingestion_pipeline(
         max_date = max((r["date"] for r in full_records if pd.notna(r["date"])), default=None)
         n_retrieve = min(config.N_RETRIEVE, max(n_total - 1, 0))
         n_cand = min(config.N_CANDIDATES, max(n_total - 1, 0))
-
-        # Which articles are "new" (i.e. arrived in THIS upload)?
-        new_id_set = set(ids)
-        if recompute_all_recommendations:
-            target_positions = list(range(n_total))                       # Option A: full rebuild
-        else:
-            target_positions = [id_to_pos[i] for i in ids if i in id_to_pos]  # just this upload
 
         candidate_map: Dict[int, List[int]] = {}
         # Distinct EXISTING articles that any new article is close to. This grows as
@@ -711,7 +798,7 @@ def run_ingestion_pipeline(
         # 6b. Reverse pass: let the new articles flow into the lists of the EXISTING
         #     articles they are close to (skipped during a full rebuild).
         refreshed_infos: List[Dict[str, Any]] = []
-        if track_reverse:
+        if track_reverse and new_or_changed_positions:
             rev_total = len(reverse_seen)
             upd(message=(
                 f"STAGE:REVERSE|Re-scoring {rev_total} existing article(s) "
@@ -735,7 +822,7 @@ def run_ingestion_pipeline(
                 )
 
             refreshed_infos = _reverse_push_for_old(
-                db, target_positions, candidate_map, full_records, full_emb, bm25,
+                db, new_or_changed_positions, candidate_map, full_records, full_emb, bm25,
                 reranker, max_views, max_date, new_id_set, id_to_pos,
                 progress_cb=_rev_progress,
             )

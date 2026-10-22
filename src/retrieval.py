@@ -218,29 +218,50 @@ class DenseIndex:
         self.vectors = self._load_or_build(texts, model_name, use_disk_cache=use_disk_cache)
 
     def _load_or_build(self, texts, model_name, use_disk_cache=True) -> np.ndarray:
-        data_paths = getattr(config, "DATA_PATHS", [config.DATA_PATH])
-        csv_mtime = sum(int(p.stat().st_mtime) for p in data_paths if p.exists())
-        key = hashlib.md5(f"{model_name}|{csv_mtime}|{len(texts)}".encode()).hexdigest()[:12]
-        path = config.CACHE_DIR / f"embeddings_{key}.npy"
-        if use_disk_cache and path.exists():
-            return np.load(path)
-        
+        max_seq_len = getattr(config, "EMBED_MAX_SEQ_LEN", 256)
+        if not use_disk_cache:
+            self.model.max_seq_length = max_seq_len
+            return self.model.encode(
+                texts,
+                batch_size=32,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+
         config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        master_cache_file = config.CACHE_DIR / "text_embedding_cache.npz"
+        model_slug = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", model_name)
+        master_cache_file = config.CACHE_DIR / f"text_embedding_cache_{model_slug}_len{max_seq_len}.npz"
+        legacy_cache_file = config.CACHE_DIR / "text_embedding_cache.npz"
 
         # Load persistent incremental hash cache if available
         cache_map = {}
+        legacy_map = {}
         if master_cache_file.exists():
             try:
                 data = np.load(master_cache_file)
                 cached_hashes = data["hashes"]
                 cached_vecs = data["vectors"]
                 for h, v in zip(cached_hashes, cached_vecs):
-                    cache_map[h] = v
+                    cache_map[str(h)] = v
             except Exception as e:
                 print(f"[DenseIndex] Warning: Failed to read master cache ({e}), rebuilding.")
+        elif legacy_cache_file.exists() and model_name == getattr(config, "EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5"):
+            # Transparent migration: read legacy cache keyed on sha256(text)
+            try:
+                data = np.load(legacy_cache_file)
+                legacy_hashes = [str(h) for h in data["hashes"]]
+                legacy_vecs = data["vectors"]
+                legacy_map = dict(zip(legacy_hashes, legacy_vecs))
+                print(f"[DenseIndex] Found legacy cache with {len(legacy_map)} vectors; migrating to model-keyed cache.")
+            except Exception as e:
+                print(f"[DenseIndex] Warning: Failed to read legacy cache ({e}).")
+                legacy_map = {}
 
-        text_hashes = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in texts]
+        # Content key includes model name + max_seq_length + text content
+        def _content_key(t: str) -> str:
+            return hashlib.sha256(f"{model_name}|{max_seq_len}|{t}".encode("utf-8")).hexdigest()
+
+        text_hashes = [_content_key(t) for t in texts]
         vectors = [None] * len(texts)
         missing_indices = []
         missing_texts = []
@@ -248,19 +269,23 @@ class DenseIndex:
         for idx, (t, h) in enumerate(zip(texts, text_hashes)):
             if h in cache_map:
                 vectors[idx] = cache_map[h]
+            elif legacy_map and (legacy_h := hashlib.sha256(t.encode("utf-8")).hexdigest()) in legacy_map:
+                vec = legacy_map[legacy_h]
+                vectors[idx] = vec
+                cache_map[h] = vec
             else:
                 missing_indices.append(idx)
                 missing_texts.append(t)
 
         if missing_texts:
             print(f"[DenseIndex] {len(texts) - len(missing_texts)}/{len(texts)} articles found in cache.")
-            print(f"[DenseIndex] Encoding {len(missing_texts)} new articles (model={model_name})...")
-            self.model.max_seq_length = getattr(config, "EMBED_MAX_SEQ_LEN", 256)
+            print(f"[DenseIndex] Encoding {len(missing_texts)} new articles (model={model_name}, max_len={max_seq_len})...")
+            self.model.max_seq_length = max_seq_len
             new_vecs = self.model.encode(
                 missing_texts,
                 batch_size=32,
                 normalize_embeddings=True,
-                show_progress_bar=True
+                show_progress_bar=True,
             )
             for idx, vec in zip(missing_indices, new_vecs):
                 vectors[idx] = vec
@@ -271,16 +296,22 @@ class DenseIndex:
                 all_hashes = np.array(list(cache_map.keys()))
                 all_vecs = np.array(list(cache_map.values()))
                 np.savez_compressed(master_cache_file, hashes=all_hashes, vectors=all_vecs)
+                print(f"[DenseIndex] Updated cache: {len(cache_map)} total vectors saved to {master_cache_file.name}")
             except Exception as e:
                 print(f"[DenseIndex] Warning: Could not save master cache: {e}")
         else:
             print(f"[DenseIndex] All {len(texts)} articles found in incremental cache.")
+            # If we migrated from legacy, persist the new master cache file once
+            if not master_cache_file.exists() and cache_map:
+                try:
+                    all_hashes = np.array(list(cache_map.keys()))
+                    all_vecs = np.array(list(cache_map.values()))
+                    np.savez_compressed(master_cache_file, hashes=all_hashes, vectors=all_vecs)
+                    print(f"[DenseIndex] Migrated {len(cache_map)} vectors saved to {master_cache_file.name}")
+                except Exception as e:
+                    print(f"[DenseIndex] Warning: Could not save migrated master cache: {e}")
 
-        vectors = np.array(vectors)
-        if use_disk_cache:
-            np.save(path, vectors)
-            print(f"[DenseIndex] Cache saved to {path}")
-        return vectors
+        return np.asarray(vectors, dtype=np.float32)
 
 
     def scores_for_text(self, text: str, short: bool = False) -> np.ndarray:

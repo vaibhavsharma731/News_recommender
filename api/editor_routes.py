@@ -161,16 +161,26 @@ def list_jobs(limit: int = 10, db: Session = Depends(get_db)):
     }
 
 
+from src.evidence import enrich_recommendation_evidence
+
+
 @router.get("/recommendations/{article_id}")
-def get_precomputed_recs(article_id: str, limit: int = 10, db: Session = Depends(get_db)):
+def get_precomputed_recs(article_id: str, limit: int = 10, diversify: bool = True, db: Session = Depends(get_db)):
     """
     Ultra-fast sub-5ms endpoint: retrieves precomputed top-10 recommendations directly
-    from PostgreSQL article_recommendations table.
+    from PostgreSQL article_recommendations table with complete 7-item evaluation evidence.
+    Supports diversify=True (MMR diversified) and diversify=False (Pure relevance rank).
     """
-    recs = ArticleRepository.get_precomputed_recommendations(db, article_id, limit=limit)
+    source_art = db.query(Article).filter(Article.id == article_id).first()
+    source_dict = source_art.to_dict() if source_art else None
+    recs = ArticleRepository.get_precomputed_recommendations(db, article_id, limit=limit, diversify=diversify)
+    enrich_recommendation_evidence(source_dict, recs)
+
     return {
         "article_id": article_id,
+        "source_article": source_dict,
         "source": "postgresql_precomputed",
+        "diversify": diversify,
         "count": len(recs),
         "recommendations": recs
     }

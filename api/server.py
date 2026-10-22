@@ -220,10 +220,16 @@ def _result_json(result, method: str) -> dict:
         "recommendations": [
             {
                 "article": _article_dict(r.article),
-                "score":   _clean_float(r.score),
+                "score":   _clean_float(getattr(r, "calibrated_score", r.score)),
+                "unboosted_score": _clean_float(r.score),
+                "confidence_band": getattr(r, "confidence_band", "MEDIUM"),
+                "margin": _clean_float(getattr(r, "margin", 0.0)),
+                "agreement_count": getattr(r, "agreement_count", 1),
+                "rank": getattr(r, "rank", idx + 1),
+                "rank_raw": getattr(r, "rank_raw", idx + 1),
                 "reason":  _clean_str(r.reason),
             }
-            for r in result.recommendations
+            for idx, r in enumerate(result.recommendations)
         ],
     }
 
@@ -331,35 +337,52 @@ def recommend(body: RecommendRequest):
             detail="Please provide either 'query' (for search) or 'article_id' (for similar articles).",
         )
 
-    # Precomputed recommendations only represent the default similar-article request.
+    # Precomputed recommendations represent similar-article requests with or without MMR diversity.
     use_precomputed = bool(
         body.article_id
         and not body.query
         and not body.section
         and body.method == "hybrid+rerank"
         and body.use_boosts
-        and body.diversify
         and body.top_k <= config.TOP_K
     )
     if use_precomputed:
         try:
             with SessionLocal() as db:
+                source_art = ArticleRepository.get_article(db, str(body.article_id))
+                source_dict = source_art.to_dict() if source_art else None
                 precomputed = ArticleRepository.get_precomputed_recommendations(
-                    db, str(body.article_id), limit=body.top_k
+                    db, str(body.article_id), limit=body.top_k, diversify=body.diversify
                 )
             if precomputed:
+                from src.evidence import enrich_recommendation_evidence
+                enrich_recommendation_evidence(source_dict, precomputed)
+                mode_str = "MMR Diversified" if body.diversify else "Pure Relevance (No MMR)"
                 return {
                     "method": "postgresql_precomputed_rerank",
                     "engine": "PostgreSQL pgvector + Precomputed Cross-Encoder",
                     "source": "postgresql",
+                    "source_article": source_dict,
+                    "diversify": body.diversify,
                     "low_confidence": False,
                     "best_relevance": precomputed[0].get("score", 0.0),
-                    "notes": ["⚡ Served directly from PostgreSQL precomputed table (sub-5ms)"],
+                    "notes": [f"⚡ Served directly from PostgreSQL precomputed table (sub-5ms, {mode_str})"],
                     "recommendations": [{
-                        "article": _article_dict(r),
+                        "article": {
+                            **_article_dict(r),
+                            "rank": r.get("rank", 1),
+                            "rank_raw": r.get("rank_raw", 1),
+                            "score": r.get("score", 0.0),
+                            "rerank_score": r.get("rerank_score", 0.0),
+                        },
                         "score": r.get("score", 0.0),
+                        "rank": r.get("rank", 1),
+                        "rank_raw": r.get("rank_raw", 1),
+                        "rerank_score": r.get("rerank_score", 0.0),
                         "reason": r.get("reason") or f"Rank #{r.get('rank', 1)} precomputed",
+                        "evidence": r.get("evidence"),
                     } for r in precomputed],
+
                 }
         except Exception as e:
             print(f"Error checking precomputed recommendations: {e}")

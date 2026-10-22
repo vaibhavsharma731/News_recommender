@@ -38,9 +38,12 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 # Set the environment variable NEWSREC_NEURAL=0 to skip them and use the light TF-IDF mode.
 USE_NEURAL_MODELS = os.getenv("NEWSREC_NEURAL", "1") == "1"
 EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+EMBEDDING_REVISION = os.getenv("NEWSREC_EMBED_REVISION", "a5beb1e3e68b9ab74eb54cfd186867f64f240e1a")
 RERANKER_MODEL = os.getenv("NEWSREC_RERANKER", "BAAI/bge-reranker-base")
-EMBED_MAX_SEQ_LEN = 256     # same for ingestion AND live search, so vectors are consistent
-RERANK_MAX_LEN = 160
+RERANKER_REVISION = os.getenv("NEWSREC_RERANK_REVISION", "2cfc18c9415c912f9d8155881c133215df768a70")
+EMBED_MAX_SEQ_LEN = 256   # same for ingestion AND live search, so vectors are consistent
+RERANK_MAX_LEN = 512        # total cross-encoder token limit (query + candidate combined)
+RERANK_PER_ARTICLE_TOKENS = 256  # deliberate 50/50 split for article-to-article mode
 
 # Optional: Remote Cloud GPU Worker (e.g. Google Colab + Cloudflare Tunnel).
 # When set to a valid URL (e.g. https://xxx.trycloudflare.com), embeddings and rerankings
@@ -64,9 +67,19 @@ INCREMENTAL_RECOMMENDATIONS = True
 QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 SHORT_QUERY_WORDS = 12                        # fewer words than this = "short query"
 
-# --- How much of each article is used ---
-BODY_WORDS_EMBED = 350      # first N body words (after title + description) for embeddings
-BODY_WORDS_RERANK = 150     # first N body words for cross-encoder reranking
+# --- Token Budget Settings (Replaces retired word counts) ---
+TEXT_RECIPE_VERSION = "v2_sentence_token_budget"
+EMBED_SPECIAL_TOKENS = 2           # [CLS] and [SEP]
+EMBED_TOKEN_BUDGET = EMBED_MAX_SEQ_LEN - EMBED_SPECIAL_TOKENS  # 254 content tokens
+
+RERANK_PAIR_SPECIAL_TOKENS = 4    # <s> query </s></s> passage </s>
+# In article-to-article mode, split 50/50: 256 per side minus 2 special tokens = 254 content tokens
+RERANK_TOKEN_BUDGET = (RERANK_MAX_LEN // 2) - 2
+
+# Word-based settings retired in favor of token-based budgeting
+BODY_WORDS_EMBED = None
+BODY_WORDS_RERANK = None
+
 BOILERPLATE_MIN_DOCS = 4    # a sentence repeated in >= N articles is treated as boilerplate
 
 # --- Retrieval pipeline ---
@@ -76,16 +89,21 @@ RRF_K = 60                  # standard Reciprocal Rank Fusion constant
 TOP_K = 10                  # default number of recommendations
 
 # --- Diversity (MMR): 1.0 = pure relevance, lower = more variety ---
-MMR_LAMBDA = 0.75
+# OLD (hand-picked): MMR_LAMBDA = 0.75
+MMR_LAMBDA = 0.91           # MEASURED via run_experiments.py random search (config 82e2663f)
+MMR_THETA = 0.76            # MEASURED: near-dup similarity threshold for MMR penalty
 
 # --- Personalization Settings ---
 MAX_USER_HISTORY = 10       # track last N read articles
 USER_PROFILE_WEIGHT = 0.35  # blend weight for user history profile vector
 
-# --- News Metadata Boosts (Calibrated Multipliers) ---
-SECTION_BOOST_MULT = 1.08    # 8% multiplicative boost for same section
-SUBSECTION_BOOST_MULT = 1.05 # 5% multiplicative boost for same subsection
-POPULARITY_BOOST_MULT = 1.06 # up to 6% boost for popular articles (log-scaled pageViews)
+# --- News Metadata Boosts (MEASURED Multipliers) ---
+# OLD (hand-picked): SECTION_BOOST_MULT = 1.08
+# OLD (hand-picked): SUBSECTION_BOOST_MULT = 1.05
+# OLD (hand-picked): POPULARITY_BOOST_MULT = 1.06
+SECTION_BOOST_MULT = 1.072    # MEASURED: 7.2% boost for same section
+SUBSECTION_BOOST_MULT = 1.09  # MEASURED: 9% boost for same subsection
+POPULARITY_BOOST_MULT = 1.044 # MEASURED: up to 4.4% boost for popular articles (log-scaled)
 
 # --- Dynamic Recency Half-lives (in days) ---
 SECTION_HALF_LIVES = {
@@ -96,14 +114,47 @@ SECTION_HALF_LIVES = {
     "brand-story": 4.0,     # 4 days
     "default": 2.0
 }
-RECENCY_MAX_BOOST_MULT = 1.10 # up to 10% boost for fresh articles
+# OLD (hand-picked): RECENCY_MAX_BOOST_MULT = 1.10
+RECENCY_MAX_BOOST_MULT = 1.104 # MEASURED: up to 10.4% boost for fresh articles
+BOOST_MODE = "source_date_recency"  # MEASURED: recency relative to source article date, not corpus max
 
-# --- "No good match" detection ---
-# If the best relevance score is below this, the UI says "no close match".
-# These are starting points: run `python evaluate.py` and adjust them to your data.
+# --- "No good match" detection & Non-Relatable Story Floor ---
+# Query-level gate: uses raw cross-encoder probability, not max-normalized blend.
+MIN_RAW_RERANK_THRESHOLD = 0.12   # If top candidate raw rerank probability < 0.12, flag low confidence
+ARTICLE_DISCARD_FLOOR = 0.05      # Filter out completely unrelated candidates from results
+
 MIN_RELEVANCE = {
-    "reranker": 0.05,   # reranker probability (0-1)
-    "dense": 0.50,      # cosine similarity of bge embeddings
-    "tfidf": 0.08,      # cosine similarity of TF-IDF vectors (light mode)
+    "reranker": MIN_RAW_RERANK_THRESHOLD,   # raw reranker probability threshold (0-1)
+    "dense": 0.50,                          # cosine similarity of bge embeddings
+    "tfidf": 0.08,                          # cosine similarity of TF-IDF vectors (light mode)
 }
+
+
+def get_pipeline_version() -> str:
+    """
+    Compute a 16-character fingerprint hash of all models, parameters,
+    and text recipes governing recommendation scores.
+    Any change here auto-triggers full recompute on next ingestion.
+    """
+    import hashlib
+    tokens = [
+        f"embed_model={EMBEDDING_MODEL}",
+        f"embed_rev={EMBEDDING_REVISION}",
+        f"rerank_model={RERANKER_MODEL}",
+        f"rerank_rev={RERANKER_REVISION}",
+        f"embed_len={EMBED_MAX_SEQ_LEN}",
+        f"rerank_len={RERANK_MAX_LEN}",
+        f"rerank_per_side={RERANK_PER_ARTICLE_TOKENS}",
+        f"mmr_lambda={MMR_LAMBDA}",
+        f"mmr_theta={MMR_THETA}",
+        f"recipe_ver={TEXT_RECIPE_VERSION}",
+        # Boost multipliers (changing any of these invalidates stored scores)
+        f"sec_boost={SECTION_BOOST_MULT}",
+        f"subsec_boost={SUBSECTION_BOOST_MULT}",
+        f"pop_boost={POPULARITY_BOOST_MULT}",
+        f"rec_boost={RECENCY_MAX_BOOST_MULT}",
+        f"boost_mode={BOOST_MODE}",
+    ]
+    return hashlib.sha256("|".join(tokens).encode("utf-8")).hexdigest()[:16]
+
 

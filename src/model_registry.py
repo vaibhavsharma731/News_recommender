@@ -21,11 +21,28 @@ def _get(key, factory):
 # ─── Remote Cloud GPU Clients ────────────────────────────────────────────────
 
 class RemoteEmbedderClient:
-    """Wrapper that proxies .encode() calls to a remote GPU server over HTTP."""
+    """Wrapper that proxies .encode() calls to a remote GPU server over HTTP with local fallback."""
 
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, model_name: str = None):
         self.base_url = base_url.rstrip("/")
+        self.model_name = model_name or config.EMBEDDING_MODEL
         self.max_seq_length = getattr(config, "EMBED_MAX_SEQ_LEN", 256)
+        self._local_fallback = None
+
+    def _get_local(self):
+        if self._local_fallback is None:
+            import torch
+            from sentence_transformers import SentenceTransformer
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"[ModelRegistry] Loading local embedder fallback ({self.model_name})...")
+            m = SentenceTransformer(
+                self.model_name,
+                revision=getattr(config, "EMBEDDING_REVISION", None),
+                device=device,
+            )
+            m.max_seq_length = self.max_seq_length
+            self._local_fallback = m
+        return self._local_fallback
 
     def encode(self, texts, batch_size: int = 32, normalize_embeddings: bool = True, show_progress_bar: bool = False, **kwargs) -> np.ndarray:
         is_single = isinstance(texts, str)
@@ -33,51 +50,84 @@ class RemoteEmbedderClient:
         if not batch:
             return np.zeros((0, 768), dtype=np.float32)
 
-        results = []
-        chunk_size = 128  # Batch network requests to prevent timeout on huge payloads
-        for i in range(0, len(batch), chunk_size):
-            sub_batch = batch[i:i + chunk_size]
-            payload = json.dumps({"texts": sub_batch}).encode("utf-8")
-            req = urllib.request.Request(
-                f"{self.base_url}/embed",
-                data=payload,
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                results.extend(data["vectors"])
+        try:
+            results = []
+            chunk_size = 128  # Batch network requests to prevent timeout on huge payloads
+            for i in range(0, len(batch), chunk_size):
+                sub_batch = batch[i:i + chunk_size]
+                payload = json.dumps({"texts": sub_batch}).encode("utf-8")
+                req = urllib.request.Request(
+                    f"{self.base_url}/embed",
+                    data=payload,
+                    headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    results.extend(data["vectors"])
 
-        arr = np.asarray(results, dtype=np.float32)
-        return arr[0] if is_single else arr
+            arr = np.asarray(results, dtype=np.float32)
+            return arr[0] if is_single else arr
+        except Exception as e:
+            print(f"[ModelRegistry Warning] Remote embedder call failed ({e}). Falling back to local model.")
+            return self._get_local().encode(
+                texts,
+                batch_size=batch_size,
+                normalize_embeddings=normalize_embeddings,
+                show_progress_bar=show_progress_bar,
+                **kwargs
+            )
 
 
 class RemoteCrossEncoderClient:
-    """Wrapper that proxies .predict() calls to a remote GPU server over HTTP."""
+    """Wrapper that proxies .predict() calls to a remote GPU server over HTTP with local fallback."""
 
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, model_name: str = None):
         self.base_url = base_url.rstrip("/")
-        self.max_length = getattr(config, "RERANK_MAX_LEN", 160)
+        self.model_name = model_name or config.RERANKER_MODEL
+        self.max_length = getattr(config, "RERANK_MAX_LEN", 512)
+        self._local_fallback = None
+
+    def _get_local(self):
+        if self._local_fallback is None:
+            from sentence_transformers import CrossEncoder
+            print(f"[ModelRegistry] Loading local cross-encoder fallback ({self.model_name})...")
+            self._local_fallback = CrossEncoder(
+                self.model_name,
+                revision=getattr(config, "RERANKER_REVISION", None),
+                max_length=self.max_length,
+            )
+        return self._local_fallback
 
     def predict(self, pairs, batch_size: int = 32, show_progress_bar: bool = False, activation_fn=None, **kwargs) -> np.ndarray:
         if not pairs:
             return np.array([], dtype=np.float32)
 
-        pair_list = [[p[0], p[1]] for p in pairs]
-        results = []
-        chunk_size = 128
-        for i in range(0, len(pair_list), chunk_size):
-            sub_pairs = pair_list[i:i + chunk_size]
-            payload = json.dumps({"pairs": sub_pairs}).encode("utf-8")
-            req = urllib.request.Request(
-                f"{self.base_url}/rerank",
-                data=payload,
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                results.extend(data["logits"])
+        try:
+            pair_list = [[p[0], p[1]] for p in pairs]
+            results = []
+            chunk_size = 128
+            for i in range(0, len(pair_list), chunk_size):
+                sub_pairs = pair_list[i:i + chunk_size]
+                payload = json.dumps({"pairs": sub_pairs}).encode("utf-8")
+                req = urllib.request.Request(
+                    f"{self.base_url}/rerank",
+                    data=payload,
+                    headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    results.extend(data["logits"])
 
-        return np.asarray(results, dtype=np.float32)
+            return np.asarray(results, dtype=np.float32)
+        except Exception as e:
+            print(f"[ModelRegistry Warning] Remote cross-encoder call failed ({e}). Falling back to local model.")
+            return self._get_local().predict(
+                pairs,
+                batch_size=batch_size,
+                show_progress_bar=show_progress_bar,
+                activation_fn=activation_fn,
+                **kwargs
+            )
 
 
 def _check_remote_available(url: str) -> bool:
@@ -101,16 +151,20 @@ def get_embedder(model_name=None):
         if remote_url:
             print(f"[ModelRegistry] Checking remote cloud GPU worker at {remote_url}...")
             if _check_remote_available(remote_url):
-                print(f"[ModelRegistry] 🚀 Connected to Remote Cloud GPU Worker! Embeddings offloaded to GPU.")
-                return RemoteEmbedderClient(remote_url)
+                print(f"[ModelRegistry] [OK] Connected to Remote Cloud GPU Worker! Embeddings offloaded to GPU.")
+                return RemoteEmbedderClient(remote_url, model_name)
             else:
-                print(f"[ModelRegistry] ⚠️ Remote worker at {remote_url} not responding. Falling back to local model.")
+                print(f"[ModelRegistry] [!] Remote worker at {remote_url} not responding. Falling back to local model.")
 
         # Local fallback
         import torch
         from sentence_transformers import SentenceTransformer
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = SentenceTransformer(model_name, device=device)
+        model = SentenceTransformer(
+            model_name,
+            revision=getattr(config, "EMBEDDING_REVISION", None),
+            device=device,
+        )
         model.max_seq_length = config.EMBED_MAX_SEQ_LEN
         return model
 
@@ -124,13 +178,17 @@ def get_cross_encoder(model_name=None):
     def build():
         if remote_url:
             if _check_remote_available(remote_url):
-                print(f"[ModelRegistry] 🚀 Cross-Encoder reranking offloaded to Remote Cloud GPU!")
-                return RemoteCrossEncoderClient(remote_url)
+                print(f"[ModelRegistry] [OK] Cross-Encoder reranking offloaded to Remote Cloud GPU!")
+                return RemoteCrossEncoderClient(remote_url, model_name)
             else:
-                print(f"[ModelRegistry] ⚠️ Remote worker at {remote_url} not responding. Falling back to local cross-encoder.")
+                print(f"[ModelRegistry] [!] Remote worker at {remote_url} not responding. Falling back to local cross-encoder.")
 
         # Local fallback
         from sentence_transformers import CrossEncoder
-        return CrossEncoder(model_name, max_length=config.RERANK_MAX_LEN)
+        return CrossEncoder(
+            model_name,
+            revision=getattr(config, "RERANKER_REVISION", None),
+            max_length=config.RERANK_MAX_LEN,
+        )
 
     return _get(("rerank", model_name, remote_url), build)

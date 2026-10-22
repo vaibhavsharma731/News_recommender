@@ -137,11 +137,42 @@ def ensure_schema() -> bool:
                 "ALTER TABLE article_recommendations "
                 "ADD COLUMN IF NOT EXISTS rerank_score DOUBLE PRECISION"
             ))
+            conn.execute(text(
+                "ALTER TABLE article_recommendations "
+                "ADD COLUMN IF NOT EXISTS rank_raw INTEGER"
+            ))
+            # Track pipeline/model configuration version on recommendations
+            conn.execute(text(
+                "ALTER TABLE article_recommendations "
+                "ADD COLUMN IF NOT EXISTS pipeline_version VARCHAR(32)"
+            ))
             # Track how many EXISTING articles each upload refreshed via reverse-push,
             # so the Editor dashboard can show per-upload history.
             conn.execute(text(
                 "ALTER TABLE ingestion_jobs "
                 "ADD COLUMN IF NOT EXISTS refreshed_articles INTEGER DEFAULT 0"
+            ))
+            # Track pipeline/model configuration version on ingestion jobs
+            conn.execute(text(
+                "ALTER TABLE ingestion_jobs "
+                "ADD COLUMN IF NOT EXISTS pipeline_version VARCHAR(32)"
+            ))
+            # Track token budget statistics on articles
+            conn.execute(text(
+                "ALTER TABLE articles "
+                "ADD COLUMN IF NOT EXISTS embed_token_count INTEGER DEFAULT 0"
+            ))
+            conn.execute(text(
+                "ALTER TABLE articles "
+                "ADD COLUMN IF NOT EXISTS rerank_token_count INTEGER DEFAULT 0"
+            ))
+            conn.execute(text(
+                "ALTER TABLE articles "
+                "ADD COLUMN IF NOT EXISTS is_truncated BOOLEAN DEFAULT FALSE"
+            ))
+            conn.execute(text(
+                "ALTER TABLE articles "
+                "ADD COLUMN IF NOT EXISTS recipe_version VARCHAR(32)"
             ))
             conn.commit()
         return True
