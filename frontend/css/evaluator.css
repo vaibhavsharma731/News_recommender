@@ -1,0 +1,739 @@
+/* ─── Candidate Evaluation & Reason Breakdown Styles ───────────────────────── */
+
+/* ─── Source Article Banner in Inspector ─── */
+.inspector-source-box {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.15) 0%, rgba(56, 189, 248, 0.10) 100%);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+}
+
+.inspector-source-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.inspector-source-tag {
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--brand-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.inspector-source-title {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #ffffff;
+  line-height: 1.35;
+  margin-bottom: 8px;
+}
+
+.inspector-source-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+}
+
+.inspector-source-meta strong {
+  color: #ffffff;
+}
+
+/* ─── Candidate Cards List ─── */
+.inspector-candidates-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.candidate-eval-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.candidate-eval-card:hover {
+  border-color: rgba(168, 85, 247, 0.4);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.candidate-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+  user-select: none;
+  gap: 12px;
+}
+
+.candidate-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.candidate-rank-badge {
+  font-size: 0.88rem;
+  font-weight: 800;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--brand-gradient);
+  color: #ffffff;
+  white-space: nowrap;
+  box-shadow: 0 0 12px rgba(168, 85, 247, 0.4);
+}
+
+.candidate-header-title {
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: #ffffff;
+  line-height: 1.35;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-header-title:hover {
+  color: var(--brand-primary);
+  text-decoration: underline;
+}
+
+.candidate-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.candidate-score-pill {
+  font-size: 0.85rem;
+  font-weight: 800;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.2);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.4);
+}
+
+.candidate-toggle-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-default);
+  color: #ffffff;
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all var(--transition-fast);
+}
+
+.candidate-toggle-btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ─── Evaluation Container ─── */
+.eval-container {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: rgba(13, 13, 20, 0.65);
+}
+
+.candidate-eval-card.collapsed .eval-container {
+  display: none;
+}
+
+/* Candidate Target Banner inside Evaluation block */
+.eval-target-banner {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.eval-target-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.eval-target-badge {
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: rgba(168, 85, 247, 0.25);
+  color: #e9d5ff;
+  border: 1px solid rgba(168, 85, 247, 0.45);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.eval-target-id {
+  font-size: 0.74rem;
+  font-family: 'Consolas', 'Courier New', monospace;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.eval-target-batch {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.eval-target-title {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #ffffff;
+  line-height: 1.35;
+  text-decoration: none;
+}
+
+.eval-target-title:hover {
+  color: var(--brand-primary);
+  text-decoration: underline;
+}
+
+.eval-target-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.78rem;
+  color: #cbd5e1;
+}
+
+.eval-target-meta strong {
+  color: #ffffff;
+}
+
+/* ─── Plain-English Editorial Verdict Banner ─── */
+.eval-plain-verdict {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(168, 85, 247, 0.08) 100%);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+
+.eval-verdict-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.eval-verdict-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.eval-verdict-label {
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #fbbf24;
+}
+
+.eval-verdict-text {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #ffffff;
+  line-height: 1.4;
+}
+
+/* ─── Evaluation Rows & Labels ─── */
+.eval-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.eval-row:last-child {
+  margin-bottom: 0;
+}
+
+.eval-label {
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #ffffff;
+}
+
+/* 1. Chips (High-contrast text) */
+.eval-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.eval-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  line-height: 1.2;
+}
+
+.eval-chip-entity {
+  background: rgba(168, 85, 247, 0.22);
+  color: #ffffff;
+  border: 1px solid rgba(168, 85, 247, 0.5);
+}
+
+.eval-chip-term {
+  background: rgba(56, 189, 248, 0.2);
+  color: #ffffff;
+  border: 1px solid rgba(56, 189, 248, 0.5);
+}
+
+.eval-chip-match {
+  background: rgba(34, 197, 94, 0.18);
+  color: #ffffff;
+  border: 1px solid rgba(34, 197, 94, 0.45);
+}
+
+.eval-chip-diff {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.eval-chip-date {
+  background: rgba(245, 158, 11, 0.2);
+  color: #ffffff;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+}
+
+.eval-chip-batch {
+  background: rgba(99, 102, 241, 0.2);
+  color: #ffffff;
+  border: 1px solid rgba(99, 102, 241, 0.45);
+}
+
+/* 2. Side-by-Side Passage Pair (Balanced, Non-empty) */
+.eval-passage-pair {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 12px;
+  align-items: stretch;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+}
+
+@media (max-width: 820px) {
+  .eval-passage-pair {
+    grid-template-columns: 1fr;
+  }
+}
+
+.eval-passage-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.eval-passage-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.74rem;
+  font-weight: 800;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.eval-passage-tag {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.eval-passage-text {
+  font-size: 0.85rem;
+  color: #f8fafc;
+  line-height: 1.45;
+  font-style: italic;
+  margin: 0;
+}
+
+.eval-passage-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brand-primary);
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-align: center;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+/* 2-Column Grid */
+.eval-grid-2col {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 16px;
+}
+
+@media (max-width: 860px) {
+  .eval-grid-2col {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 3. Score Breakdown Box (High Contrast & No Collisions) */
+.eval-breakdown-box {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+
+.eval-breakdown-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.82rem;
+  padding: 5px 0;
+  color: #f1f5f9;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.eval-breakdown-line:last-child {
+  border-bottom: none;
+}
+
+.eval-line-label {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.eval-val {
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.eval-blend-line {
+  background: rgba(56, 189, 248, 0.08);
+  border-top: 1px solid rgba(56, 189, 248, 0.3);
+  margin-top: 5px;
+  padding: 6px 6px;
+  border-radius: 4px;
+}
+
+.eval-val-highlight {
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-weight: 800;
+  color: #38bdf8;
+  font-size: 0.9rem;
+}
+
+.eval-boost-line {
+  color: #e9d5ff;
+}
+
+.eval-val-boost {
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-weight: 800;
+  color: #c084fc;
+}
+
+.eval-boosted-line {
+  color: #cbd5e1;
+  font-weight: 600;
+}
+
+.eval-calib-line {
+  background: rgba(239, 68, 68, 0.08);
+  padding: 5px 6px;
+  border-radius: 4px;
+  margin-top: 4px;
+}
+
+.eval-val-calib {
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-weight: 800;
+  color: #f87171;
+}
+
+.eval-calib-note {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  line-height: 1.35;
+  padding: 4px 6px 6px 6px;
+  font-style: italic;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.eval-final-line {
+  border-top: 1px solid var(--border-accent);
+  margin-top: 6px;
+  padding-top: 8px;
+  color: #ffffff;
+}
+
+.eval-val-final {
+  font-size: 1.05rem;
+  font-weight: 900;
+  color: #22c55e;
+}
+
+.eval-val-muted {
+  font-size: 0.74rem;
+  color: #94a3b8;
+}
+
+/* 4. 3-Stage Rank & MMR Diversity Progression */
+.eval-progression-box {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.eval-step-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-default);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.eval-step-pill.active {
+  background: rgba(168, 85, 247, 0.25);
+  border-color: rgba(168, 85, 247, 0.5);
+}
+
+.step-num {
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.step-txt {
+  color: #ffffff;
+}
+
+.step-txt strong {
+  color: #38bdf8;
+}
+
+.eval-step-pill.active .step-txt strong {
+  color: #4ade80;
+}
+
+.step-arrow {
+  color: #94a3b8;
+  font-weight: 800;
+  font-size: 0.8rem;
+}
+
+.eval-rank-badge {
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eval-rank-badge.shifted {
+  background: rgba(245, 158, 11, 0.22);
+  color: #fef08a;
+  border: 1px solid rgba(245, 158, 11, 0.5);
+}
+
+.eval-rank-badge.demoted {
+  background: rgba(239, 68, 68, 0.22);
+  color: #fecaca;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+}
+
+.eval-rank-badge.match {
+  background: rgba(34, 197, 94, 0.2);
+  color: #bbf7d0;
+  border: 1px solid rgba(34, 197, 94, 0.45);
+}
+
+/* 5. Method Agreement Grid */
+.eval-method-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.eval-method-tag {
+  font-size: 0.75rem;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: #ffffff;
+}
+
+.eval-agree-badge {
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.eval-agree-badge.agree-high {
+  background: rgba(34, 197, 94, 0.22);
+  color: #ffffff;
+  border: 1px solid rgba(34, 197, 94, 0.5);
+}
+
+.eval-agree-badge.agree-med {
+  background: rgba(56, 189, 248, 0.22);
+  color: #ffffff;
+  border: 1px solid rgba(56, 189, 248, 0.5);
+}
+
+/* 6. Cutoff Margin */
+.eval-margin-badge {
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eval-margin-badge.margin-clear {
+  background: rgba(34, 197, 94, 0.2);
+  color: #ffffff;
+  border: 1px solid rgba(34, 197, 94, 0.45);
+}
+
+.eval-margin-badge.margin-close {
+  background: rgba(245, 158, 11, 0.2);
+  color: #ffffff;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+}
+
+/* ─── Evaluation Modal ─── */
+.eval-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.2s ease;
+}
+
+.eval-modal-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-lg);
+  max-width: 820px;
+  width: 100%;
+  max-height: 92vh;
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.85);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.eval-modal-hdr {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 12px;
+  gap: 12px;
+}
+
+.eval-modal-title {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #ffffff;
+  line-height: 1.35;
+}
+
+.eval-modal-close {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.eval-modal-close:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+}

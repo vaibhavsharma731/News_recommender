@@ -107,6 +107,7 @@ const Tabs = (() => {
     const widget = document.createElement('article');
     widget.className = 'feed-widget';
     widget.dataset.id = article.id;
+    widget._article = article;
 
     const color = sectionColor(article.section);
     const emoji = sectionEmoji(article.section);
@@ -122,6 +123,9 @@ const Tabs = (() => {
       <div class="feed-widget-head">
         <span class="feed-recs-title">✦ Around this story</span>
         <span class="feed-head-right">
+          <button type="button" class="feed-mmr-btn active" data-action="toggle-mmr" title="Toggle MMR diversity on/off (instant 0ms)">
+            <span class="mmr-icon">🔀</span> <span class="mmr-label">MMR: ON</span>
+          </button>
           <span class="feed-conf-slot" data-slot="conf"></span>
           <span class="feed-source-slot" data-slot="source"></span>
         </span>
@@ -147,26 +151,142 @@ const Tabs = (() => {
         <div class="orbit-slot orbit-slot-bottom" data-slot="bottom">${skelTile()}</div>
       </div>`;
 
+    const mmrBtn = widget.querySelector('[data-action="toggle-mmr"]');
+    if (mmrBtn) {
+      mmrBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const currentMmr = widget._useMmr !== false;
+        widget._useMmr = !currentMmr;
+        if (widget._cachedData) {
+          renderWidgetRecs(widget, widget._cachedData, widget._useMmr);
+        }
+      });
+    }
+
     return widget;
   }
 
   /** One recommendation tile that sits around the centre story. */
-  function buildOrbitTile(rec) {
-    const art   = rec.article || rec;
+  function buildOrbitTile(rec, useMmr = true, sourceArticle = null) {
+    const art   = Object.assign({}, rec.article || rec);
+    if (art.rank == null && rec.rank != null) art.rank = rec.rank;
+    if (art.rank_raw == null && rec.rank_raw != null) art.rank_raw = rec.rank_raw;
+    if (art.score == null && rec.score != null) art.score = rec.score;
+    if (art.rerank_score == null && rec.rerank_score != null) art.rerank_score = rec.rerank_score;
     const emoji = sectionEmoji(art.section);
     const thumb = art.image
       ? `<img src="${art.image}" alt="" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'orbit-tile-fallback\\'>${emoji}</div>'" />`
       : `<div class="orbit-tile-fallback">${emoji}</div>`;
-    const score = rec.score != null
-      ? `<span class="orbit-score">${Math.round(rec.score * 100)}%</span>` : '';
+    const scoreVal = rec.score != null ? Math.round(rec.score * 100) : null;
+    const score = scoreVal != null
+      ? `<span class="orbit-score" title="Pairwise Relevance Confidence: ${scoreVal}%">${scoreVal}%</span>` : '';
+
+    // Evidence extraction
+    const rawReason = rec.reason || art.reason || '';
+    let ev = null;
+    if (rawReason && typeof rawReason === 'string' && rawReason.trim().startsWith('{')) {
+      try { ev = JSON.parse(rawReason); } catch (e) { ev = null; }
+    }
+
+    const rawRank = rec.rank_raw || rec.rank || 1;
+    const mmrRank = rec.rank || 1;
+    const hasShift = rawRank !== mmrRank;
+
+    let rankLabel, rankTitle;
+    if (useMmr) {
+      if (hasShift && mmrRank > rawRank) {
+        rankLabel = `#${mmrRank} <span style="opacity:0.85;font-size:0.56rem;">(#${rawRank})</span>`;
+        rankTitle = `MMR Diversified Rank: #${mmrRank} (Demoted from Raw #${rawRank} due to near-duplicate redundancy with top stories)`;
+      } else if (hasShift && mmrRank < rawRank) {
+        rankLabel = `#${mmrRank} <span style="opacity:0.85;font-size:0.56rem;">(#${rawRank})</span>`;
+        rankTitle = `MMR Diversified Rank: #${mmrRank} (Promoted from Raw #${rawRank} to introduce fresh angle)`;
+      } else {
+        rankLabel = `#${mmrRank}`;
+        rankTitle = `MMR Diversified Rank: #${mmrRank} (Matches raw relevance)`;
+      }
+    } else {
+      rankLabel = `Raw #${rawRank}`;
+      rankTitle = `Pure Relevance Rank: #${rawRank} (${scoreVal || 0}% confidence, sorted without MMR diversity)`;
+    }
+    const rankChip = `<span class="orbit-rank-chip" title="${rankTitle}">${rankLabel}</span>`;
+
+    let evidenceHTML = '';
+    if (ev) {
+      const tags = [];
+
+      // 1. MMR Shift badge
+      if (useMmr && hasShift) {
+        if (mmrRank > rawRank) {
+          tags.push(`<span class="orbit-badge orbit-badge-mmr-demote" title="MMR diversity demoted this article from #${rawRank} to #${mmrRank} to prevent duplicate stories">🔀 Redundancy -${mmrRank - rawRank}</span>`);
+        } else {
+          tags.push(`<span class="orbit-badge orbit-badge-mmr-promo" title="MMR diversity promoted this article from #${rawRank} to #${mmrRank} for fresh angle">✨ Diversity +${rawRank - mmrRank}</span>`);
+        }
+      } else if (!useMmr) {
+        tags.push(`<span class="orbit-badge orbit-badge-raw" title="Pure relevance ordering (no MMR penalty applied)">🎯 Raw #${rawRank}</span>`);
+      }
+
+      // 2. Active Boost Badges
+      if (ev.boosts && Array.isArray(ev.boosts) && ev.boosts.length) {
+        ev.boosts.forEach(b => {
+          if (b.includes('Same Section')) {
+            tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b}">⚡ Sec: ${(art.section || 'Match').toUpperCase()}</span>`);
+          } else if (b.includes('Same Subsection')) {
+            tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b}">⚡ Sub: ${(art.subsection || 'Match').toUpperCase()}</span>`);
+          } else if (b.includes('Published within 24h')) {
+            tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b}">⏱️ Fresh &lt;24h</span>`);
+          } else if (b.includes('Editorial')) {
+            tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b}">⭐ Editor's Pick</span>`);
+          } else {
+            tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b}">✨ ${b}</span>`);
+          }
+        });
+      }
+
+      // 3. Entity or Term
+      if (ev.entities && ev.entities.length) {
+        tags.push(`<span class="orbit-badge" title="Shared entity: ${ev.entities.join(', ')}">📍 ${ev.entities[0]}</span>`);
+      } else if (ev.terms && ev.terms.length) {
+        tags.push(`<span class="orbit-badge" title="Shared topic keywords: ${ev.terms.join(', ')}">🏷️ ${ev.terms[0]}</span>`);
+      }
+
+      // 4. Signal agreement
+      if (ev.agreement_count && ev.agreement_count >= 2) {
+        tags.push(`<span class="orbit-badge" title="Signals agreed: ${ev.signals ? ev.signals.join(' + ') : `${ev.agreement_count}/3 methods`}">⚡ ${ev.agreement_count}/3</span>`);
+      }
+
+      // 5. Inspect Evaluation Breakdown
+      tags.push(`<span class="orbit-badge orbit-badge-eval" title="Inspect complete grounded evaluation" style="cursor:pointer;background:rgba(168,85,247,0.2);color:#c084fc;border:1px solid rgba(168,85,247,0.4);font-weight:700;">🔬 Eval</span>`);
+
+      const tagsHTML = tags.length
+        ? `<div class="orbit-tile-badges">${tags.join('')}</div>`
+        : '';
+
+      let summaryText = ev.summary || '';
+      if (ev.boosts && ev.boosts.length) {
+        summaryText = `${summaryText} • Active Boosts: ${ev.boosts.join(', ')}`;
+      }
+      if (useMmr && hasShift) {
+        summaryText = `[MMR Shift #${rawRank} ➔ #${mmrRank}] ${summaryText}`;
+      } else if (!useMmr) {
+        summaryText = `[Pure Relevance Raw #${rawRank}] ${summaryText}`;
+      }
+
+      const summaryHTML = summaryText
+        ? `<div class="orbit-tile-reason" title="${summaryText.replace(/"/g, '&quot;')}">💡 ${ev.summary || summaryText}</div>`
+        : '';
+      evidenceHTML = `${tagsHTML}${summaryHTML}`;
+    } else if (rawReason && !rawReason.startsWith('Rank #')) {
+      evidenceHTML = `<div class="orbit-tile-reason" title="${rawReason}">💡 ${rawReason}</div>`;
+    }
 
     const tile = document.createElement('div');
     tile.className = 'orbit-tile';
     tile.innerHTML = `
-      <div class="orbit-tile-thumb">${thumb}${score}</div>
+      <div class="orbit-tile-thumb">${thumb}${rankChip}${score}</div>
       <div class="orbit-tile-body">
         <div class="orbit-tile-section">${(art.section || 'General')}</div>
-        <div class="orbit-tile-title">${art.title}</div>
+        <div class="orbit-tile-title" title="${art.title}">${art.title}</div>
+        ${evidenceHTML}
         ${art.created_at ? `<div class="orbit-tile-meta" title="Uploaded to the system ${uploadStamp(art.created_at)}">🕘 ${uploadStamp(art.created_at)}</div>` : ''}
       </div>`;
 
@@ -175,6 +295,28 @@ const Tabs = (() => {
       tile.title = 'Open full article';
       tile.addEventListener('click', () => window.open(art.url, '_blank', 'noopener'));
     }
+
+    // Connect Evaluation Breakdown modal on click of Eval badge or Reason text
+    tile._sourceArticle = sourceArticle;
+    tile._rec = rec;
+    tile._useMmr = useMmr;
+
+    const evalTrigger = tile.querySelector('.orbit-badge-eval');
+    const reasonEl = tile.querySelector('.orbit-tile-reason');
+    const handleOpenEval = (e) => {
+      e.stopPropagation();
+      const parentWidget = tile.closest('.feed-widget');
+      const sourceArt = tile._sourceArticle || parentWidget?._article || parentWidget?._cachedData?.source_article || parentWidget?._cachedData?.story || null;
+      if (window.Evaluator) {
+        window.Evaluator.showModal(rec, sourceArt, art);
+      }
+    };
+    if (evalTrigger) evalTrigger.addEventListener('click', handleOpenEval);
+    if (reasonEl) {
+      reasonEl.style.cursor = 'pointer';
+      reasonEl.addEventListener('click', handleOpenEval);
+    }
+
     return tile;
   }
 
@@ -199,7 +341,29 @@ const Tabs = (() => {
   }
 
   /** Distribute the returned recommendations around the centre. */
-  function renderWidgetRecs(widget, data) {
+  function renderWidgetRecs(widget, data, useMmr) {
+    widget._cachedData = data;
+    if (data && data.source_article) {
+      widget._article = data.source_article;
+    }
+    if (useMmr === undefined) {
+      useMmr = widget._useMmr !== undefined ? widget._useMmr : (State.get().diversify !== false);
+    }
+    widget._useMmr = useMmr;
+
+    const mmrBtn = widget.querySelector('[data-action="toggle-mmr"]');
+    if (mmrBtn) {
+      if (useMmr) {
+        mmrBtn.className = 'feed-mmr-btn active';
+        mmrBtn.innerHTML = '<span class="mmr-icon">🔀</span> <span class="mmr-label">MMR: ON</span>';
+        mmrBtn.title = 'MMR Diversity ON: near-duplicate wire stories suppressed. Click to switch to Pure Relevance (RAW).';
+      } else {
+        mmrBtn.className = 'feed-mmr-btn inactive';
+        mmrBtn.innerHTML = '<span class="mmr-icon">🎯</span> <span class="mmr-label">RAW RANK</span>';
+        mmrBtn.title = 'Pure Relevance RAW: strict score order without MMR penalty. Click to switch to MMR Diversity.';
+      }
+    }
+
     const chipSlot = widget.querySelector('[data-slot="source"]');
     if (chipSlot) chipSlot.innerHTML = sourceChip(data.source);
 
@@ -226,14 +390,27 @@ const Tabs = (() => {
     };
     Object.values(slots).forEach(s => { if (s) s.innerHTML = ''; });
 
-    const recs = (data.recommendations || [])
-      .filter(r => String((r.article || r).id) !== String(widget.dataset.id));
+    let recs = (data.recommendations || [])
+      .filter(r => String((r.article || r).id) !== String(widget.dataset.id))
+      .slice();
 
     if (!recs.length) {
       const stage = widget.querySelector('.orbit-stage');
       if (stage) stage.insertAdjacentHTML('beforeend',
         '<div class="feed-recs-empty">No close matches found for this story.</div>');
       return;
+    }
+
+    // Sort according to active MMR mode:
+    if (useMmr) {
+      // MMR Diversified: by rank (1, 2, 3...)
+      recs.sort((a, b) => (a.rank || 0) - (b.rank || 0));
+    } else {
+      // Pure Relevance without MMR: by rank_raw if available, else by score descending
+      recs.sort((a, b) => {
+        if (a.rank_raw != null && b.rank_raw != null) return a.rank_raw - b.rank_raw;
+        return (b.score || 0) - (a.score || 0);
+      });
     }
 
     // Spread the recommendations around the centre using the plan above.
@@ -243,7 +420,7 @@ const Tabs = (() => {
       const slot = slots[name];
       if (!slot) return;
       for (let k = 0; k < plan[name] && assign < recs.length; k++) {
-        slot.appendChild(buildOrbitTile(recs[assign++]));
+        slot.appendChild(buildOrbitTile(recs[assign++], useMmr, widget._article));
       }
     });
   }
@@ -469,6 +646,159 @@ const Tabs = (() => {
     }
   }
 
+  // ─── QUICK STORY FINDER (Item-to-Item Fast Title Search & Selection) ──────────
+  function initStoryFinder() {
+    const box = document.getElementById('story-finder-box');
+    const input = document.getElementById('story-finder-input');
+    const clearBtn = document.getElementById('story-finder-clear');
+    const dropdown = document.getElementById('story-finder-dropdown');
+    if (!box || !input || !dropdown) return;
+
+    let selectedIndex = -1;
+    let currentMatches = [];
+
+    function renderMatches(matches) {
+      currentMatches = matches;
+      selectedIndex = -1;
+      if (!matches.length) {
+        dropdown.innerHTML = '<div class="story-finder-item-empty">No matching articles found in database.</div>';
+        dropdown.classList.remove('hidden');
+        return;
+      }
+      dropdown.innerHTML = matches.map((art, idx) => {
+        const sec = (art.section || 'General').toUpperCase();
+        return `
+          <div class="story-finder-item" data-idx="${idx}" data-id="${art.id}">
+            <div class="story-finder-item-content">
+              <div class="story-finder-item-title" title="${art.title}">${art.title}</div>
+              <div class="story-finder-item-meta">
+                <span class="story-finder-item-sec">${sec}</span>
+                ${art.date ? `<span>📅 ${art.date}</span>` : ''}
+              </div>
+            </div>
+            <span style="font-size:0.75rem;opacity:0.6;">➔</span>
+          </div>`;
+      }).join('');
+      dropdown.classList.remove('hidden');
+    }
+
+    async function searchTitles(query) {
+      const q = (query || '').trim().toLowerCase();
+      const articles = await loadAllArticles(false);
+      if (!articles || !articles.length) return;
+
+      if (!q) {
+        // Show top 12 recommended stories when clicking without typing
+        renderMatches(articles.slice(0, 12));
+        return;
+      }
+
+      const qTerms = q.split(/\s+/).filter(Boolean);
+      const matches = articles.filter(a => {
+        const titleLow = (a.title || '').toLowerCase();
+        const secLow = (a.section || '').toLowerCase();
+        return qTerms.every(term => titleLow.includes(term) || secLow.includes(term));
+      }).slice(0, 15);
+
+      renderMatches(matches);
+    }
+
+    function selectArticle(article) {
+      if (!article) return;
+      input.value = article.title;
+      if (clearBtn) clearBtn.classList.remove('hidden');
+      dropdown.classList.add('hidden');
+
+      const feed = document.getElementById('article-feed');
+      if (!feed) return;
+
+      // Check if widget is already in DOM
+      let existingWidget = feed.querySelector(`.feed-widget[data-id="${article.id}"]`);
+      if (existingWidget) {
+        loadWidgetRecommendations(existingWidget);
+        existingWidget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        existingWidget.classList.add('widget-highlighted');
+        setTimeout(() => existingWidget.classList.remove('widget-highlighted'), 2600);
+      } else {
+        // Prepend directly to top of feed so user sees it immediately
+        const newWidget = buildFeedWidget(article);
+        feed.prepend(newWidget);
+        loadWidgetRecommendations(newWidget);
+        newWidget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        newWidget.classList.add('widget-highlighted');
+        setTimeout(() => newWidget.classList.remove('widget-highlighted'), 2600);
+      }
+    }
+
+    input.addEventListener('focus', () => {
+      searchTitles(input.value);
+    });
+
+    input.addEventListener('input', () => {
+      if (clearBtn) {
+        if (input.value) clearBtn.classList.remove('hidden');
+        else clearBtn.classList.add('hidden');
+      }
+      searchTitles(input.value);
+    });
+
+    dropdown.addEventListener('click', (e) => {
+      const item = e.target.closest('.story-finder-item');
+      if (item) {
+        const idx = parseInt(item.dataset.idx, 10);
+        if (currentMatches[idx]) {
+          selectArticle(currentMatches[idx]);
+        }
+      }
+    });
+
+    input.addEventListener('keydown', (e) => {
+      const items = dropdown.querySelectorAll('.story-finder-item');
+      if (dropdown.classList.contains('hidden') || !items.length) {
+        if (e.key === 'ArrowDown') {
+          searchTitles(input.value);
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        selectedIndex = (selectedIndex + 1) % items.length;
+        items.forEach((it, i) => it.classList.toggle('active', i === selectedIndex));
+        items[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        selectedIndex = (selectedIndex - 1 + items.length) % items.length;
+        items.forEach((it, i) => it.classList.toggle('active', i === selectedIndex));
+        items[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (selectedIndex >= 0 && currentMatches[selectedIndex]) {
+          selectArticle(currentMatches[selectedIndex]);
+        } else if (currentMatches.length > 0) {
+          selectArticle(currentMatches[0]);
+        }
+      } else if (e.key === 'Escape') {
+        dropdown.classList.add('hidden');
+      }
+    });
+
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        input.value = '';
+        clearBtn.classList.add('hidden');
+        dropdown.classList.add('hidden');
+        buildFeed();
+      });
+    }
+
+    document.addEventListener('click', (e) => {
+      if (!box.contains(e.target)) {
+        dropdown.classList.add('hidden');
+      }
+    });
+  }
+
   // ─── INITIALIZATION ─────────────────────────────────────────────────────────
   function init() {
     const nav = document.getElementById('tabs-nav');
@@ -503,6 +833,7 @@ const Tabs = (() => {
       });
     });
 
+    initStoryFinder();
     buildFeed();
   }
 
@@ -516,7 +847,7 @@ const Tabs = (() => {
     }
   }
 
-  return { init, switchTab, performSearch, populateArticlePicker, buildFeed, reloadCurrentTab };
+  return { init, switchTab, performSearch, populateArticlePicker, buildFeed, reloadCurrentTab, get _allArticlesCache() { return allArticlesCache; } };
 })();
 
 // Expose to window so app.js can detect and call Tabs methods

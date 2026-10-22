@@ -54,7 +54,17 @@ window.UI = { showToast };
 
 
 // ─── Article Card ────────────────────────────────────────────────────────────
-function buildArticleCard(article, { score = null, reason = null, compact = false } = {}) {
+function buildArticleCard(article, {
+  score = null,
+  reason = null,
+  calibrated_score = null,
+  confidence_band = null,
+  margin = null,
+  agreement_count = null,
+  rank = null,
+  rank_raw = null,
+  compact = false
+} = {}) {
   const card = document.createElement('div');
   card.className = 'article-card animate-scale';
   card.dataset.id = article.id;
@@ -63,8 +73,44 @@ function buildArticleCard(article, { score = null, reason = null, compact = fals
   const emoji   = sectionEmoji(article.section);
   const imgSrc  = article.image || '';
 
-  const scoreHTML = score !== null
-    ? `<span class="badge badge-score">Match: ${Math.round(score * 100)}%</span>` : '';
+  // Parse structured evidence JSON if present
+  let ev = null;
+  if (reason && typeof reason === 'string' && reason.trim().startsWith('{')) {
+    try {
+      ev = JSON.parse(reason);
+    } catch (e) {
+      ev = null;
+    }
+  }
+
+  // Resolve confidence metrics from unboosted calibrated probability
+  const conf = (ev && ev.confidence) ? ev.confidence : {};
+  const finalProb = conf.calibrated_prob ?? calibrated_score ?? score;
+  const band = conf.band ?? confidence_band ?? (finalProb !== null ? (finalProb >= 0.65 ? 'HIGH' : finalProb >= 0.35 ? 'MEDIUM' : 'LOW') : null);
+  const agreement = conf.agreement_count ?? agreement_count ?? (ev ? ev.agreement_count : null);
+  const marginVal = conf.margin ?? margin;
+
+  // Build Confidence & Agreement Badges
+  let scoreHTML = '';
+  if (finalProb !== null) {
+    const pct = Math.round(finalProb * 100);
+    if (band === 'HIGH') {
+      scoreHTML = `<span class="badge badge-conf badge-conf-high" title="Calibrated Empirical Probability: ${pct}%">🟢 ${pct}% High</span>`;
+    } else if (band === 'MEDIUM') {
+      scoreHTML = `<span class="badge badge-conf badge-conf-med" title="Calibrated Empirical Probability: ${pct}%">🟡 ${pct}% Med</span>`;
+    } else {
+      scoreHTML = `<span class="badge badge-conf badge-conf-low" title="Calibrated Empirical Probability: ${pct}%">⚪ ${pct}% Low</span>`;
+    }
+  }
+
+  const agreeHTML = (agreement && agreement >= 2)
+    ? `<span class="badge badge-agreement" title="Agreement across retrieval methods">⚡ ${agreement}/3 Agreed</span>`
+    : '';
+
+  const marginHTML = (marginVal && marginVal >= 0.03)
+    ? `<span class="badge badge-margin" title="Confidence margin over next candidate">+${Math.round(marginVal * 100)}% margin</span>`
+    : '';
+
   const liveHTML  = article.is_live
     ? `<span class="badge badge-live">🔴 LIVE</span>` : '';
   const sectionHTML = article.section
@@ -72,12 +118,43 @@ function buildArticleCard(article, { score = null, reason = null, compact = fals
   const subHTML = article.subsection
     ? `<span class="badge badge-section">${article.subsection.toUpperCase()}</span>` : '';
 
-  const reasonHTML = reason
-    ? `<div class="card-reason">💡 ${reason}</div>` : '';
+  // Deterministic Evidence Box
+  let evidenceHTML = '';
+  if (ev) {
+    const entitiesHTML = (ev.entities || []).map(e => `<span class="evidence-tag entity-tag">📍 ${e}</span>`).join('');
+    const termsHTML = (ev.terms || []).slice(0, 3).map(t => `<span class="evidence-tag term-tag">🏷️ ${t}</span>`).join('');
+    const boostsHTML = (ev.boosts || []).slice(0, 2).map(b => `<span class="evidence-tag boost-tag">✨ ${b}</span>`).join('');
+    const quoteHTML = ev.best_sentence
+      ? `<div class="evidence-quote"><span class="quote-icon">❝</span> ${ev.best_sentence}</div>`
+      : '';
+
+    evidenceHTML = `
+      <div class="card-evidence-box">
+        <div class="evidence-tags">
+          ${entitiesHTML}
+          ${termsHTML}
+          ${boostsHTML}
+        </div>
+        ${quoteHTML}
+      </div>`;
+  } else if (reason) {
+    evidenceHTML = `<div class="card-reason">💡 ${reason}</div>`;
+  }
 
   const thumbHTML = imgSrc
     ? `<img src="${imgSrc}" alt="${article.title}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'card-thumb-fallback\\'>${emoji}</div>'" />`
     : `<div class="card-thumb-fallback">${emoji}</div>`;
+
+  let rankHTML = '';
+  if (rank != null) {
+    const rawR = rank_raw != null ? rank_raw : rank;
+    const isShifted = rawR !== rank;
+    const rankTitle = isShifted
+      ? `MMR Rank #${rank} (Raw Relevance was #${rawR})`
+      : `Rank #${rank}`;
+    const shiftLabel = isShifted ? `<span style="opacity:0.85;font-size:0.7em;">(#${rawR})</span>` : '';
+    rankHTML = `<span class="badge" style="background:#2563eb;color:#fff;font-weight:700;" title="${rankTitle}">#${rank} ${shiftLabel}</span>`;
+  }
 
   card.innerHTML = `
     <div class="card-thumb">
@@ -85,10 +162,10 @@ function buildArticleCard(article, { score = null, reason = null, compact = fals
       <div class="card-section-strip">${sectionHTML}${subHTML}</div>
     </div>
     <div class="card-body">
-      <div class="card-badges">${liveHTML}${scoreHTML}</div>
+      <div class="card-badges">${rankHTML}${liveHTML}${scoreHTML}${agreeHTML}${marginHTML}</div>
       <div class="card-title">${article.title}</div>
       <div class="card-snippet">${article.snippet || ''}</div>
-      ${reasonHTML}
+      ${evidenceHTML}
     </div>
     <div class="card-footer">
       <div class="card-meta-info">
@@ -124,8 +201,14 @@ function renderCards(container, items, { compact = false } = {}) {
   items.forEach(item => {
     const art  = item.article || item;
     const card = buildArticleCard(art, {
-      score:   item.score  ?? null,
-      reason:  item.reason ?? null,
+      score:            item.score            ?? null,
+      calibrated_score: item.calibrated_score ?? item.score ?? null,
+      confidence_band:  item.confidence_band  ?? null,
+      margin:           item.margin           ?? null,
+      agreement_count:  item.agreement_count  ?? null,
+      rank:             item.rank             ?? null,
+      rank_raw:         item.rank_raw         ?? null,
+      reason:           item.reason           ?? null,
       compact,
     });
     container.appendChild(card);

@@ -29,6 +29,10 @@ const Editor = (() => {
     dom.inspectorSelect = document.getElementById('inspector-article-select');
     dom.inspectorBody = document.getElementById('inspector-table-body');
     dom.inspectorEmpty = document.getElementById('inspector-empty');
+    dom.inspectorSourceBox = document.getElementById('inspector-source-box');
+    dom.inspectorCandidatesList = document.getElementById('inspector-candidates-list');
+    dom.inspectorActions = document.getElementById('inspector-actions');
+    dom.btnToggleAll = document.getElementById('btn-toggle-all-candidates');
     dom.recentJobsBody = document.getElementById('recent-jobs-body');
   }
 
@@ -109,6 +113,29 @@ const Editor = (() => {
     if (dom.inspectorSelect) {
       dom.inspectorSelect.addEventListener('change', (e) => {
         if (e.target.value) inspectArticle(e.target.value);
+      });
+    }
+
+    // 8. Toggle All Candidate Breakdowns
+    if (dom.btnToggleAll) {
+      dom.btnToggleAll.addEventListener('click', () => {
+        const cards = dom.inspectorCandidatesList ? dom.inspectorCandidatesList.querySelectorAll('.candidate-eval-card') : [];
+        if (!cards.length) return;
+        const someCollapsed = Array.from(cards).some(c => c.classList.contains('collapsed'));
+        cards.forEach(c => {
+          c.classList.toggle('collapsed', !someCollapsed);
+          c.classList.toggle('expanded', someCollapsed);
+          const btn = c.querySelector('.candidate-toggle-btn');
+          if (btn) {
+            btn.querySelector('.toggle-icon').textContent = someCollapsed ? '▴' : '▾';
+            btn.querySelector('.toggle-text').textContent = someCollapsed ? 'Hide' : 'Inspect';
+            btn.setAttribute('aria-expanded', someCollapsed);
+          }
+        });
+        const icon = document.getElementById('toggle-all-icon');
+        const label = document.getElementById('toggle-all-label');
+        if (icon) icon.textContent = someCollapsed ? '▲' : '▼';
+        if (label) label.textContent = someCollapsed ? 'Collapse All Breakdowns' : 'Expand All Breakdowns';
       });
     }
   }
@@ -426,38 +453,70 @@ const Editor = (() => {
     }
   }
 
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   async function inspectArticle(articleId) {
-    if (!dom.inspectorBody) return;
-    dom.inspectorBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;">Fetching from PostgreSQL in sub-5ms...</td></tr>';
+    if (!dom.inspectorCandidatesList && !dom.inspectorBody) return;
+
+    if (dom.inspectorCandidatesList) {
+      dom.inspectorCandidatesList.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-secondary);">Fetching precomputed recommendations &amp; grounded 7-item evaluation in sub-5ms from PostgreSQL...</div>';
+    }
+    if (dom.inspectorSourceBox) dom.inspectorSourceBox.style.display = 'none';
+    if (dom.inspectorActions) dom.inspectorActions.style.display = 'none';
 
     try {
       const res = await Api.precomputedRecs(articleId);
       const recs = res.recommendations || [];
+      const sourceArt = res.source_article || null;
 
       if (recs.length === 0) {
-        dom.inspectorBody.innerHTML = '';
+        if (dom.inspectorCandidatesList) dom.inspectorCandidatesList.innerHTML = '';
         if (dom.inspectorEmpty) dom.inspectorEmpty.classList.remove('hidden');
         return;
       }
 
       if (dom.inspectorEmpty) dom.inspectorEmpty.classList.add('hidden');
-      dom.inspectorBody.innerHTML = '';
+      if (dom.inspectorActions) dom.inspectorActions.style.display = 'block';
 
-      recs.forEach(rec => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td><span class="rank-badge">#${rec.rank}</span></td>
-          <td style="font-weight:600;color:var(--text-primary);max-width:300px;">
-            <a href="${rec.url || '#'}" target="_blank" style="color:inherit;text-decoration:none;">${rec.title}</a>
-          </td>
-          <td><span class="cat-pill" style="font-size:0.75rem;">${rec.section || 'General'}</span></td>
-          <td><span class="score-badge">${(rec.score * 100).toFixed(1)}%</span></td>
-          <td style="font-size:0.75rem;color:var(--text-muted);">${rec.method || 'neural_hybrid_rerank'}</td>
+      // 1. Render Source Article Banner
+      if (sourceArt && dom.inspectorSourceBox) {
+        const srcLead = sourceArt.description || sourceArt.body?.slice(0, 220) || '';
+        const srcDate = sourceArt.date ? new Date(sourceArt.date).toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'}) : 'Recent';
+        dom.inspectorSourceBox.innerHTML = `
+          <div class="inspector-source-hdr">
+            <span class="inspector-source-tag">📰 Source Article for Precomputed Recommendations</span>
+            <span class="cat-pill">${escapeHtml(sourceArt.section || 'General')}</span>
+          </div>
+          <div class="inspector-source-title">${escapeHtml(sourceArt.title)}</div>
+          <p style="font-size:0.83rem;color:var(--text-secondary);margin:4px 0 10px 0;line-height:1.45;font-style:italic;">
+            "${escapeHtml(srcLead)}"
+          </p>
+          <div class="inspector-source-meta">
+            <span>Section: <strong>${escapeHtml(sourceArt.section || 'General')}</strong></span>
+            ${sourceArt.subsection ? `<span>Subsection: <strong>${escapeHtml(sourceArt.subsection)}</strong></span>` : ''}
+            <span>Published: <strong>${srcDate}</strong></span>
+            <span>⚡ Storage: <strong>PostgreSQL article_recommendations table (${recs.length} candidates precomputed)</strong></span>
+          </div>
         `;
-        dom.inspectorBody.appendChild(tr);
-      });
+        dom.inspectorSourceBox.style.display = 'block';
+      }
+
+      // 2. Render 7-item Candidate Cards with Grounded Evaluation
+      if (dom.inspectorCandidatesList && window.Evaluator) {
+        dom.inspectorCandidatesList.innerHTML = '';
+        recs.forEach((rec, idx) => {
+          // Open top 3 candidates by default so mentor immediately sees all 7 evaluation items
+          const card = window.Evaluator.renderCard(rec, sourceArt, idx, idx < 3);
+          dom.inspectorCandidatesList.appendChild(card);
+        });
+      }
     } catch (err) {
-      dom.inspectorBody.innerHTML = `<tr><td colspan="5" style="color:var(--color-danger);text-align:center;">Failed: ${err.message}</td></tr>`;
+      if (dom.inspectorCandidatesList) {
+        dom.inspectorCandidatesList.innerHTML = `<div style="color:var(--color-danger);text-align:center;padding:24px;">Failed to fetch recommendations: ${err.message}</div>`;
+      }
     }
   }
 

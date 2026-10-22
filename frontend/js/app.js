@@ -124,25 +124,152 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // ─── 5. CATEGORIES & RIGHT PANEL PILLS ─────────────────────────────────────
-  const categoryPillsContainer = document.getElementById('category-pills');
-  const viewAllBtn = document.getElementById('rp-view-all');
+  // ─── 5. RANDOMIZER BAR (RIGHT PANEL) ─────────────────────────────────────
+  const randomizerFeed = document.getElementById('randomizer-feed');
+  const randomizerShuffleBtn = document.getElementById('randomizer-shuffle-btn');
+  const randomizerCountEl = document.getElementById('randomizer-count');
+  const RANDOMIZER_SIZE = 6; // how many random articles to show at a time
 
-  function syncCategoryPills(activeSec) {
-    if (!categoryPillsContainer) return;
-    categoryPillsContainer.querySelectorAll('.cat-pill').forEach(pill => {
-      pill.classList.toggle('active', (pill.dataset.section || '') === (activeSec || ''));
+  function buildRandomizerWidget(article) {
+    const emoji = sectionEmoji(article.section);
+    const color = sectionColor(article.section);
+    const thumb = article.image
+      ? `<img src="${article.image}" alt="" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'randomizer-widget-thumb-fallback\\'>${emoji}</div>'" />`
+      : `<div class="randomizer-widget-thumb-fallback">${emoji}</div>`;
+
+    const widget = document.createElement('div');
+    widget.className = 'randomizer-widget';
+    widget.title = article.title;
+    widget.innerHTML = `
+      <div class="randomizer-widget-thumb">
+        ${thumb}
+        <div class="randomizer-widget-section" style="color:${color}">${(article.section || 'General').toUpperCase()}</div>
+      </div>
+      <div class="randomizer-widget-body">
+        <div class="randomizer-widget-title">${article.title}</div>
+        <div class="randomizer-widget-meta">
+          <span>📅 ${article.date || 'Recent'}</span>
+        </div>
+      </div>`;
+
+    // On click, scroll to or create the widget in the main feed
+    widget.addEventListener('click', () => {
+      const feed = document.getElementById('article-feed');
+      if (!feed) return;
+
+      // Try find existing widget in feed
+      const existing = feed.querySelector(`.feed-widget[data-id="${article.id}"]`);
+      if (existing) {
+        existing.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        existing.classList.add('widget-highlighted');
+        setTimeout(() => existing.classList.remove('widget-highlighted'), 2600);
+      } else {
+        // Use Tabs to prepend the widget
+        if (window.Tabs && window.Tabs.buildFeed) {
+          const storyFinderInput = document.getElementById('story-finder-input');
+          if (storyFinderInput) {
+            storyFinderInput.value = article.title;
+            storyFinderInput.dispatchEvent(new Event('input'));
+            // Simulate selecting first match after a brief delay
+            setTimeout(() => {
+              const firstItem = document.querySelector('.story-finder-item');
+              if (firstItem) firstItem.click();
+            }, 300);
+          }
+        }
+      }
+    });
+
+    return widget;
+  }
+
+  function renderRandomizerSkeletons() {
+    if (!randomizerFeed) return;
+    randomizerFeed.innerHTML = '';
+    for (let i = 0; i < RANDOMIZER_SIZE; i++) {
+      const skel = document.createElement('div');
+      skel.className = 'randomizer-skeleton';
+      skel.innerHTML = `
+        <div class="randomizer-skeleton-thumb"></div>
+        <div class="randomizer-skeleton-body">
+          <div class="randomizer-skeleton-line"></div>
+          <div class="randomizer-skeleton-line"></div>
+        </div>`;
+      randomizerFeed.appendChild(skel);
+    }
+  }
+
+  /** Fisher-Yates shuffle to pick N random articles from the cache */
+  function pickRandom(arr, n) {
+    const copy = arr.slice();
+    const result = [];
+    for (let i = 0; i < n && copy.length > 0; i++) {
+      const idx = Math.floor(Math.random() * copy.length);
+      result.push(copy.splice(idx, 1)[0]);
+    }
+    return result;
+  }
+
+  async function shuffleRandomizer() {
+    if (!randomizerFeed) return;
+
+    // Add animation class to button
+    if (randomizerShuffleBtn) {
+      randomizerShuffleBtn.classList.add('shuffling');
+      setTimeout(() => randomizerShuffleBtn.classList.remove('shuffling'), 600);
+    }
+
+    // Show skeletons briefly for visual feedback
+    renderRandomizerSkeletons();
+
+    // Wait for articles to be loaded
+    let articles = [];
+    try {
+      // Reuse the Tabs article cache if available
+      if (window.Tabs && window.Tabs._allArticlesCache) {
+        articles = window.Tabs._allArticlesCache;
+      }
+      if (!articles || !articles.length) {
+        const data = await Api.articles({ page: 1, perPage: 200, sort: 'confidence' });
+        articles = data.articles || [];
+      }
+    } catch (e) {
+      console.warn('Randomizer: could not load articles', e);
+    }
+
+    if (!articles.length) {
+      randomizerFeed.innerHTML = `
+        <div class="randomizer-empty">
+          <span>📰</span>
+          <p>No articles available yet. Ingest data from the Editor Studio.</p>
+        </div>`;
+      return;
+    }
+
+    // Update count
+    if (randomizerCountEl) {
+      randomizerCountEl.textContent = `${articles.length} stories`;
+    }
+
+    // Pick random articles
+    const picks = pickRandom(articles, RANDOMIZER_SIZE);
+
+    // Small delay for skeleton-to-widget transition
+    await new Promise(r => setTimeout(r, 200));
+
+    randomizerFeed.innerHTML = '';
+    picks.forEach(art => {
+      randomizerFeed.appendChild(buildRandomizerWidget(art));
     });
   }
 
-  if (viewAllBtn) {
-    viewAllBtn.addEventListener('click', () => {
-      State.set({ activeSection: '' });
-      if (sectionFilter) sectionFilter.value = '';
-      syncCategoryPills('');
-      triggerActiveTabReload();
-    });
+  // Shuffle button event
+  if (randomizerShuffleBtn) {
+    randomizerShuffleBtn.addEventListener('click', shuffleRandomizer);
   }
+
+  // Expose shuffleRandomizer so it can be called after data loads
+  window.shuffleRandomizer = shuffleRandomizer;
 
   // ─── 6. HELPER: RELOAD ACTIVE TAB ──────────────────────────────────────────
   function triggerActiveTabReload() {
@@ -182,14 +309,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     }
 
-    // Populate Right-Panel Category Pills
-    if (categoryPillsContainer) {
-      buildCategoryPills(sections, categoryPillsContainer, (selectedSection) => {
-        State.set({ activeSection: selectedSection });
-        if (sectionFilter) sectionFilter.value = selectedSection;
-        triggerActiveTabReload();
-      });
-    }
+    // Category filtering is now handled by the sidebar dropdown only.
+    // The right panel is the Randomizer Bar (populated after Tabs init).
 
     // 3. Initialize Hero Carousel
     if (loadingText) loadingText.textContent = 'Loading top trending stories...';
@@ -249,6 +370,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (hasArticles) {
           try { await Hero.init(); } catch (e) { console.warn('Hero init skipped:', e.message); }
           Tabs.populateArticlePicker();
+          // Populate the randomizer bar after a short delay so articles cache is ready
+          setTimeout(() => shuffleRandomizer(), 800);
         }
       }
     }
@@ -259,6 +382,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (hasArticles) {
         try { await Hero.init(); } catch (e) { console.warn('Hero init skipped:', e.message); }
         Tabs.populateArticlePicker();
+        setTimeout(() => shuffleRandomizer(), 800);
       }
     };
 

@@ -22,6 +22,7 @@
   <link rel="stylesheet" href="css/toast.css" />
   <link rel="stylesheet" href="css/animations.css" />
   <link rel="stylesheet" href="css/editor.css" />
+  <link rel="stylesheet" href="css/evaluator.css" />
 </head>
 <body>
 
@@ -265,32 +266,38 @@
           <div class="upload-card-header">
             <div class="upload-card-title">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-              Precomputed Recommendations Inspector (Sub-5ms Query)
+              Precomputed Recommendations Inspector &amp; Candidate Evaluator
+            </div>
+            <div id="inspector-actions" style="display:none;">
+              <button class="candidate-toggle-btn" id="btn-toggle-all-candidates" type="button" style="padding:6px 12px;font-weight:700;">
+                <span id="toggle-all-icon">↕️</span> <span id="toggle-all-label">Collapse All Breakdowns</span>
+              </button>
             </div>
           </div>
           <p style="font-size:0.83rem;color:var(--text-secondary);margin-bottom:12px;">
-            Select any article from PostgreSQL to inspect its saved Top 10 recommendations:
+            Select any article from PostgreSQL to inspect candidate recommendations with complete 7-item grounded evaluation evidence:
           </p>
           <select id="inspector-article-select" class="select-input select-lg">
             <option value="">-- Choose an article to inspect --</option>
           </select>
 
-          <div class="rec-table-wrap">
+          <!-- Source Article Highlight Banner -->
+          <div id="inspector-source-box" class="inspector-source-box" style="display:none;"></div>
+
+          <!-- Candidates Container with 7-item Grounded Evaluation -->
+          <div id="inspector-candidates-list" class="inspector-candidates-list">
+            <div style="text-align:center;padding:28px;color:var(--text-muted);background:rgba(255,255,255,0.02);border-radius:var(--radius-md);border:1px dashed var(--border-subtle);">
+              Select an article above to inspect its saved top-10 precomputed candidate stories with complete grounded evaluation.
+            </div>
+          </div>
+
+          <!-- Legacy table wrapper for fallback -->
+          <div class="rec-table-wrap" style="display:none;">
             <table class="rec-table">
-              <thead>
-                <tr>
-                  <th style="width:50px;">Rank</th>
-                  <th>Article Title</th>
-                  <th>Section</th>
-                  <th>Confidence Score</th>
-                  <th>Algorithm</th>
-                </tr>
-              </thead>
-              <tbody id="inspector-table-body">
-                <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-muted)">Select an article above to inspect its saved top-10 recommendations.</td></tr>
-              </tbody>
+              <tbody id="inspector-table-body"></tbody>
             </table>
           </div>
+
           <div id="inspector-empty" class="empty-state hidden" style="padding:24px;">
             <p>No precomputed recommendations found for this article in PostgreSQL yet.</p>
           </div>
@@ -491,6 +498,16 @@
                 <p class="panel-sub">Stories are ordered by recommendation confidence — the strongest matches (highest average %) appear first. Scroll for more; the ⚡/🛰️ chip shows whether each block was served precomputed or live.</p>
               </div>
             </div>
+            <!-- Quick Story Finder / Fast Article Selector -->
+            <div class="story-finder-box" id="story-finder-box">
+              <div class="story-finder-input-wrap">
+                <span class="story-finder-icon">🔍</span>
+                <input type="text" id="story-finder-input" placeholder="Quickly find a main story by title to view its recommendations..." autocomplete="off" />
+                <button type="button" class="story-finder-clear hidden" id="story-finder-clear" title="Clear search">✕</button>
+              </div>
+              <div class="story-finder-dropdown hidden" id="story-finder-dropdown"></div>
+            </div>
+
             <div class="feed-explainer">
               <span class="feed-explainer-item">
                 <span class="source-chip source-chip-pre">⚡ Precomputed</span>
@@ -548,32 +565,28 @@
 
         </main>
 
-        <!-- ── RIGHT PANEL ── -->
-        <aside class="right-panel">
+        <!-- ── RIGHT PANEL: RANDOMIZER BAR ── -->
+        <aside class="right-panel" id="randomizer-panel">
 
-          <!-- Discovery Modes Info -->
-          <div class="rp-card">
+          <!-- Randomizer Header -->
+          <div class="rp-card randomizer-header-card">
             <div class="rp-card-header">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-              <span>Reader Modes</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
+              <span>Discover Random</span>
+              <span class="randomizer-count" id="randomizer-count">0 stories</span>
             </div>
-            <p class="rp-card-sub" style="margin-bottom:0.75rem;">Explore recommendation discovery:</p>
-            <div style="font-size:0.83rem;color:var(--text-secondary);display:flex;flex-direction:column;gap:0.6rem;">
-              <div><strong style="color:var(--text-primary)">1. Similar Articles:</strong> A scrolling feed of stories, each with its own recommendations. ⚡ Precomputed (hybrid+rerank) or 🛰️ Live (other modes).</div>
-              <div><strong style="color:var(--text-primary)">2. Semantic Search:</strong> Hybrid retrieval combining keyword matching and vector search.</div>
-              <div><strong style="color:var(--text-primary)">3. Editor Studio:</strong> Ingest new CSVs and monitor pgvector pipelines.</div>
-            </div>
+            <p class="rp-card-sub">Serendipitous discovery — hit shuffle to uncover hidden gems from the entire archive.</p>
+            <button class="randomizer-shuffle-btn" id="randomizer-shuffle-btn" title="Shuffle articles">
+              <span class="shuffle-icon">🎲</span>
+              <span>Shuffle</span>
+            </button>
           </div>
 
-          <!-- Filter by Category -->
-          <div class="rp-card">
-            <div class="rp-card-header">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-              <span>Filter by Category</span>
-              <span class="rp-view-all" id="rp-view-all">View all →</span>
-            </div>
-            <div class="category-pills" id="category-pills">
-              <button class="cat-pill active" data-section="">All</button>
+          <!-- Randomized Article Widgets -->
+          <div class="randomizer-feed" id="randomizer-feed">
+            <div class="randomizer-empty">
+              <span>📰</span>
+              <p>Loading articles...</p>
             </div>
           </div>
 
@@ -587,6 +600,7 @@
   <script src="js/api.js"></script>
   <script src="js/state.js"></script>
   <script src="js/ui.js"></script>
+  <script src="js/evaluator.js"></script>
   <script src="js/hero.js"></script>
   <script src="js/tabs.js"></script>
   <script src="js/editor.js"></script>
