@@ -11,10 +11,15 @@ Produces grounded, deterministic explanations for every recommendation:
 Everything is deterministic with ZERO LLM generation, ensuring no hallucinations.
 Stored in the reason field as structured JSON with clean fallback text.
 """
+import glob
 import json
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from collections import Counter
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 import pandas as pd
+
+import config
 
 # Stopwords to exclude from entity and term overlap
 COMMON_STOPWORDS = {
@@ -34,6 +39,46 @@ COMMON_STOPWORDS = {
 # Regex to detect capitalized entity phrases (e.g. "Jasprit Bumrah", "New Delhi", "Supreme Court")
 ENTITY_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def bm25_term_hits(bm25_index, query: str, cand_pos: int, limit: int = 8) -> List[Dict]:
+    """
+    REAL per-term BM25 contributions for ONE candidate document.
+
+    Uses `BM25Index.docs` / `postings` / `idf` and the identical scoring formula as
+    `BM25Index.scores()`, so every number returned is exactly the number that
+    ranked this candidate. Nothing is inferred or approximated.
+
+    An empty list is an honest answer: it means the candidate shares no token
+    with the query, so BM25 contributed zero to its score.
+    """
+    if bm25_index is None or cand_pos is None or cand_pos >= len(bm25_index.docs):
+        return []
+    try:
+        _, _, expanded = bm25_index.normalize_query(query)
+    except Exception:
+        return []
+
+    k1, b = bm25_index.k1, bm25_index.b
+    length_norm = 1 - b + b * bm25_index.lengths[cand_pos] / bm25_index.avg_len
+    counts = Counter(bm25_index.docs[cand_pos])
+
+    hits = []
+    for term, weight in expanded:
+        tf = counts.get(term, 0)
+        if not tf:
+            continue
+        idf = bm25_index.idf.get(term, 0.0)
+        contrib = weight * idf * tf * (k1 + 1) / (tf + k1 * length_norm)
+        hits.append({
+            "term": term,
+            "tf": int(tf),
+            "idf": round(idf, 3),
+            "weight": round(weight, 2),
+            "contribution": round(contrib, 4),
+        })
+    hits.sort(key=lambda h: -h["contribution"])
+    return hits[:limit]
 
 
 def extract_shared_key_terms(source_text: str, cand_text: str, bm25_index=None, limit: int = 4) -> List[str]:
@@ -171,9 +216,6 @@ def detect_applied_boosts(
     return boosts
 
 
-import glob
-from pathlib import Path
-
 _BATCH_MAP: Dict[str, str] = {}
 
 
@@ -208,7 +250,7 @@ def compute_context_facts(source_row: dict, cand_row: dict) -> dict:
     date_c_raw = cand_row.get("date")
     date_s_str = ""
     date_c_str = ""
-    date_gap_text = "Same edition"
+    date_gap_text = ""
     date_gap_days = 0.0
 
     if pd.notna(date_s_raw) and pd.notna(date_c_raw):
@@ -224,7 +266,8 @@ def compute_context_facts(source_row: dict, cand_row: dict) -> dict:
             elif diff_hours < 24:
                 date_gap_text = f"{diff_hours:.1f} hours apart"
             elif date_gap_days < 7:
-                date_gap_text = f"{int(round(date_gap_days))} days apart"
+                d = int(round(date_gap_days))
+                date_gap_text = f"{d} day apart" if d == 1 else f"{d} days apart"
             else:
                 weeks = round(date_gap_days / 7.0, 1)
                 date_gap_text = f"{int(round(date_gap_days))} days apart (~{weeks} weeks)"
@@ -256,15 +299,29 @@ def build_evidence_reason(
     rerank_score: Optional[float] = None,
     editorial_link: bool = False,
     confidence_info: Optional[dict] = None,
-    score_breakdown: Optional[dict] = None,
-    rank_relevance: Optional[dict] = None,
-    method_ranks: Optional[dict] = None,
-    margin_cutoff: Optional[float] = None
+    scores: Optional[dict] = None,
+    rank_raw: Optional[int] = None,
+    final_rank: Optional[int] = None,
+    cand_pos: Optional[int] = None,
+    bm25_query: Optional[str] = None,
+    cosine: Optional[float] = None,
+    admission: Optional[dict] = None,
 ) -> str:
     """
     Builds structured, deterministic evidence serialized as JSON inside the reason field.
-    Captures shared terms/entities, passage pair, score cascade, rank without boosts,
-    method agreement, cutoff margin, and domain context facts.
+
+    Every number in the output is either computed here or supplied by the scorer.
+    Nothing is estimated, scaled or defaulted to a plausible-looking value: if a
+    quantity is unknown it is emitted as None so the UI can say "not recorded"
+    instead of inventing one.
+
+    ``scores`` carries the raw numbers the scorer used, and the whole score cascade
+    is formatted here once, so the ingestion pipeline and the live path cannot
+    describe the same chain two different ways:
+      blend, bm25_norm, dense_norm, unboosted_confidence, boost_items, boosted_raw
+
+    `cand_pos` + `bm25_query` enable the exact BM25 term breakdown to be recorded
+    (see bm25_term_hits). `cosine` is the real embedding similarity of this pair.
     """
     source_text = f"{source_row.get('title', '')} {source_row.get('description', '')}"
     cand_text = f"{cand_row.get('title', '')} {cand_row.get('description', '')}"
@@ -289,7 +346,30 @@ def build_evidence_reason(
     )
 
     agreement_count, signals = evaluate_signal_agreement(bm25_rank, dense_rank, rerank_score)
-    boosts = detect_applied_boosts(source_row, cand_row, editorial_link=editorial_link)
+    s = scores or {}
+    boost_map = s.get("boost_items") or {}
+
+    def rounded(value, places: int = 4):
+        return round(float(value), places) if value is not None else None
+
+    def weighted(weight, value):
+        return rounded(weight * value) if value is not None else None
+
+    boost_items = []
+    for name, value in boost_map.items():
+        if name == "total":
+            continue
+        mult = rounded(value)
+        # The percentage comes from the SAME rounded multiplier that is displayed,
+        # so "1.0414" and "+4.1%" can never contradict each other.
+        boost_items.append({"name": name, "mult": mult, "amount": f"{(mult - 1) * 100:+.1f}%"})
+    # Boost labels come from the real multipliers the scorer applied. The old
+    # detector only knew about editorial/section/subsection/24h, so popularity and
+    # recency decay were invisible and the labels disagreed with the score.
+    boosts = [
+        f"{b['name'].title()} boost ({b['amount']})"
+        for b in boost_items if abs(float(b["mult"] or 1.0) - 1.0) > 1e-9
+    ] or detect_applied_boosts(source_row, cand_row, editorial_link=editorial_link)
     context_facts = compute_context_facts(source_row, cand_row)
 
     # Human-readable summary for backwards compatibility
@@ -321,32 +401,106 @@ def build_evidence_reason(
         "agreement_count": agreement_count,
         "boosts": boosts,
         "context_facts": context_facts,
+        # Real BM25 evidence: the exact query terms that hit this candidate and
+        # their contribution to its score. Empty means BM25 contributed nothing.
+        "bm25_terms": bm25_term_hits(bm25_index, bm25_query, cand_pos) if bm25_query else [],
+        "bm25_query": bm25_query,
+        # Real cosine similarity between the two document embeddings.
+        "cosine": rounded(cosine),
+        # Real admission-gate verdict from config.admission_cut().
+        "admission": admission,
     }
     if confidence_info:
         evidence_dict["confidence"] = confidence_info
-    if score_breakdown:
-        evidence_dict["score_breakdown"] = score_breakdown
-    if rank_relevance:
-        evidence_dict["rank_relevance"] = rank_relevance
-    if method_ranks:
-        evidence_dict["method_ranks"] = method_ranks
-    if margin_cutoff is not None:
-        evidence_dict["margin_cutoff"] = margin_cutoff
+
+    if scores:
+        # The complete score cascade: rerank -> bm25_norm -> dense_norm -> blend
+        # -> boosts -> Platt. Ordering uses `boosted_raw`; the displayed confidence
+        # is Platt applied to the UNBOOSTED blend. Two scales on purpose, and no
+        # "Platt delta" is invented between them.
+        calibrated = rounded((confidence_info or {}).get("calibrated_prob"))
+        evidence_dict["score_breakdown"] = {
+            "reranker_prob": rounded(rerank_score),
+            "bm25_rank": bm25_rank,
+            "dense_rank": dense_rank,
+            "blend": rounded(s.get("blend")),
+            "components": {
+                "rerank_term": weighted(config.WEIGHT_RERANK, rerank_score),
+                "bm25_norm": rounded(s.get("bm25_norm")),
+                "bm25_term": weighted(config.WEIGHT_BM25, s.get("bm25_norm")),
+                "dense_norm": rounded(s.get("dense_norm")),
+                "dense_term": weighted(config.WEIGHT_DENSE, s.get("dense_norm")),
+                "weights": {
+                    "rerank": config.WEIGHT_RERANK,
+                    "bm25": config.WEIGHT_BM25,
+                    "dense": config.WEIGHT_DENSE,
+                },
+            },
+            "unboosted_confidence": rounded(s.get("unboosted_confidence")),
+            "boost_items": boost_items,
+            "total_boost_mult": rounded(boost_map.get("total", 1.0)),
+            "boosted_raw": rounded(s.get("boosted_raw")),
+            "platt_calibrated": calibrated,
+            "final": calibrated,
+        }
+
+    if rank_raw is not None and final_rank is not None:
+        shift = rank_raw - final_rank
+        note = (
+            f"relevance-only rank #{rank_raw}, final rank #{final_rank} (promoted +{shift})"
+            if final_rank < rank_raw else
+            f"relevance-only rank #{rank_raw}, final rank #{final_rank} (demoted -{-shift} by MMR diversity)"
+            if final_rank > rank_raw else
+            f"relevance-only rank #{rank_raw}, final rank #{final_rank} (matches relevance)"
+        )
+        evidence_dict["rank_relevance"] = {
+            "rank_raw": rank_raw, "final_rank": final_rank,
+            "shift": shift, "description": note,
+        }
+
+    if bm25_rank is not None or dense_rank is not None or rerank_score is not None:
+        evidence_dict["method_ranks"] = {
+            "bm25": bm25_rank,
+            "dense": dense_rank,
+            "reranker": rounded(rerank_score, 3),
+            "agreement_count": agreement_count,
+            "status": "All three methods agree" if agreement_count >= 3 else (
+                f"{agreement_count} of 3 methods agree" if agreement_count >= 2
+                else "Single method lead"),
+        }
+
+    if (confidence_info or {}).get("margin") is not None:
+        evidence_dict["margin_cutoff"] = confidence_info["margin"]
 
     return json.dumps(evidence_dict, ensure_ascii=False)
 
 
+def _parse_reason(raw) -> dict:
+    """Read a stored `reason` payload. Never fabricates a replacement."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {"summary": raw}
+    return {"summary": str(raw or "")}
+
+
 def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
     """
-    Standardizes and completes all 7 grounded evaluation items across both
-    Editor Studio Inspector and Reader View:
-      1. Plain-English verdict and deduplicated terms/entities
-      2. Non-empty side-by-side passage pairs
-      3. Accurate score breakdown with boost amounts and Platt calibration explanation
-      4. 3-stage rank & diversity progression
-      5. Consistent method ranks matching between cascade and agreement
-      6. Verified cutoff margin
-      7. Verified context facts with real dates, batch file names, and publish time deltas
+    Normalise stored evidence for display across Editor Inspector and Reader View.
+
+    HARD RULE: this function never invents a number. Every score, boost and
+    probability shown to the user is read from what the scorer wrote into
+    `reason`. The only values added here are text facts that are genuinely
+    derivable from the article rows themselves (batch file, section/subsection
+    match, publish-time delta).
+
+    If the scorer did not record a quantity it stays None, and the UI renders
+    "not recorded". The previous implementation substituted a scaled score
+    (`score * 0.9`), assumed `+5.0%` boosts and rebuilt a "boosted" value from
+    guessed multipliers -- which is exactly the fiction this replaces.
     """
     if not recs:
         return
@@ -354,8 +508,6 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
     # Attach batch to source article if available
     if source_dict:
         source_dict["batch"] = get_article_batch(source_dict.get("id"))
-
-    cutoff_score = min(float(r.get("score") or 0.0) for r in recs)
 
     for r in recs:
         cand_dict = r.get("article") if isinstance(r.get("article"), dict) else r
@@ -366,16 +518,7 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
             r["article"]["batch"] = batch_name
 
         raw_reason = r.get("reason") or r.get("evidence") or cand_dict.get("reason") or ""
-        ev = {}
-        if isinstance(raw_reason, dict):
-            ev = raw_reason
-        elif isinstance(raw_reason, str) and raw_reason.strip().startswith("{"):
-            try:
-                ev = json.loads(raw_reason)
-            except Exception:
-                ev = {"summary": raw_reason}
-        else:
-            ev = {"summary": str(raw_reason or "")}
+        ev = _parse_reason(raw_reason)
 
         raw_entities = ev.get("entities") or []
         raw_terms = ev.get("terms") or []
@@ -418,100 +561,71 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
                 )
                 ev["best_sentence"] = extracted_cand or cand_desc or cand_title
 
-        # 3. Parse Real Ranks from Signals to Guarantee 100% Consistency
-        signals = ev.get("signals", [])
-        bm25_r = None
-        dense_r = None
-        rerank_val = r.get("rerank_score") or cand_dict.get("rerank_score")
-        for s in signals:
-            m_bm = re.search(r"BM25.*?#(\d+)", s, re.I)
-            if m_bm and bm25_r is None:
-                bm25_r = int(m_bm.group(1))
-            m_d = re.search(r"Dense.*?#(\d+)", s, re.I)
-            if m_d and dense_r is None:
-                dense_r = int(m_d.group(1))
-            m_rr = re.search(r"Cross-Encoder.*?\((\d+)%\)", s, re.I)
-            if m_rr and (rerank_val is None or rerank_val == 0.0):
-                rerank_val = float(m_rr.group(1)) / 100.0
+        # 3. Real scores only. The scorer records the cross-encoder probability in
+        # `score_breakdown.reranker_prob` and in the `rerank_score` column; if
+        # neither exists the value is genuinely unknown and stays None. The old
+        # code substituted `score * 0.9`, which looked precise but was invented.
+        sb = dict(ev.get("score_breakdown") or {})
+        rerank_val = sb.get("reranker_prob")
+        if rerank_val is None:
+            rerank_val = r.get("rerank_score")
+        if rerank_val is None:
+            rerank_val = cand_dict.get("rerank_score")
 
-        if rerank_val is None or rerank_val == 0.0:
-            raw_sc = r.get("score") or cand_dict.get("score")
-            if raw_sc:
-                rerank_val = round(float(raw_sc) * 0.9, 4)
-            else:
-                rerank_val = 0.65
+        mr = dict(ev.get("method_ranks") or {})
+        bm25_r = sb.get("bm25_rank", mr.get("bm25"))
+        dense_r = sb.get("dense_rank", mr.get("dense"))
 
-        # 4. Method Agreement Analysis
+        # 4. Method agreement. `agreement_count` is computed by
+        # evaluate_signal_agreement() at scoring time; it is read here, never
+        # re-derived, so the count can never disagree with the stored signals.
+        signals = ev.get("signals")
+        agree_cnt = ev.get("agreement_count")
+        if agree_cnt is None:
+            agree_cnt = len(signals) if isinstance(signals, list) else None
         curr_final_rank = r.get("rank") or cand_dict.get("rank") or 1
-        agree_cnt = ev.get("agreement_count") or (len(signals) if signals else 1)
         if bm25_r is not None and dense_r is not None:
-            if bm25_r <= 5 and dense_r <= 5:
-                agree_status = "All 3 methods agree (High consensus across lexical, vector, and reranker)"
-                agree_cnt = 3
-            elif bm25_r > 10 and dense_r > 10:
-                agree_status = f"Cross-Encoder Lead (Reranker elevated candidate from #{bm25_r} retrieval to #{curr_final_rank})"
-                agree_cnt = 1
-            else:
-                agree_status = f"Partial signal agreement: Reranker #{curr_final_rank} with Dense #{dense_r} & BM25 #{bm25_r}"
-                agree_cnt = 2
+            agree_status = (f"Reranker #{curr_final_rank} with BM25 #{bm25_r} and Dense #{dense_r}"
+                            if bm25_r <= 20 and dense_r <= 20
+                            else f"Cross-Encoder lead: BM25 #{bm25_r}, Dense #{dense_r}, final #{curr_final_rank}")
         elif bm25_r is not None:
-            agree_status = f"Lexical retrieval match: BM25 #{bm25_r} & Reranker #{curr_final_rank} (Dense unranked in top 20)"
-            agree_cnt = 2
+            agree_status = f"Lexical only: BM25 #{bm25_r}, Dense outside top 20 (final #{curr_final_rank})"
         elif dense_r is not None:
-            agree_status = f"Vector semantic match: Dense #{dense_r} & Reranker #{curr_final_rank} (BM25 unranked in top 20)"
-            agree_cnt = 2
+            agree_status = f"Semantic only: Dense #{dense_r}, BM25 outside top 20 (final #{curr_final_rank})"
         else:
-            agree_status = f"Cross-Encoder neural evaluation (Candidate #{curr_final_rank})"
-            agree_cnt = 1
+            agree_status = f"Cross-Encoder alone (final #{curr_final_rank})"
 
         ev["method_ranks"] = {
             "bm25": bm25_r,
             "dense": dense_r,
-            "reranker": round(float(rerank_val), 4),
+            "reranker": round(float(rerank_val), 4) if rerank_val is not None else None,
             "agreement_count": agree_cnt,
-            "status": agree_status
+            "status": agree_status,
         }
 
 
-        # 5. Domain Boosts & Platt Calibration Explanation
-        boosts_list = ev.get("boosts", [])
-        boost_items = []
-        total_mult = 1.0
-        for b in boosts_list:
-            if "Same Section" in b:
-                boost_items.append({"name": b, "amount": "+8.0%", "mult": 1.08})
-                total_mult *= 1.08
-            elif "Same Subsection" in b:
-                boost_items.append({"name": b, "amount": "+5.0%", "mult": 1.05})
-                total_mult *= 1.05
-            elif "24h" in b or "Fresh" in b:
-                boost_items.append({"name": b, "amount": "+10.0%", "mult": 1.10})
-                total_mult *= 1.10
-            elif "Editorial" in b:
-                boost_items.append({"name": b, "amount": "+40.0%", "mult": 1.40})
-                total_mult *= 1.40
-            else:
-                boost_items.append({"name": b, "amount": "+5.0%", "mult": 1.05})
-                total_mult *= 1.05
-
-        unboosted = ev.get("confidence", {}).get("unboosted_score", float(r.get("score") or 0.85))
-        boosted_raw = min(1.0, unboosted * total_mult)
-        final_score = float(r.get("score") or 0.82)
-        calib_delta = round((final_score - boosted_raw) * 100, 1)
-
+        # 5. Score cascade. The scorer wrote the complete chain at ingest time:
+        # rerank -> bm25_norm -> dense_norm -> blend -> boost_breakdown ->
+        # boosted_raw -> Platt -> calibrated. Read it back verbatim.
+        #
+        # Note the two scales on purpose: ordering uses `boosted_raw` (relevance
+        # after domain boosts), while the displayed confidence is Platt applied to
+        # the UNBOOSTED blend. There is no meaningful "Platt delta" between them,
+        # so none is invented here.
+        final_score = sb.get("final", r.get("score", cand_dict.get("score")))
         ev["score_breakdown"] = {
-            "reranker_prob": round(float(rerank_val or 0.73), 4),
+            "reranker_prob": rerank_val,
             "bm25_rank": bm25_r,
             "dense_rank": dense_r,
-            "blend": round(float(unboosted), 4),
-            "boost_items": boost_items,
-            "boosts": boosts_list,
-            "total_boost_mult": round(total_mult, 3),
-            "boosted_raw": round(boosted_raw, 4),
-            "platt_calibrated": round(final_score, 4),
-            "calib_delta": calib_delta,
-            "calib_explanation": f"Platt sigmoid calibration: adjusted from {round(boosted_raw*100, 1)}% to {round(final_score*100, 1)}% to correct neural overconfidence bias and align with empirical editorial ground truth",
-            "final": round(final_score, 4)
+            "blend": sb.get("blend"),
+            "components": sb.get("components"),
+            "unboosted_confidence": sb.get("unboosted_confidence"),
+            "boost_items": sb.get("boost_items") or [],
+            "boosts": ev.get("boosts") or [],
+            "total_boost_mult": sb.get("total_boost_mult"),
+            "boosted_raw": sb.get("boosted_raw"),
+            "platt_calibrated": final_score,
+            "final": final_score,
         }
 
         # 6. Rank & Diversity Progression (3 stages)
@@ -536,30 +650,36 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
             "description": shift_note
         }
 
-        # 7. Cutoff Margin
-        conf_margin = ev.get("confidence", {}).get("margin")
-        cutoff_diff = round(final_score - cutoff_score, 4)
-        margin_val = conf_margin if conf_margin is not None else cutoff_diff
+        # 7. Cutoff margin. Only the real per-pair margin recorded by the
+        # calibrator ("this candidate vs the next one") is used. The old code
+        # substituted `final_score - worst_score_in_list`, which is a different
+        # quantity and was labelled as the cutoff margin.
+        conf_margin = (ev.get("confidence") or {}).get("margin")
+        margin_val = conf_margin if isinstance(conf_margin, (int, float)) else None
         ev["margin_cutoff"] = {
             "margin": margin_val,
-            "is_clear": margin_val >= 0.04,
-            "label": f"+{round(margin_val * 100, 1)}% gap above cutoff" if margin_val > 0 else "Cutoff boundary"
+            "is_clear": None if margin_val is None else bool(margin_val >= 0.04),
+            "label": (None if margin_val is None
+                      else f"+{round(margin_val * 100, 1)}% over the next candidate"),
         }
 
         # 8. Context Facts (Section, Subsection, Dates, Gap, Batch)
         if source_dict:
             ev["context_facts"] = compute_context_facts(source_dict, cand_dict)
 
-        # 9. Plain-English One-Line Verdict
+        # 9. One-line verdict, built only from what was actually detected.
         sec = cand_dict.get("section") or r.get("section") or "General"
+        bm_hits = ev.get("bm25_terms") or []
+        cos = ev.get("cosine")
         if raw_entities:
-            top_ent = ", ".join(raw_entities[:2])
-            ev["plain_verdict"] = f"Continuous coverage: {top_ent} investigation & follow-up reporting ({sec})"
-        elif clean_terms:
-            top_t = ", ".join(clean_terms[:3])
-            ev["plain_verdict"] = f"Direct topical alignment: {top_t} ({sec})"
+            ev["plain_verdict"] = f"Shared entities: {', '.join(raw_entities[:3])} ({sec})"
+        elif bm_hits:
+            ev["plain_verdict"] = (f"BM25 matched {len(bm_hits)} term(s): "
+                                   f"{', '.join(h['term'] for h in bm_hits[:3])} ({sec})")
+        elif cos is not None:
+            ev["plain_verdict"] = f"No lexical overlap; semantic similarity {cos:.2f} ({sec})"
         else:
-            ev["plain_verdict"] = f"Semantic topic alignment within {sec} news section"
+            ev["plain_verdict"] = f"No shared lexical evidence recorded ({sec})"
 
         r["evidence"] = ev
         r["reason"] = json.dumps(ev, ensure_ascii=False)

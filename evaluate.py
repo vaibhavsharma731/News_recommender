@@ -821,12 +821,16 @@ def run_evaluation_suite(
 
     if source in ("auto", "postgres"):
         try:
-            from db.connection import SessionLocal, check_db_health
+            from db.connection import SessionLocal, check_db_health, ensure_schema
             from db.models import Article
             from db.repository import ArticleRepository
 
             health = check_db_health()
             if health.get("connected"):
+                # A DB written by an older revision can be missing columns the ORM now
+                # selects (boosted_score) or the serving index. Startup does this; so
+                # must a standalone evaluation run, or every query fails.
+                ensure_schema()
                 db = SessionLocal()
                 count = ArticleRepository.count_articles(db)
                 if count > 0:

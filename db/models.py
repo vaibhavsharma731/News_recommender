@@ -1,7 +1,6 @@
 """
 SQLAlchemy ORM models for news articles, precomputed recommendations, and ingestion jobs.
 """
-from datetime import datetime
 from sqlalchemy import (
     Column,
     String,
@@ -128,6 +127,11 @@ class ArticleRecommendation(Base):
     # comparable across lists, so the incremental "reverse push" uses it to decide
     # whether a newly ingested article can displace an old entry.
     rerank_score = Column(Float, nullable=True)
+    # Relevance AFTER domain boosts, BEFORE Platt calibration: `boosted_score` is
+    # what actually decided the ordering, while `score` is the calibrated
+    # confidence on the unboosted blend. Storing both makes the difference
+    # inspectable instead of implicit.
+    boosted_score = Column(Float, nullable=True)
     pipeline_version = Column(String(32), nullable=True)
     method = Column(String(50), default="neural_hybrid_rerank")
     reason = Column(Text, nullable=True)     # Human-readable explanation why recommended

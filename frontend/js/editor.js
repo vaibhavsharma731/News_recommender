@@ -147,18 +147,13 @@ const Editor = (() => {
     dom.clearBtn.disabled = true;
     dom.clearBtn.textContent = 'Clearing...';
     try {
-      const res = await fetch('/api/db/clear', { method: 'POST' });
-      const data = await res.json();
-      if (res.ok) {
-        showToast('PostgreSQL tables cleared. Ready for fresh upload.', 'success');
-        await refreshDbHealth();
-        loadInspectorArticles();
-        loadRecentJobs();
-      } else {
-        showToast('Clear failed: ' + (data.detail || data.message), 'error');
-      }
+      await Api.dbClear();
+      showToast('PostgreSQL tables cleared. Ready for fresh upload.', 'success');
+      await refreshDbHealth();
+      loadInspectorArticles();
+      loadRecentJobs();
     } catch (err) {
-      showToast('Network error: ' + err.message, 'error');
+      showToast('Clear failed: ' + err.message, 'error');
     } finally {
       dom.clearBtn.disabled = false;
       dom.clearBtn.textContent = '🗑️ Clear Database';

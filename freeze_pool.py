@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import pickle
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
@@ -19,7 +20,50 @@ import config
 from src.retrieval import reciprocal_rank_fusion, tokenize
 from src.recommender import BM25Index
 
-def freeze_pool(sample_size: int = None, max_length: int = 192):
+CLEANED_PKL = "data/cache/cleaned_articles.pkl"
+VECTORS_NPY = "data/cache/articles_2467_vectors.npy"
+
+
+def _load_corpus():
+    """
+    Load (cleaned DataFrame, 768-d unit vectors) for the frozen pool.
+
+    Nothing in the repo generated these two files, so a fresh clone could not run the
+    harness at all. They are now derived on demand from the authoritative loader
+    (src.data_loader) plus the embedding cache, and written back so repeat runs are fast.
+    """
+    if os.path.exists(CLEANED_PKL) and os.path.exists(VECTORS_NPY):
+        with open(CLEANED_PKL, "rb") as f:
+            df = pickle.load(f)
+        return df, np.load(VECTORS_NPY)
+
+    from src import data_loader
+    from src.model_registry import get_embedder
+
+    print(f"Cache missing ({CLEANED_PKL} / {VECTORS_NPY}). Building from the corpus...", flush=True)
+    os.makedirs("data/cache", exist_ok=True)
+
+    # The batch CSVs live under data/articles_batches/ and are not in config.DATA_PATHS,
+    # so glob them explicitly and fall back to the configured paths if absent.
+    batch_csvs = sorted(str(p) for p in Path("data/articles_batches").glob("*.csv"))
+    df = data_loader.load_articles(batch_csvs or None)
+    if df.empty:
+        raise RuntimeError("No articles loaded. Check data/articles_batches/*.csv exists.")
+
+    vecs = np.asarray(get_embedder().encode(
+        df["text_embed"].tolist(),
+        batch_size=32, normalize_embeddings=True,
+        show_progress_bar=True, convert_to_numpy=True,
+    ), dtype=np.float32)
+
+    with open(CLEANED_PKL, "wb") as f:
+        pickle.dump(df, f)
+    np.save(VECTORS_NPY, vecs)
+    print(f"Built and cached corpus: {len(df)} articles, vectors {vecs.shape}.", flush=True)
+    return df, vecs
+
+
+def freeze_pool(sample_size: int = None, max_length: int = None, rebuild: bool = False):
     print("=" * 70, flush=True)
     print("  STEP 1: FREEZE THE CANDIDATE POOL (TOP-20 PER SOURCE ARTICLE)", flush=True)
     print("=" * 70, flush=True)
@@ -28,7 +72,7 @@ def freeze_pool(sample_size: int = None, max_length: int = 192):
     cache_path = "data/cache/frozen_pool.pkl"
     ckpt_path = "data/cache/frozen_pool_ckpt.pkl"
     
-    if os.path.exists(cache_path):
+    if os.path.exists(cache_path) and not rebuild:
         print(f"Found existing complete frozen pool at {cache_path}. Loading...", flush=True)
         with open(cache_path, "rb") as f:
             pool = pickle.load(f)
@@ -36,9 +80,7 @@ def freeze_pool(sample_size: int = None, max_length: int = 192):
         return pool
 
     print("Loading cleaned articles and precomputed vectors...", flush=True)
-    with open("data/cache/cleaned_articles.pkl", "rb") as f:
-        df = pickle.load(f)
-    vecs = np.load("data/cache/articles_2467_vectors.npy")
+    df, vecs = _load_corpus()
     
     print("Building BM25 index...", flush=True)
     bm25 = BM25Index(df["text_bm25"])
@@ -72,7 +114,12 @@ def freeze_pool(sample_size: int = None, max_length: int = 192):
     for q_pos, s_row in gt_sources:
         title_toks = tokenize(s_row["title"])
         body_toks = tokenize(f"{s_row['description']} {s_row['body']}")
-        top_body = sorted(set(body_toks), key=lambda t: -bm25.idf.get(t, 0.0))[:15]
+        # sorted() over a set is not stable across processes (PYTHONHASHSEED), which made
+        # the frozen pool irreproducible. Rank once, deterministically, then slice.
+        top_body = [t for _, t in sorted(
+            ((bm25.idf.get(t, 0.0), t) for t in set(body_toks)),
+            key=lambda pair: (-pair[0], pair[1]),
+        )[:15]]
         focused_text = " ".join(title_toks + top_body)
         
         bm25_all = bm25.scores(focused_text)
@@ -160,9 +207,17 @@ def freeze_pool(sample_size: int = None, max_length: int = 192):
     # Score remaining pairs
     remaining_pairs = all_rerank_pairs[len(completed_probs):]
     if remaining_pairs:
+        # Default to the PRODUCTION cap (config.RERANK_MAX_LEN = 512). The old default of
+        # 192 truncated the cross-encoder and made every tuning number incomparable to
+        # what the pipeline actually scores with.
+        max_length = max_length or config.RERANK_MAX_LEN
         print(f"Scoring {len(remaining_pairs)} remaining pairs with CrossEncoder (threads=8, max_len={max_length})...", flush=True)
         torch.set_num_threads(8)
-        ce = CrossEncoder(config.RERANKER_MODEL, max_length=max_length)
+        ce = CrossEncoder(
+            config.RERANKER_MODEL,
+            revision=config.RERANKER_REVISION,
+            max_length=max_length,
+        )
         
         batch_size = 128
         chunk_save = 512  # Save checkpoint every 512 pairs (~4 articles)
@@ -215,7 +270,8 @@ def freeze_pool(sample_size: int = None, max_length: int = 192):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--samples", type=int, default=None, help="Sample size of source articles (default: all 290)")
-    parser.add_argument("--max-len", type=int, default=192, help="CrossEncoder max token length")
+    parser.add_argument("--samples", type=int, default=None, help="Sample size of source articles (default: all)")
+    parser.add_argument("--max-len", type=int, default=None, help=f"CrossEncoder max token length (default: config.RERANK_MAX_LEN = {config.RERANK_MAX_LEN})")
+    parser.add_argument("--rebuild", action="store_true", help="Ignore the existing frozen_pool.pkl and rebuild it")
     args = parser.parse_args()
-    freeze_pool(sample_size=args.samples, max_length=args.max_len)
+    freeze_pool(sample_size=args.samples, max_length=args.max_len, rebuild=args.rebuild)

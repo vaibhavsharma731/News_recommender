@@ -25,6 +25,10 @@ const Tabs = (() => {
   const FEED_PAGE  = 100;    // API page size when pulling the full article list
   const SLOT_ORDER = ['top', 'bottom', 'left', 'right'];  // assignment order
 
+  /** Escape API/DB strings before they touch innerHTML (article titles are free text). */
+  const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
   // ─── TAB NAVIGATION ─────────────────────────────────────────────────────────
   function switchTab(tabName) {
     const nav = document.getElementById('tabs-nav');
@@ -225,33 +229,36 @@ const Tabs = (() => {
         tags.push(`<span class="orbit-badge orbit-badge-raw" title="Pure relevance ordering (no MMR penalty applied)">🎯 Raw #${rawRank}</span>`);
       }
 
-      // 2. Active Boost Badges
-      if (ev.boosts && Array.isArray(ev.boosts) && ev.boosts.length) {
-        ev.boosts.forEach(b => {
-          if (b.includes('Same Section')) {
-            tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b}">⚡ Sec: ${(art.section || 'Match').toUpperCase()}</span>`);
-          } else if (b.includes('Same Subsection')) {
-            tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b}">⚡ Sub: ${(art.subsection || 'Match').toUpperCase()}</span>`);
-          } else if (b.includes('Published within 24h')) {
-            tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b}">⏱️ Fresh &lt;24h</span>`);
-          } else if (b.includes('Editorial')) {
-            tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b}">⭐ Editor's Pick</span>`);
-          } else {
-            tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b}">✨ ${b}</span>`);
-          }
+      // 2. Active boosts — read the real multipliers the scorer applied.
+      const BOOST_LABEL = {
+        editorial: '⭐ Editor pick', section: '⚡ Section', subsection: '⚡ Subsection',
+        popularity: '📈 Popular', recency: '⏱️ Recency',
+      };
+      const boostItems = (ev.score_breakdown && ev.score_breakdown.boost_items) || [];
+      boostItems
+        .filter(b => b && typeof b.mult === 'number' && Math.abs(b.mult - 1) > 1e-9)
+        .forEach(b => {
+          const label = BOOST_LABEL[b.name] || b.name;
+          tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b.name} multiplier ×${b.mult}">${label} ${b.amount}</span>`);
         });
-      }
 
-      // 3. Entity or Term
-      if (ev.entities && ev.entities.length) {
+      // 3. Real BM25 match — the top term that actually scored this candidate.
+      const topTerm = (ev.bm25_terms && ev.bm25_terms[0]) || null;
+      if (topTerm) {
+        tags.push(`<span class="orbit-badge" title="Top BM25 term: ${topTerm.term} (tf ${topTerm.tf}, idf ${topTerm.idf}, contributed +${topTerm.contribution})">🏷️ ${topTerm.term}</span>`);
+      } else if (ev.entities && ev.entities.length) {
         tags.push(`<span class="orbit-badge" title="Shared entity: ${ev.entities.join(', ')}">📍 ${ev.entities[0]}</span>`);
-      } else if (ev.terms && ev.terms.length) {
-        tags.push(`<span class="orbit-badge" title="Shared topic keywords: ${ev.terms.join(', ')}">🏷️ ${ev.terms[0]}</span>`);
       }
 
-      // 4. Signal agreement
-      if (ev.agreement_count && ev.agreement_count >= 2) {
-        tags.push(`<span class="orbit-badge" title="Signals agreed: ${ev.signals ? ev.signals.join(' + ') : `${ev.agreement_count}/3 methods`}">⚡ ${ev.agreement_count}/3</span>`);
+      // 4. Real embedding cosine between the two documents.
+      if (typeof ev.cosine === 'number') {
+        tags.push(`<span class="orbit-badge" title="Cosine similarity between the two document embeddings">🧭 ${ev.cosine.toFixed(2)}</span>`);
+      }
+
+      // 5. Signal agreement
+      if (ev.agreement_count >= 2) {
+        const sig = Array.isArray(ev.signals) ? ev.signals.join(' + ') : `${ev.agreement_count}/3 methods`;
+        tags.push(`<span class="orbit-badge" title="Signals agreed: ${sig}">⚡ ${ev.agreement_count}/3</span>`);
       }
 
       // 5. Inspect Evaluation Breakdown
@@ -340,6 +347,31 @@ const Tabs = (() => {
     return { top, bottom: rest - top, left: side, right: side };
   }
 
+  /** Technique 4: a separate "Trending in <section>" block for a thin related list. */
+  function renderFallback(widget, fallback) {
+    widget.querySelectorAll('.feed-fallback').forEach((el) => el.remove());
+    const stage = widget.querySelector('.orbit-stage');
+    const items = (fallback && fallback.items) || [];
+    if (!stage || !items.length) return;
+
+    const box = document.createElement('div');
+    box.className = 'feed-fallback';
+    box.innerHTML = `
+      <div class="feed-fallback-head">
+        <span class="feed-fallback-title">${escHtml(fallback.heading)}</span>
+        <span class="feed-fallback-note">${escHtml(fallback.note)}</span>
+      </div>
+      <div class="feed-fallback-grid">
+        ${items.map((art) => `
+          <a class="feed-fallback-item"${art.url ? ` href="${escHtml(art.url)}" target="_blank" rel="noopener"` : ''}>
+            <span class="feed-fallback-sec">${escHtml((art.section || 'General').toUpperCase())}</span>
+            <span class="feed-fallback-hl">${escHtml(art.title)}</span>
+            <span class="feed-fallback-meta">${escHtml(art.date || '')}${art.pageViews ? ` · ${Number(art.pageViews).toLocaleString()} views` : ''}</span>
+          </a>`).join('')}
+      </div>`;
+    stage.insertAdjacentElement('afterend', box);
+  }
+
   /** Distribute the returned recommendations around the centre. */
   function renderWidgetRecs(widget, data, useMmr) {
     widget._cachedData = data;
@@ -398,6 +430,7 @@ const Tabs = (() => {
       const stage = widget.querySelector('.orbit-stage');
       if (stage) stage.insertAdjacentHTML('beforeend',
         '<div class="feed-recs-empty">No close matches found for this story.</div>');
+      renderFallback(widget, data.fallback);
       return;
     }
 
@@ -423,6 +456,8 @@ const Tabs = (() => {
         slot.appendChild(buildOrbitTile(recs[assign++], useMmr, widget._article));
       }
     });
+
+    renderFallback(widget, data.fallback);
   }
 
   /** Fetch + fill a single halo widget (called when it scrolls into view). */
@@ -625,13 +660,15 @@ const Tabs = (() => {
 
       if (resultMeta) renderResultMeta(resultMeta, data);
       if (resultsGrid) {
-        renderNotes(resultsGrid, data.notes || [], data.low_confidence || false);
         const recs = data.recommendations || [];
         if (recs.length === 0) {
           if (resultsContainer) resultsContainer.classList.add('hidden');
           if (emptyState) emptyState.classList.remove('hidden');
         } else {
+          // renderCards clears the container, so notes must be added AFTER it --
+          // otherwise the banners are wiped the moment the cards render.
           renderCards(resultsGrid, recs);
+          renderNotes(resultsGrid, data.notes || [], data.low_confidence || false);
         }
       }
     } catch (err) {
@@ -847,7 +884,13 @@ const Tabs = (() => {
     }
   }
 
-  return { init, switchTab, performSearch, populateArticlePicker, buildFeed, reloadCurrentTab, get _allArticlesCache() { return allArticlesCache; } };
+  return {
+    init, switchTab, performSearch, populateArticlePicker, buildFeed, reloadCurrentTab,
+    // Exposed so a widget can be rendered directly (the editor preview and the
+    // render checks build one halo without booting the whole feed).
+    buildFeedWidget, renderWidgetRecs,
+    get _allArticlesCache() { return allArticlesCache; },
+  };
 })();
 
 // Expose to window so app.js can detect and call Tabs methods

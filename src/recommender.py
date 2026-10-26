@@ -9,8 +9,6 @@ Pipeline for every request:
   5. MMR                                    (avoid near-duplicate results)
   6. A short "why recommended" explanation
 """
-import math
-import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -22,6 +20,7 @@ from src.retrieval import (BM25Index, DenseIndex, TfidfIndex,
                            reciprocal_rank_fusion, tokenize)
 from src.calibration import ConfidenceCalibrator
 from src.evidence import build_evidence_reason, evaluate_signal_agreement
+from src.scoring import blend, boost_parts, linked_set, mmr, norm
 
 METHODS = ["bm25", "semantic", "hybrid", "hybrid+rerank"]
 
@@ -37,6 +36,9 @@ class Recommendation:
     agreement_count: int = 1
     rank: int = 1
     rank_raw: int = 1
+    # Relevance after domain boosts and before calibration: the value the ordering
+    # actually used, kept separate from `score` so the two are never confused.
+    boosted_score: float = 0.0
 
 
 
@@ -157,7 +159,31 @@ class Recommender:
         if not candidates:
             return Result([], True, 0.0, method, notes)
 
+        # --- 2b. Lexical / entity support gate (technique 3) ----------------
+        # Block candidates sharing neither a keyword nor a named entity BEFORE
+        # paying for cross-encoder inference. Editorial links always pass.
+        if method == "hybrid+rerank" and (config.LEXICAL_GATE or config.ENTITY_GATE):
+            from src.evidence import extract_shared_entities
+            src_text = rerank_query if query_pos is None else str(self.articles.iloc[query_pos]["text_rerank"])
+            src_ents = ({e.lower() for e in extract_shared_entities(src_text, "", limit=24)}
+                        if config.ENTITY_GATE else set())
+            linked = self._linked_ids(query_pos)
+            kept = []
+            for c in candidates:
+                if str(self.articles.iloc[c]["id"]) in linked:
+                    kept.append(c)
+                elif config.LEXICAL_GATE and bm25_scores[c] > 1e-9:
+                    kept.append(c)
+                elif src_ents and (src_ents & {e.lower() for e in extract_shared_entities(
+                        str(self.articles.iloc[c].get("text_rerank", "")), "", limit=24)}):
+                    kept.append(c)
+            candidates = kept or candidates
+
         # --- 3. relevance score of each candidate (0-1) -------------------
+        # Normalised component arrays are kept at function scope so the evidence
+        # card can show the real blend decomposition for whichever method ran.
+        bm25_norm = None
+        dense_norm = None
         if method == "hybrid+rerank" and query_text:
             if query_pos is None:
                 # Live text search: query-centered passage, dynamic budget split
@@ -176,18 +202,14 @@ class Recommender:
                 )
             
             # Blend with normalized BM25 keyword score so entity presence is honored
-            bm25_cand = bm25_scores[candidates]
-            bm25_max = bm25_cand.max() if len(bm25_cand) and bm25_cand.max() > 0 else 1.0
-            bm25_norm = bm25_cand / bm25_max
             if query_pos is None:
-                # Text query: semantic reranker is primary, BM25 supports entity matching
-                relevance = 0.65 * rerank_scores + 0.35 * bm25_norm
+                # Text query: reranker is primary, BM25 supports entity matching
+                bm25_norm = norm([bm25_scores[p] for p in candidates])
+                relevance = config.WEIGHT_RERANK * rerank_scores + config.WEIGHT_BM25 * bm25_norm
             else:
-                # Article-to-article: reranker + semantic + keyword blend
-                sem_cand = semantic_scores[candidates]
-                sem_max = sem_cand.max() if len(sem_cand) and sem_cand.max() > 0 else 1.0
-                sem_norm = sem_cand / sem_max
-                relevance = 0.55 * rerank_scores + 0.30 * bm25_norm + 0.15 * sem_norm
+                # Article-to-article: reranker + lexical + semantic blend
+                relevance, bm25_norm, dense_norm = blend(
+                    rerank_scores, bm25_scores, semantic_scores, candidates)
             
             # Query-level gate: use raw cross-encoder probability, not max-normalized blend
             raw_rerank_max = float(np.max(rerank_scores)) if len(rerank_scores) > 0 else 0.0
@@ -207,29 +229,34 @@ class Recommender:
             low_confidence = threshold is not None and best_relevance < threshold
             rerank_scores = np.zeros(len(candidates))
 
-        # --- Lower Filter: Filter out non-relatable stories below discard floor ---
-        discard_floor = getattr(config, "ARTICLE_DISCARD_FLOOR", 0.05)
+        # --- Lower Filter: relevance admission (techniques 1 + 2) -----------
+        # Replaces the old ARTICLE_DISCARD_FLOOR, which was inert while the
+        # double-sigmoid bug trapped every score in [0.5, 0.731].
         source_linked_set = set()
         if query_pos is not None:
-            source_row_data = self.articles.iloc[query_pos]
-            raw_links = source_row_data.get("linked_ids", [])
-            if isinstance(raw_links, str):
-                try:
-                    import json
-                    raw_links = json.loads(raw_links)
-                except Exception:
-                    raw_links = []
-            source_linked_set = set(str(x) for x in raw_links)
+            source_linked_set = self._linked_ids(query_pos)
 
+        admission = None
         if method == "hybrid+rerank" and len(candidates) > 1:
-            valid_idx = [
-                idx for idx in range(len(candidates))
-                if rerank_scores[idx] >= discard_floor or str(self.articles.iloc[candidates[idx]]["id"]) in source_linked_set
+            from src.evidence import extract_shared_entities
+            src_text = str(self.articles.iloc[query_pos]["text_rerank"]) if query_pos is not None else rerank_query
+            linked_flags = [str(self.articles.iloc[c]["id"]) in source_linked_set for c in candidates]
+            entity_flags = [
+                linked_flags[idx] or bool(extract_shared_entities(
+                    src_text, str(self.articles.iloc[candidates[idx]].get("text_rerank", "")), limit=1))
+                for idx in range(len(candidates))
             ]
-            if valid_idx and len(valid_idx) < len(candidates):
-                candidates = [candidates[idx] for idx in valid_idx]
-                relevance = relevance[valid_idx]
-                rerank_scores = rerank_scores[valid_idx]
+            admission = config.admission_cut(
+                [float(r) for r in rerank_scores], entity_flags, linked_flags)
+            sel = admission["keep"]
+            if len(sel) < len(candidates):
+                candidates = [candidates[i] for i in sel]
+                relevance = relevance[sel]
+                rerank_scores = rerank_scores[sel]
+                if bm25_norm is not None:
+                    bm25_norm = bm25_norm[sel]
+                if dense_norm is not None:
+                    dense_norm = dense_norm[sel]
 
         # --- 4. Personalization & News Boost Calibration -------------------
         final = np.array(relevance, dtype=float)
@@ -240,9 +267,10 @@ class Recommender:
             w = config.USER_PROFILE_WEIGHT
             final = (1 - w) * final + w * user_affinities
 
+        boost_parts = {}
         if use_boosts and len(candidates) > 0:
-            boost_multipliers = np.array([self._boost_mult(query_pos, pos) for pos in candidates])
-            final = final * boost_multipliers
+            boost_parts = {i: self._boost_parts(query_pos, pos) for i, pos in enumerate(candidates)}
+            final = final * np.array([boost_parts[i]["total"] for i in range(len(candidates))])
 
         # --- 5. diversity ---------------------------------------------------
         raw_order = list(np.argsort(-final))
@@ -275,42 +303,24 @@ class Recommender:
 
             conf_info = calibrator.calibrate(unboosted, next_score=next_unboosted, agreement_count=agree_count)
 
-            raw_r_val = raw_rank_map.get(i, rank_idx)
-            shift_note = f"relevance-only rank #{raw_r_val}, final rank #{rank_idx} (promoted +{raw_r_val - rank_idx})" if rank_idx < raw_r_val else (
-                f"relevance-only rank #{raw_r_val}, final rank #{rank_idx} (demoted -{rank_idx - raw_r_val} by MMR diversity)" if rank_idx > raw_r_val else
-                f"relevance-only rank #{raw_r_val}, final rank #{rank_idx} (matches relevance)"
-            )
-
             reason_str = build_evidence_reason(
-                source_row=source_row,
-                cand_row=cand_row,
-                bm25_index=self.bm25,
-                bm25_rank=bm25_r,
-                dense_rank=dense_r,
-                rerank_score=raw_r,
+                source_row, cand_row, self.bm25, bm25_r, dense_r, raw_r,
                 editorial_link=(cand_id in source_linked_set),
                 confidence_info=conf_info,
-                score_breakdown={
-                    "reranker_prob": round(raw_r, 4) if raw_r is not None else None,
-                    "bm25_rank": bm25_r,
-                    "dense_rank": dense_r,
-                    "blend": round(unboosted, 4),
-                    "final": round(conf_info["calibrated_prob"], 4)
+                scores={
+                    "blend": unboosted,
+                    "bm25_norm": float(bm25_norm[i]) if bm25_norm is not None else None,
+                    "dense_norm": float(dense_norm[i]) if dense_norm is not None else None,
+                    "unboosted_confidence": calibrator.predict_probability(unboosted),
+                    "boost_items": boost_parts.get(i),
+                    "boosted_raw": float(final[i]),
                 },
-                rank_relevance={
-                    "rank_raw": raw_r_val,
-                    "final_rank": rank_idx,
-                    "shift": raw_r_val - rank_idx,
-                    "description": shift_note
-                },
-                method_ranks={
-                    "bm25": bm25_r,
-                    "dense": dense_r,
-                    "reranker": round(raw_r, 3) if raw_r is not None else None,
-                    "agreement_count": agree_count,
-                    "status": "All three methods agree" if agree_count >= 3 else (f"{agree_count} of 3 methods agree" if agree_count >= 2 else "Single method lead")
-                },
-                margin_cutoff=conf_info.get("margin")
+                rank_raw=raw_rank_map.get(i, rank_idx),
+                final_rank=rank_idx,
+                cand_pos=pos,
+                bm25_query=query_text,
+                cosine=float(semantic_scores[pos]),
+                admission=admission,
             )
 
             recommendations.append(Recommendation(
@@ -323,6 +333,7 @@ class Recommender:
                 agreement_count=agree_count,
                 rank=rank_idx,
                 rank_raw=raw_rank_map.get(i, rank_idx),
+                boosted_score=round(float(final[i]), 4),
             ))
         return Result(recommendations, low_confidence, best_relevance, method, notes)
 
@@ -359,87 +370,25 @@ class Recommender:
         order = np.argsort(-masked)[:n]
         return [int(i) for i in order if masked[i] > min_score]
 
-    def _boost_mult(self, query_pos, pos) -> float:
-        b = self.articles.iloc[pos]
-        mult = 1.0
-        if query_pos is not None:
-            a = self.articles.iloc[query_pos]
-            # Editorial "Also Read" link boost (human curator gold standard)
-            if "linked_ids" in a and isinstance(a["linked_ids"], list):
-                if b["id"] in a["linked_ids"]:
-                    mult *= 1.40
-            if a["section"] and a["section"] == b["section"]:
-                mult *= config.SECTION_BOOST_MULT
-            if a["subsection"] and a["subsection"] == b["subsection"]:
-                mult *= config.SUBSECTION_BOOST_MULT
+    def _linked_ids(self, query_pos) -> set:
+        """Editorial Also-Read link IDs of the source article, as a string set."""
+        return set() if query_pos is None else linked_set(self.articles.iloc[query_pos])
 
-        # Popularity boost: log-scaled so viral articles get a mild boost, not dominance
-        page_views = b.get("pageViews", 0)
-        if page_views > 0:
-            log_views = math.log1p(page_views)
-            log_max = math.log1p(self._max_page_views)
-            pop_factor = 1.0 + (config.POPULARITY_BOOST_MULT - 1.0) * (log_views / log_max)
-            mult *= pop_factor
+    def _boost_parts(self, query_pos, pos) -> dict:
+        """Every boost multiplier actually applied to this candidate, as numbers.
 
-        if pd.notna(b["date"]):
-            max_date = self.articles["date"].max()
-            days_old = max(0.0, (max_date - b["date"]).total_seconds() / 86400.0)
-            sec = "live_blog" if b["is_live"] else str(b["section"]).lower()
-            half_life = config.SECTION_HALF_LIVES.get(sec, config.SECTION_HALF_LIVES["default"])
-            recency_mult = 1.0 + (config.RECENCY_MAX_BOOST_MULT - 1.0) * (0.5 ** (days_old / half_life))
-            mult *= recency_mult
-        return mult
+        The total is simply the product of the parts, so the evaluation card can
+        show exactly where a boost came from instead of re-deriving it from a label.
+        """
+        source = self.articles.iloc[query_pos] if query_pos is not None else None
+        return boost_parts(source, self.articles.iloc[pos], self._max_page_views,
+                           self.articles["date"].max())
 
     def _mmr(self, candidates, final, k, is_search: bool = False) -> list:
         """Pick results one by one: high relevance, but penalise near-duplicate articles."""
-        similarity = self.semantic.similarity_matrix(candidates)
-        selected, remaining = [], list(range(len(candidates)))
-        threshold = 0.85 if is_search else config.MMR_THETA  # MEASURED: was 0.80
-        lam = 0.88 if is_search else config.MMR_LAMBDA
-
-        while remaining and len(selected) < k:
-            def mmr_score(i):
-                # Only penalize if similarity exceeds threshold (true near-duplicate wire copy)
-                high_sims = [similarity[i][j] for j in selected if similarity[i][j] > threshold]
-                redundancy = max(high_sims, default=0.0)
-                return lam * final[i] - (1 - lam) * redundancy
-
-            best = max(remaining, key=mmr_score)
-            selected.append(best)
-            remaining.remove(best)
-        return selected
-
-    def _explain(self, query_text, query_pos, pos, relevance_score: float = 0.0, user_history: list = None) -> str:
-        """Build a short human-readable reason combining neural semantics and keyword topics."""
-        parts = []
-
-        # 1. Neural Semantic Context Match
-        if relevance_score >= 0.85:
-            parts.append(f"Strong semantic match ({int(relevance_score * 100)}% context similarity)")
-        elif relevance_score >= 0.55:
-            parts.append(f"Semantic context match ({int(relevance_score * 100)}%)")
-
-        # 2. Shared Topics / Keywords
-        if query_text:
-            shared = set(tokenize(query_text)) & set(self.bm25.docs[pos])
-            shared = sorted(shared, key=lambda t: -self.bm25.idf[t])[:4]
-            if shared:
-                parts.append("shared topics: " + ", ".join(shared))
-            elif not any("semantic" in p.lower() for p in parts):
-                parts.append("thematic conceptual match")
-
-        # 3. Section and Temporal Affinity
-        if query_pos is not None:
-            a, b = self.articles.iloc[query_pos], self.articles.iloc[pos]
-            if a["section"] and a["section"] == b["section"]:
-                parts.append(f"same section ({b['section']})")
-            if pd.notna(a["date"]) and pd.notna(b["date"]):
-                days = abs((a["date"] - b["date"]).days)
-                if days <= 1:
-                    parts.append("published around the same time")
-        elif user_history:
-            parts.append("matches your recent reading interest")
-        return "; ".join(parts) if parts else "High semantic and topic relevance"
+        return mmr(final, self.semantic.similarity_matrix(candidates), k,
+                   config.MMR_LAMBDA_SEARCH if is_search else config.MMR_LAMBDA,
+                   config.MMR_THETA_SEARCH if is_search else config.MMR_THETA)
 
     def _to_dict(self, pos) -> dict:
         row = self.articles.iloc[pos]

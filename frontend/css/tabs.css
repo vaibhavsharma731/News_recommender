@@ -164,7 +164,7 @@
   border: 1px solid var(--border-accent);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  box-shadow: var(--brand-glow), var(--shadow-md);
+  box-shadow: var(--brand-glow), var(--shadow-md), var(--glass-sheen);
   z-index: 2;
   display: flex; flex-direction: column;
   animation: fadeInUp 0.3s ease both;
@@ -196,7 +196,7 @@
 /* Recommendation tiles around the centre */
 .orbit-tile {
   width: 168px;
-  background: var(--bg-base);
+  background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -283,6 +283,62 @@
 .feed-recs-empty {
   text-align: center;
   font-size: 0.85rem; color: var(--text-muted); padding: 8px 0;
+}
+
+/* Technique 4 — "Trending in <section>": deliberately separated from the halo so it
+   never reads as a relevance match. Dashed border + muted palette = different claim. */
+.feed-fallback {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-subtle, #2a3442);
+}
+
+.feed-fallback-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  margin-bottom: 8px;
+}
+
+.feed-fallback-title {
+  font-size: 0.78rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-secondary);
+}
+
+.feed-fallback-note {
+  font-size: 0.7rem; color: var(--text-muted); font-style: italic;
+}
+
+.feed-fallback-grid {
+  display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+
+.feed-fallback-item {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px dashed var(--border-subtle, #2a3442);
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.02));
+  text-decoration: none; color: inherit;
+  transition: border-color 0.16s, transform 0.16s;
+}
+
+.feed-fallback-item:hover {
+  border-color: var(--border-strong, #3c4a5d);
+  transform: translateY(-1px);
+}
+
+.feed-fallback-sec {
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.feed-fallback-hl {
+  font-size: 0.8rem; line-height: 1.3; color: var(--text-primary);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.feed-fallback-meta {
+  font-size: 0.66rem; color: var(--text-muted);
 }
 
 /* Stack the halo on narrow screens: centre story first, then the rec rows */

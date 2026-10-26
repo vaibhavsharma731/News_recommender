@@ -67,9 +67,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (sectionFilter) {
     sectionFilter.addEventListener('change', (e) => {
-      const sec = e.target.value;
-      State.set({ activeSection: sec });
-      syncCategoryPills(sec);
+      State.set({ activeSection: e.target.value });
       triggerActiveTabReload();
     });
   }
@@ -230,7 +228,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         articles = window.Tabs._allArticlesCache;
       }
       if (!articles || !articles.length) {
-        const data = await Api.articles({ page: 1, perPage: 200, sort: 'confidence' });
+        const data = await Api.articles({ page: 1, perPage: 100, sort: 'confidence' });
         articles = data.articles || [];
       }
     } catch (e) {
@@ -285,13 +283,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (loadingText) loadingText.textContent = 'Connecting to Recommendation Engine...';
 
     // 1. Fetch Engine Status
-    const statusData = await Api.status();
+    // 'let' not 'const': checkReaderDatabaseState() below refreshes this in place.
+    let statusData = await Api.status();
     State.set({ engineInfo: statusData });
 
     const engineNameEl = document.getElementById('engine-name');
     const totalArticlesEl = document.getElementById('total-articles');
     if (engineNameEl) engineNameEl.textContent = statusData.engine || 'RecSys v1.0';
-    if (totalArticlesEl) totalArticlesEl.textContent = `${statusData.total_articles.toLocaleString()} stories`;
+    if (totalArticlesEl) totalArticlesEl.textContent = `${(statusData.total_articles || 0).toLocaleString()} stories`;
 
     // 2. Fetch Sections & Categories
     if (loadingText) loadingText.textContent = 'Loading news categories...';

@@ -681,8 +681,9 @@
 .eval-modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.8);
-  backdrop-filter: blur(8px);
+  background: rgba(4,4,10,0.62);
+  backdrop-filter: var(--glass-blur) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: var(--glass-blur) saturate(var(--glass-sat));
   z-index: 9999;
   display: flex;
   align-items: center;
@@ -699,7 +700,7 @@
   width: 100%;
   max-height: 92vh;
   overflow-y: auto;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.85);
+  box-shadow: var(--glass-shadow);
   padding: 24px;
   display: flex;
   flex-direction: column;

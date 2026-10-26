@@ -5,9 +5,7 @@ Editor and PostgreSQL API routes:
 - Ingestion progress polling
 - Instant precomputed recommendations endpoint
 """
-import os
 import uuid
-import shutil
 import threading
 from pathlib import Path
 from typing import Optional
@@ -15,14 +13,44 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from db.connection import get_db, check_db_health, init_db
-from db.models import Article, ArticleRecommendation, IngestionJob
+from db.models import Article
 from db.repository import ArticleRepository
 from db.pipeline import run_ingestion_pipeline
+from src.evidence import enrich_recommendation_evidence
 
 router = APIRouter(prefix="/api/db", tags=["Database & Editor"])
 
 UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB security limit
+
+
+def _require_idle(db: Session) -> None:
+    """Only one ingestion job at a time: two would fight for CPU and the model cache."""
+    active = ArticleRepository.get_active_job(db)
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ingestion job '{active.id}' ({active.filename}) is currently running. Please wait for it to finish.",
+        )
+
+
+def _launch(db: Session, job_id: str, filename: str, csv_source: Path, **kwargs) -> None:
+    """Record the job, then run the (long) ingestion pipeline off the request thread."""
+    ArticleRepository.create_job(db, job_id=job_id, filename=filename)
+    threading.Thread(
+        target=run_ingestion_pipeline,
+        args=(csv_source, job_id),
+        kwargs=kwargs,
+        daemon=True,
+    ).start()
+
+
+def _reload_live_engine() -> None:
+    """Re-sync the in-process engine after the corpus changed (late import: circular)."""
+    from api.server import reload_engine_from_postgres
+    reload_engine_from_postgres()
 
 
 @router.get("/health")
@@ -50,9 +78,6 @@ def trigger_db_init():
     return {"status": "success", "message": "PostgreSQL tables and extensions verified and ready."}
 
 
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB security limit
-
-
 @router.post("/upload-csv")
 async def upload_csv(
     file: UploadFile = File(...),
@@ -62,13 +87,7 @@ async def upload_csv(
     Accepts CSV upload with security validation (path sanitization & size limit),
     launches background pipeline (Cleaning -> Postgres -> Embeddings -> pgvector Top 50 -> Reranker Top 10).
     """
-    # Guard against concurrent background jobs competing for CPU
-    active_job = ArticleRepository.get_active_job(db)
-    if active_job:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Ingestion job '{active_job.id}' ({active_job.filename}) is currently running. Please wait for it to finish."
-        )
+    _require_idle(db)  # before writing 50 MB, not after
 
     safe_filename = Path(file.filename or "articles.csv").name
     if not safe_filename.lower().endswith(".csv"):
@@ -88,12 +107,7 @@ async def upload_csv(
                 raise HTTPException(status_code=413, detail="File too large. Maximum allowed size is 50MB.")
             buffer.write(chunk)
 
-    ArticleRepository.create_job(db, job_id=job_id, filename=safe_filename)
-    threading.Thread(
-        target=run_ingestion_pipeline,
-        args=(saved_path, job_id),
-        daemon=True,
-    ).start()
+    _launch(db, job_id, safe_filename, saved_path)
 
     return {
         "job_id": job_id,
@@ -112,25 +126,14 @@ def ingest_default_dataset(
     """
     One-click ingestion of the existing sample dataset into PostgreSQL.
     """
-    active_job = ArticleRepository.get_active_job(db)
-    if active_job:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Ingestion job '{active_job.id}' ({active_job.filename}) is currently running. Please wait for it to finish."
-        )
+    _require_idle(db)
 
     default_csv = Path(__file__).resolve().parent.parent / "data" / "articles_clean_train_80.csv"
     if not default_csv.exists():
         raise HTTPException(status_code=404, detail="Default dataset file not found on server.")
 
     job_id = f"job_demo_{uuid.uuid4().hex[:6]}"
-    ArticleRepository.create_job(db, job_id=job_id, filename="articles_clean_train_80.csv")
-    threading.Thread(
-        target=run_ingestion_pipeline,
-        args=(default_csv, job_id),
-        kwargs={"limit": limit},
-        daemon=True,
-    ).start()
+    _launch(db, job_id, "articles_clean_train_80.csv", default_csv, limit=limit)
 
     return {
         "job_id": job_id,
@@ -159,9 +162,6 @@ def list_jobs(limit: int = 10, db: Session = Depends(get_db)):
         "jobs": [j.to_dict() for j in jobs],
         "summary": summary,
     }
-
-
-from src.evidence import enrich_recommendation_evidence
 
 
 @router.get("/recommendations/{article_id}")
@@ -194,10 +194,8 @@ def clear_database(db: Session = Depends(get_db)):
     """
     try:
         stats = ArticleRepository.clear_all_data(db)
-        # Notify in-memory engine if running
         try:
-            from api.server import reload_engine_from_postgres
-            reload_engine_from_postgres()
+            _reload_live_engine()  # the in-memory corpus is now empty
         except Exception:
             pass
 
@@ -214,8 +212,7 @@ def clear_database(db: Session = Depends(get_db)):
 def reload_engine():
     """Trigger reload of in-memory engine from PostgreSQL articles."""
     try:
-        from api.server import reload_engine_from_postgres
-        reload_engine_from_postgres()
+        _reload_live_engine()
         return {"status": "success", "message": "In-memory engine synchronized with PostgreSQL."}
     except Exception as e:
         return {"status": "error", "message": str(e)}

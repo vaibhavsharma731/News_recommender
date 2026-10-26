@@ -259,7 +259,7 @@
 .randomizer-skeleton-thumb {
   width: 100%; height: 80px;
   background: var(--bg-base);
-  animation: shimmer 1.5s infinite;
+  animation: pulse-fade 1.5s infinite;
 }
 
 .randomizer-skeleton-body {
@@ -270,7 +270,7 @@
   height: 10px;
   border-radius: 4px;
   background: var(--bg-base);
-  animation: shimmer 1.5s infinite;
+  animation: pulse-fade 1.5s infinite;
   margin-bottom: 6px;
 }
 
@@ -279,7 +279,9 @@
   margin-bottom: 0;
 }
 
-@keyframes shimmer {
+/* Named pulse-fade, NOT shimmer: base.css owns the global `shimmer` sweep used by
+   .skeleton. Redefining `shimmer` here silently broke every skeleton in the app. */
+@keyframes pulse-fade {
   0%   { opacity: 0.6; }
   50%  { opacity: 0.3; }
   100% { opacity: 0.6; }

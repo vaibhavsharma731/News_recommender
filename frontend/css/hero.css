@@ -2,6 +2,8 @@
 .hero-section {
   position: relative; margin-bottom: 28px;
   border-radius: var(--radius-xl); overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--glass-shadow);
 }
 .hero-carousel { position: relative; height: 340px; border-radius: var(--radius-xl); overflow: hidden; }
 .hero-slide {

@@ -4,14 +4,12 @@ CSV -> Cleaning -> PostgreSQL -> Dense Embeddings (pgvector) -> BM25 + pgvector 
 """
 import io
 import time
-import json
-import math
+import traceback
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional, List, Union, Dict, Any
 import numpy as np
 import pandas as pd
-from sqlalchemy.orm import Session
 
 import config
 from .connection import SessionLocal, init_db
@@ -19,20 +17,11 @@ from .models import Article, ArticleRecommendation, IngestionJob
 from .repository import ArticleRepository
 from src.retrieval import BM25Index, tokenize, reciprocal_rank_fusion
 from src.model_registry import get_embedder
+from src.reranker import Reranker
 from src.data_loader import clean_dataframe
 from src.calibration import ConfidenceCalibrator
-from src.evidence import build_evidence_reason, evaluate_signal_agreement
-
-
-def _get_embedding_model():
-    """Return the shared embedding model from the model registry."""
-    return get_embedder()
-
-
-def _get_reranker_model():
-    """Return the shared cross-encoder reranker."""
-    from src.reranker import Reranker
-    return Reranker()
+from src.evidence import build_evidence_reason, evaluate_signal_agreement, extract_shared_entities
+from src.scoring import blend, boost_parts, json_ids, linked_set, mmr
 
 
 def _fmt_eta(seconds: float) -> str:
@@ -40,6 +29,15 @@ def _fmt_eta(seconds: float) -> str:
     m, s = divmod(seconds, 60)
     h, m = divmod(m, 60)
     return f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s"
+
+
+def _titles_summary(items, limit: int = 4) -> str:
+    """'“Title A”, “Title B” (+3 more)' for a list of {"id","title"} dicts."""
+    titles = [a["title"] for a in items[:limit] if a.get("title")]
+    if not titles:
+        return ""
+    more = f" (+{len(items) - len(titles)} more)" if len(items) > len(titles) else ""
+    return ", ".join(f"“{t[:45]}”" for t in titles) + more
 
 
 def _focused_query(row, bm25) -> str:
@@ -64,35 +62,130 @@ def _load_full_corpus(db):
     whole database instead of only from the batch it arrived in.
     """
     arts = db.query(Article).order_by(Article.date.desc().nulls_last()).all()
-    records, vectors, id_to_pos = [], [], {}
-    for a in arts:
-        try:
-            linked = json.loads(a.linked_ids) if a.linked_ids else []
-        except Exception:
-            linked = []
-        pos = len(records)
-        records.append({
-            "id": str(a.id),
-            "title": str(a.title),
-            "description": str(a.description or ""),
-            "body": str(a.body or ""),
-            "section": str(a.section or ""),
-            "subsection": str(a.subsection or ""),
-            "date": a.date,
-            "url": str(a.url or ""),
-            "image": str(a.image or ""),
-            "is_live": bool(a.is_live),
-            "page_views": int(a.page_views or 0),
-            "unique_users": int(a.unique_users or 0),
-            "linked_ids": linked,
-            "text_embed": a.text_embed or f"{a.title}. {a.description or ''}",
-            "text_bm25": a.text_bm25 or f"{a.title}. {a.title}. {a.title}. {a.description or ''}. {a.body or ''}",
-            "text_rerank": a.text_rerank or f"{a.title}. {a.description or ''}.",
-        })
-        id_to_pos[str(a.id)] = pos
-        vectors.append(a.embedding if a.embedding is not None else [0.0] * 768)
+    records = ArticleRepository.corpus_rows(arts)
+    vectors = [a.embedding if a.embedding is not None else [0.0] * 768 for a in arts]
     emb = np.asarray(vectors, dtype=np.float32) if vectors else np.zeros((0, 768), dtype=np.float32)
-    return records, emb, id_to_pos
+    return records, emb, {r["id"]: pos for pos, r in enumerate(records)}
+
+
+def _gate_candidates(row, cands, records, bm25_scores):
+    """
+    Technique 3 - lexical / entity support gate.
+
+    Drop any candidate that shares NEITHER a BM25 keyword NOR a named entity with
+    the source article. Never returns an empty list: if everything would be
+    gated out the original candidates are returned unchanged, because a genuinely
+    isolated article still deserves whatever the reranker thinks is closest.
+
+    Editorial Also-Read links are admitted unconditionally - they are the ground
+    truth the whole evaluation is built on.
+    """
+    if not (config.LEXICAL_GATE or config.ENTITY_GATE):
+        return cands
+
+    source_linked = linked_set(row)
+
+    src_ents = set()
+    if config.ENTITY_GATE:
+        src_ents = {e.lower() for e in extract_shared_entities(row.get("text_rerank", ""), "", limit=24)}
+
+    kept = []
+    for c in cands:
+        if str(records[c]["id"]) in source_linked:
+            kept.append(c)
+            continue
+        if config.LEXICAL_GATE and bm25_scores[c] > 1e-9:
+            kept.append(c)
+            continue
+        if src_ents:
+            c_ents = {e.lower() for e in extract_shared_entities(records[c].get("text_rerank", ""), "", limit=24)}
+            if src_ents & c_ents:
+                kept.append(c)
+    return kept or cands
+
+
+def _rank_and_build(
+    source_row, cand_positions, rerank_vec, records, emb, bm25,
+    bm25_all, dense_all, bm25_query, bm25_pos_of, dense_pos_of,
+    max_views, max_date, current_ver,
+):
+    """
+    Blend -> boosts -> MMR -> admission gate -> evidence rows.
+
+    The single ranking implementation, called by BOTH the forward precompute and
+    the reverse push. They used to be two hand-maintained copies and had already
+    drifted (one clipped the dense term and one did not, and reverse-pushed rows
+    were missing part of the evidence). ``bm25_pos_of`` / ``dense_pos_of`` map a
+    corpus position to its real rank so an agreement signal is never invented.
+    """
+    relevance, bm25_norm, dense_norm = blend(
+        rerank_vec, bm25_all, dense_all, cand_positions)
+
+    parts = [boost_parts(source_row, records[c], max_views, max_date) for c in cand_positions]
+    boosted = relevance * np.array([p["total"] for p in parts])
+
+    # Relevance order before diversity: what every rank shift is measured against.
+    raw_order = list(np.argsort(-boosted))
+    raw_rank = {i: r + 1 for r, i in enumerate(raw_order)}
+
+    # A pool of TOP_K or fewer needs no diversity pass: relevance order is final.
+    order = raw_order if len(cand_positions) <= config.TOP_K else mmr(
+        boosted, emb[cand_positions] @ emb[cand_positions].T, config.TOP_K)
+
+    # Relevance admission gate (techniques 1-3): trim to genuinely related
+    # articles instead of padding to a fixed TOP_K. Editorial Also-Read links
+    # bypass every gate - they are the ground truth the evaluation is built on.
+    linked = linked_set(source_row)
+    src_text = source_row.get("text_rerank", "")
+    linked_flags = [str(records[cand_positions[r]]["id"]) in linked for r in order]
+    entity_flags = [
+        linked_flags[i] or bool(extract_shared_entities(
+            src_text, records[cand_positions[r]].get("text_rerank", ""), limit=1))
+        for i, r in enumerate(order)
+    ]
+    gate = config.admission_cut([float(rerank_vec[r]) for r in order], entity_flags, linked_flags)
+    order = [order[i] for i in gate["keep"]]
+
+    calibrator = ConfidenceCalibrator()
+    recs = []
+    for rank, rel in enumerate(order, start=1):
+        pos = cand_positions[rel]
+        cand_id = str(records[pos]["id"])
+        unboosted = float(np.clip(relevance[rel], 0.0, 1.0))
+        nxt = float(np.clip(relevance[order[rank]], 0.0, 1.0)) if rank < len(order) else None
+        raw = float(rerank_vec[rel])
+
+        # Real corpus ranks for the agreement signals.
+        bm25_pos, dense_pos = bm25_pos_of.get(pos, 999), dense_pos_of.get(pos, 999)
+        agree, _ = evaluate_signal_agreement(bm25_pos, dense_pos, raw)
+        conf = calibrator.calibrate(unboosted, next_score=nxt, agreement_count=agree)
+
+        recs.append({
+            "recommended_article_id": cand_id,
+            "rank": rank,
+            "rank_raw": raw_rank.get(rel, rank),
+            "score": conf["calibrated_prob"],
+            "boosted_score": round(float(boosted[rel]), 4),
+            "rerank_score": round(raw, 6),
+            "pipeline_version": current_ver,
+            "method": "neural_hybrid_rerank",
+            "reason": build_evidence_reason(
+                source_row, records[pos], bm25, bm25_pos, dense_pos, raw,
+                editorial_link=(cand_id in linked), confidence_info=conf,
+                scores={
+                    "blend": unboosted,
+                    "bm25_norm": float(bm25_norm[rel]),
+                    "dense_norm": float(dense_norm[rel]),
+                    "unboosted_confidence": calibrator.predict_probability(unboosted),
+                    "boost_items": parts[rel],
+                    "boosted_raw": float(boosted[rel]),
+                },
+                rank_raw=raw_rank.get(rel, rank), final_rank=rank,
+                cand_pos=pos, bm25_query=bm25_query,
+                cosine=float(dense_all[pos]), admission=gate,
+            ),
+        })
+    return recs
 
 
 def _precompute_for_article(
@@ -108,13 +201,13 @@ def _precompute_for_article(
     """
     row = records[idx]
 
-    # A. Keyword candidates
-    bm25_scores = bm25.scores(_focused_query(row, bm25))
+    # A. Keyword candidates. The query string is kept so the evidence card can
+    # show which terms actually matched (bm25_term_hits).
+    bm25_query = _focused_query(row, bm25)
+    bm25_scores = bm25.scores(bm25_query)
     bm25_scores[idx] = -np.inf
     bm25_rank = [
-        int(p)
-        for p in np.argsort(-bm25_scores)[:n_retrieve]
-        if bm25_scores[p] > 1e-9
+        int(p) for p in np.argsort(-bm25_scores)[:n_retrieve] if bm25_scores[p] > 1e-9
     ]
 
     # B. Semantic candidates
@@ -122,11 +215,14 @@ def _precompute_for_article(
     dense_scores[idx] = -np.inf
     dense_rank = [int(p) for p in np.argsort(-dense_scores)[:n_retrieve]]
 
-    # C. Reciprocal-rank fusion
+    # C. Reciprocal-rank fusion, then the lexical/entity gate (technique 3): a
+    # candidate with no shared keyword AND no shared entity is noise however close
+    # it sits in embedding space, so it never reaches the cross-encoder.
     fused = reciprocal_rank_fusion([bm25_rank, dense_rank], k=config.RRF_K)
     cands = sorted(fused, key=fused.get, reverse=True)[:n_cand]
     if not cands:
         return [], []
+    cands = _gate_candidates(row, cands, records, bm25_scores)
 
     # D. Cross-encoder reranking (article-to-article: 50/50 budget split)
     rerank_scores = np.asarray(
@@ -139,116 +235,14 @@ def _precompute_for_article(
         dtype=np.float32,
     )
 
-    # E. Blend reranker, BM25, and dense relevance scores
-    cand_bm25 = np.where(np.isneginf(bm25_scores[cands]), 0.0, bm25_scores[cands])
-    bm25_max = cand_bm25.max() if cand_bm25.max() > 0 else 1.0
-    bm25_norm = cand_bm25 / bm25_max
-
-    cand_dense = dense_scores[cands]
-    dense_max = cand_dense.max() if cand_dense.max() > 0 else 1.0
-    dense_norm = np.clip(cand_dense / dense_max, 0.0, 1.0)
-    relevance = 0.55 * rerank_scores + 0.30 * bm25_norm + 0.15 * dense_norm
-
-    # F. News metadata boosts and G. MMR diversity
-    boosts = _calculate_boosts(row, [records[c] for c in cands], max_views, max_date)
-    boosted_relevance = relevance * boosts
-
-    # Raw relevance order (without MMR):
-    raw_sorted_indices = list(np.argsort(-boosted_relevance))
-    raw_rank_map = {idx: r + 1 for r, idx in enumerate(raw_sorted_indices)}
-
-    order = _apply_mmr(
-        cands,
-        boosted_relevance,
-        emb[cands],
-        top_k=min(config.TOP_K, len(cands)),
-        lam=config.MMR_LAMBDA,
+    # E-H. Blend -> boosts -> MMR -> gate -> evidence.
+    recs = _rank_and_build(
+        row, cands, rerank_scores, records, emb, bm25, bm25_scores, dense_scores,
+        bm25_query,
+        {c: i + 1 for i, c in enumerate(bm25_rank)},
+        {c: i + 1 for i, c in enumerate(dense_rank)},
+        max_views, max_date, config.get_pipeline_version(),
     )
-
-    # H. Filter out non-relatable stories below discard floor & package ranked recommendations
-    source_linked = row.get("linked_ids", [])
-    if isinstance(source_linked, str):
-        try:
-            source_linked = json.loads(source_linked)
-        except Exception:
-            source_linked = []
-    source_linked_set = set(str(x) for x in source_linked)
-
-    discard_floor = getattr(config, "ARTICLE_DISCARD_FLOOR", 0.05)
-    filtered_order = []
-    for rel_pos in order:
-        c = cands[rel_pos]
-        cand_id = str(records[c]["id"])
-        raw_rerank = float(rerank_scores[rel_pos])
-        if raw_rerank < discard_floor and cand_id not in source_linked_set:
-            continue
-        filtered_order.append(rel_pos)
-
-    calibrator = ConfidenceCalibrator()
-    recs = []
-    current_ver = config.get_pipeline_version()
-    for rank, rel_pos in enumerate(filtered_order, start=1):
-        c = cands[rel_pos]
-        cand_id = str(records[c]["id"])
-        unboosted_score = float(np.clip(relevance[rel_pos], 0.0, 1.0))
-        next_score = float(np.clip(relevance[filtered_order[rank]], 0.0, 1.0)) if rank < len(filtered_order) else None
-
-        # Agreement signals
-        bm25_pos = bm25_rank.index(c) + 1 if c in bm25_rank else 999
-        dense_pos = dense_rank.index(c) + 1 if c in dense_rank else 999
-        raw_rerank = float(rerank_scores[rel_pos])
-        agree_count, signals = evaluate_signal_agreement(bm25_pos, dense_pos, raw_rerank)
-
-        conf_info = calibrator.calibrate(unboosted_score, next_score=next_score, agreement_count=agree_count)
-
-        raw_r = raw_rank_map.get(rel_pos, rank)
-        shift_note = f"relevance-only rank #{raw_r}, final rank #{rank} (promoted +{raw_r - rank})" if rank < raw_r else (
-            f"relevance-only rank #{raw_r}, final rank #{rank} (demoted -{rank - raw_r} by MMR diversity)" if rank > raw_r else
-            f"relevance-only rank #{raw_r}, final rank #{rank} (matches relevance)"
-        )
-
-        reason_str = build_evidence_reason(
-            source_row=row,
-            cand_row=records[c],
-            bm25_index=bm25,
-            bm25_rank=bm25_pos,
-            dense_rank=dense_pos,
-            rerank_score=raw_rerank,
-            editorial_link=(cand_id in source_linked_set),
-            confidence_info=conf_info,
-            score_breakdown={
-                "reranker_prob": round(raw_rerank, 4),
-                "bm25_rank": bm25_pos,
-                "dense_rank": dense_pos,
-                "blend": round(unboosted_score, 4),
-                "final": round(conf_info["calibrated_prob"], 4)
-            },
-            rank_relevance={
-                "rank_raw": raw_r,
-                "final_rank": rank,
-                "shift": raw_r - rank,
-                "description": shift_note
-            },
-            method_ranks={
-                "bm25": bm25_pos,
-                "dense": dense_pos,
-                "reranker": round(raw_rerank, 3),
-                "agreement_count": agree_count,
-                "status": "All three methods agree" if agree_count >= 3 else (f"{agree_count} of 3 methods agree" if agree_count >= 2 else "Single method lead")
-            },
-            margin_cutoff=conf_info.get("margin")
-        )
-
-        recs.append({
-            "recommended_article_id": cand_id,
-            "rank": rank,
-            "rank_raw": raw_rank_map.get(rel_pos, rank),
-            "score": conf_info["calibrated_prob"],
-            "rerank_score": round(raw_rerank, 6),
-            "pipeline_version": current_ver,
-            "method": "neural_hybrid_rerank",
-            "reason": reason_str,
-        })
     return recs, cands
 
 
@@ -333,223 +327,25 @@ def _reverse_push_for_old(
                 rerank_scores[i] = float(scored[k])
         rerank_vec = np.asarray(rerank_scores, dtype=np.float32)
 
-        # 5. Recompute BM25 + dense O-centrically for the merged candidate set.
-        bm25_all = bm25.scores(_focused_query(records[opos], bm25))
+        # 5. Real corpus ranks for the agreement signals. The old code passed
+        #    `rel_pos + 1` for both BM25 and dense, which invented agreement.
+        bm25_query_old = _focused_query(records[opos], bm25)
+        bm25_all = bm25.scores(bm25_query_old)
         dense_all = emb @ emb[opos]
-        bm25_c = np.array([bm25_all[p] for p in cand_positions])
-        dense_c = np.array([dense_all[p] for p in cand_positions])
-        bm25_max = bm25_c.max() if bm25_c.max() > 0 else 1.0
-        dense_max = dense_c.max() if dense_c.max() > 0 else 1.0
-        bm25_norm = bm25_c / bm25_max
-        dense_norm = np.clip(dense_c / dense_max, 0.0, 1.0)
-        relevance = 0.55 * rerank_vec + 0.30 * bm25_norm + 0.15 * dense_norm
 
-        # 6. Boosts + diversity, then persist.
-        boosts = _calculate_boosts(records[opos], [records[p] for p in cand_positions], max_views, max_date)
-        boosted_relevance = relevance * boosts
-
-        raw_sorted_indices = list(np.argsort(-boosted_relevance))
-        raw_rank_map = {idx: r + 1 for r, idx in enumerate(raw_sorted_indices)}
-
-        order = _apply_mmr(
-            cand_positions,
-            boosted_relevance,
-            emb[cand_positions],
-            top_k=min(config.TOP_K, len(cand_positions)),
-            lam=config.MMR_LAMBDA,
+        # 6. Blend -> boosts -> MMR -> gate -> evidence, exactly as the forward
+        #    path does, then persist.
+        recs = _rank_and_build(
+            records[opos], cand_positions, rerank_vec, records, emb, bm25,
+            bm25_all, dense_all, bm25_query_old,
+            {int(p): i + 1 for i, p in enumerate(np.argsort(-bm25_all))},
+            {int(p): i + 1 for i, p in enumerate(np.argsort(-dense_all))},
+            max_views, max_date, current_ver,
         )
-
-        old_row = records[opos]
-        old_linked = old_row.get("linked_ids", [])
-        if isinstance(old_linked, str):
-            try:
-                old_linked = json.loads(old_linked)
-            except Exception:
-                old_linked = []
-        old_linked_set = set(str(x) for x in old_linked)
-
-        discard_floor = getattr(config, "ARTICLE_DISCARD_FLOOR", 0.05)
-        filtered_order = []
-        for rel_pos in order:
-            c = cand_positions[rel_pos]
-            cand_id = str(records[c]["id"])
-            raw_rerank = float(rerank_vec[rel_pos])
-            if raw_rerank < discard_floor and cand_id not in old_linked_set:
-                continue
-            filtered_order.append(rel_pos)
-
-        calibrator = ConfidenceCalibrator()
-        recs = []
-        for rank, rel_pos in enumerate(filtered_order, start=1):
-            c = cand_positions[rel_pos]
-            cand_id = str(records[c]["id"])
-            unboosted_score = float(np.clip(relevance[rel_pos], 0.0, 1.0))
-            next_score = float(np.clip(relevance[filtered_order[rank]], 0.0, 1.0)) if rank < len(filtered_order) else None
-
-            raw_rerank = float(rerank_vec[rel_pos])
-            agree_count, signals = evaluate_signal_agreement(rel_pos + 1, rel_pos + 1, raw_rerank)
-            conf_info = calibrator.calibrate(unboosted_score, next_score=next_score, agreement_count=agree_count)
-
-            reason_str = build_evidence_reason(
-                source_row=old_row,
-                cand_row=records[c],
-                bm25_index=bm25,
-                bm25_rank=rel_pos + 1,
-                dense_rank=rel_pos + 1,
-                rerank_score=raw_rerank,
-                editorial_link=(cand_id in old_linked_set),
-                confidence_info=conf_info,
-            )
-
-            recs.append({
-                "recommended_article_id": cand_id,
-                "rank": rank,
-                "rank_raw": raw_rank_map.get(rel_pos, rank),
-                "score": conf_info["calibrated_prob"],
-                "rerank_score": round(raw_rerank, 6),
-                "pipeline_version": current_ver,
-                "method": "neural_hybrid_rerank",
-                "reason": reason_str,
-            })
         ArticleRepository.save_recommendations(db, old_id, recs, commit=False)
         refreshed.append({"id": old_id, "title": str(records[opos].get("title", ""))})
     return refreshed
 
-
-
-
-def _calculate_boosts(
-    source_row: dict,
-    candidate_rows: List[dict],
-    max_views: int,
-    max_date: Optional[pd.Timestamp]
-) -> np.ndarray:
-    """
-    Computes news domain boosts:
-    1. Editorial "Also Read" link: 1.40x
-    2. Same section: 1.08x
-    3. Same subsection: 1.05x
-    4. Popularity log-scale: up to 1.06x
-    5. Dynamic recency exponential decay based on section half-life: up to 1.10x
-    """
-    multipliers = []
-    source_linked = source_row.get("linked_ids", [])
-    if isinstance(source_linked, str):
-        try:
-            source_linked = json.loads(source_linked)
-        except Exception:
-            source_linked = []
-
-    for cand in candidate_rows:
-        mult = 1.0
-
-        # Editorial link boost
-        if cand["id"] in source_linked:
-            mult *= 1.40
-
-        # Section / Subsection boost
-        if source_row.get("section") and source_row["section"] == cand.get("section"):
-            mult *= config.SECTION_BOOST_MULT
-        if source_row.get("subsection") and source_row["subsection"] == cand.get("subsection"):
-            mult *= config.SUBSECTION_BOOST_MULT
-
-        # Popularity boost
-        views = cand.get("page_views", 0)
-        if views > 0 and max_views > 0:
-            log_views = math.log1p(views)
-            log_max = math.log1p(max_views)
-            pop_factor = 1.0 + (config.POPULARITY_BOOST_MULT - 1.0) * (log_views / log_max)
-            mult *= pop_factor
-
-        # Recency decay boost
-        c_date = cand.get("date")
-        if pd.notna(c_date) and pd.notna(max_date):
-            days_old = max(0.0, (max_date - c_date).total_seconds() / 86400.0)
-            sec = "live_blog" if cand.get("is_live") else str(cand.get("section", "")).lower()
-            half_life = config.SECTION_HALF_LIVES.get(sec, config.SECTION_HALF_LIVES.get("default", 2.0))
-            recency_mult = 1.0 + (config.RECENCY_MAX_BOOST_MULT - 1.0) * (0.5 ** (days_old / half_life))
-            mult *= recency_mult
-
-        multipliers.append(mult)
-    return np.array(multipliers, dtype=float)
-
-
-def _apply_mmr(
-    cand_indices: List[int],
-    final_scores: np.ndarray,
-    candidate_vectors: np.ndarray,
-    top_k: int = config.TOP_K,
-    lam: float = config.MMR_LAMBDA
-) -> List[int]:
-    """
-    Maximal Marginal Relevance (MMR): picks results with high relevance while
-    penalizing redundant/near-duplicate news wire copy.
-    """
-    if len(cand_indices) <= top_k:
-        return list(np.argsort(-final_scores))
-
-    similarity = candidate_vectors @ candidate_vectors.T
-    selected = []
-    remaining = list(range(len(cand_indices)))
-
-    while remaining and len(selected) < top_k:
-        def mmr_score(i):
-            high_sims = [similarity[i][j] for j in selected if similarity[i][j] > 0.80]
-            redundancy = max(high_sims, default=0.0)
-            return lam * final_scores[i] - (1 - lam) * redundancy
-
-        best = max(remaining, key=mmr_score)
-        selected.append(best)
-        remaining.remove(best)
-    return selected
-
-
-def _generate_reason(
-    source_row: dict,
-    cand_row: dict,
-    source_tokens: List[str],
-    cand_bm25_doc: List[str],
-    bm25_index: BM25Index,
-    dense_sim: float = 0.0,
-    rerank_score: float = 0.0
-) -> str:
-    """Builds an informative human-readable explanation combining neural semantics and keywords."""
-    parts = []
-    source_linked = source_row.get("linked_ids", [])
-    if isinstance(source_linked, str):
-        try:
-            source_linked = json.loads(source_linked)
-        except Exception:
-            source_linked = []
-
-    if cand_row["id"] in source_linked:
-        parts.append("Editor's Pick ('Also Read')")
-
-    # 1. Explicit Neural Semantic Similarity & Meaning Alignment
-    top_neural = max(dense_sim, rerank_score)
-    if top_neural >= 0.85:
-        parts.append(f"Strong semantic match ({int(top_neural * 100)}% context similarity)")
-    elif top_neural >= 0.55:
-        parts.append(f"Semantic context match ({int(top_neural * 100)}%)")
-
-    # 2. Shared Topic Keywords / Entities
-    shared = set(source_tokens) & set(cand_bm25_doc)
-    shared_keywords = sorted(shared, key=lambda t: -bm25_index.idf.get(t, 0.0))[:3]
-    if shared_keywords:
-        parts.append("shared topics: " + ", ".join(shared_keywords))
-    elif not any("semantic" in p.lower() for p in parts):
-        parts.append("thematic conceptual match")
-
-    # 3. Editorial Metadata (Section & Publication Time)
-    if source_row.get("section") and source_row["section"] == cand_row.get("section"):
-        parts.append(f"same section ({source_row['section']})")
-
-    if pd.notna(source_row.get("date")) and pd.notna(cand_row.get("date")):
-        days = abs((source_row["date"] - cand_row["date"]).days)
-        if days <= 1:
-            parts.append("published around the same time")
-
-    return "; ".join(parts) if parts else "High semantic and topic relevance"
 
 
 
@@ -657,7 +453,7 @@ def run_ingestion_pipeline(
             "is_live": bool(r["is_live"]),
             "page_views": int(r["page_views"]),
             "unique_users": int(r["unique_users"]),
-            "linked_ids": str(r["linked_ids"]),
+            "linked_ids": json_ids(r["linked_ids"]),
             "text_embed": str(r["text_embed"]),
             "text_bm25": str(r["text_bm25"]),
             "text_rerank": str(r["text_rerank"]),
@@ -670,7 +466,7 @@ def run_ingestion_pipeline(
         # 4. Build and persist embeddings (only for new, modified, or missing-vector articles)
         if needs_emb_ids:
             upd(message=f"STAGE:EMBEDDING|Embedding {len(needs_emb_ids)} articles (skipping {len(ids) - len(needs_emb_ids)} unchanged)...")
-            embedder = _get_embedding_model()
+            embedder = get_embedder()
             emb_records = [r for r in records if r["id"] in needs_emb_ids]
             emb_ids = [r["id"] for r in emb_records]
             emb_texts = [r["text_embed"] for r in emb_records]
@@ -728,7 +524,7 @@ def run_ingestion_pipeline(
 
         # 6a. Rerank candidates and save recommendations in batches
         upd(message="STAGE:RERANK|Loading cross-encoder (first run downloads ~1 GB, can take minutes)...")
-        reranker = _get_reranker_model()
+        reranker = Reranker()
 
         max_views = int(max((r["page_views"] for r in full_records), default=0)) or 1
         max_date = max((r["date"] for r in full_records if pd.notna(r["date"])), default=None)
@@ -767,22 +563,19 @@ def run_ingestion_pipeline(
 
             if done % config.PRECOMPUTE_COMMIT_EVERY == 0 or done == total_targets:
                 per = (time.time() - t0) / done
-                eta_pre = per * (total_targets - done)
+                eta = per * (total_targets - done)
 
                 # Estimate the upcoming reverse pass so the displayed ETA covers the
-                # WHOLE job, not just this precompute loop. Extrapolate the distinct
-                # old articles seen so far across the full upload.
+                # WHOLE job, not just this loop. Extrapolate the distinct old articles
+                # seen so far across the full upload.
                 est_rev = len(reverse_seen)
                 if track_reverse:
                     if done < total_targets:
                         est_rev = int(round(est_rev * total_targets / done))
-                    eta = eta_pre + per * est_rev
-                    eta_txt = f"ETA {_fmt_eta(eta)}"
-                    if est_rev > 0:
-                        eta_txt += f" (incl. ~{_fmt_eta(per * est_rev)} reverse)"
-                else:
-                    eta = eta_pre
-                    eta_txt = f"ETA {_fmt_eta(eta)}"
+                    eta += per * est_rev
+                eta_txt = f"ETA {_fmt_eta(eta)}"
+                if track_reverse and est_rev:
+                    eta_txt += f" (incl. ~{_fmt_eta(per * est_rev)} reverse)"
 
                 # update_job commits and therefore commits pending recommendation writes too.
                 # Reserve the last 5% of the bar for the reverse-update pass (step 6b).
@@ -831,12 +624,9 @@ def run_ingestion_pipeline(
             count = len(refreshed_infos)
             upd(refreshed_articles=count)
             if refreshed_infos:
-                titles = [a["title"] for a in refreshed_infos[:4] if a.get("title")]
-                examples = ", ".join(f"“{t[:45]}”" for t in titles)
-                more = f" (+{count - len(titles)} more)" if count > len(titles) else ""
                 upd(message=(
                     f"STAGE:REVERSE|Updated precomputed recommendations for {count} "
-                    f"existing article(s): {examples}{more}"
+                    f"existing article(s): {_titles_summary(refreshed_infos)}"
                 ))
             else:
                 upd(message="STAGE:REVERSE|No existing articles needed refreshing for this upload.")
@@ -853,12 +643,8 @@ def run_ingestion_pipeline(
         note = f" ({failed} skipped)" if failed else ""
         extra = ""
         if refreshed_infos:
-            titles = [a["title"] for a in refreshed_infos[:4] if a.get("title")]
-            examples = ", ".join(f"“{t[:45]}”" for t in titles)
-            more = f" (+{len(refreshed_infos) - len(titles)} more)" if len(refreshed_infos) > len(titles) else ""
-            extra = (
-                f" Reverse-updated {len(refreshed_infos)} existing article(s): {examples}{more}."
-            )
+            extra = (f" Reverse-updated {len(refreshed_infos)} existing article(s): "
+                     f"{_titles_summary(refreshed_infos)}.")
         upd(
             status="completed",
             processed_articles=n,
@@ -867,7 +653,6 @@ def run_ingestion_pipeline(
         )
 
     except Exception as exc:
-        import traceback
         print(f"[Pipeline Error] {traceback.format_exc()}")
         try:
             db.rollback()  # ensure the failure status can be written after a DB error

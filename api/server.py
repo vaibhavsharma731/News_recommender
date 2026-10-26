@@ -6,8 +6,8 @@ Run:  python api/server.py
 import sys
 import os
 import math
-import json
 import threading
+import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, List
@@ -24,7 +24,6 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 import config
-from src.data_loader import load_articles
 from src.recommender import METHODS, Recommender
 from api.editor_routes import router as editor_router
 
@@ -91,43 +90,15 @@ def reload_engine_from_postgres():
                     return
 
                 arts = db.query(Article).order_by(Article.date.desc().nulls_last()).all()
-                rows, vecs, missing_vec = [], [], False
-                for a in arts:
-                    title, desc, body = str(a.title), str(a.description or ""), str(a.body or "")
-                    try:
-                        linked = json.loads(a.linked_ids) if a.linked_ids else []
-                    except Exception:
-                        linked = []
-
-                    rows.append({
-                        "id": str(a.id),
-                        "title": title,
-                        "description": desc,
-                        "section": str(a.section or ""),
-                        "subsection": str(a.subsection or ""),
-                        "date": a.date,
-                        "url": str(a.url or ""),
-                        "image": str(a.image or ""),
-                        "is_live": bool(a.is_live),
-                        "body": body,
-                        "pageViews": int(a.page_views or 0),
-                        "uniqueUsers": int(a.unique_users or 0),
-                        "linked_ids": linked,
-                        # Ingest time, surfaced on reader recommendation tiles.
-                        "created_at": a.created_at.isoformat() if a.created_at else "",
-                        # Reuse the exact text representations saved by ingestion.
-                        "text_embed": a.text_embed or f"{title}. {desc}",
-                        "text_bm25": a.text_bm25 or f"{title}. {title}. {title}. {desc}. {body}",
-                        "text_rerank": a.text_rerank or f"{title}. {desc}.",
-                    })
-                    if a.embedding is None:
-                        missing_vec = True
-                    else:
-                        vecs.append(a.embedding)
-
-                df_db = pd.DataFrame(rows)
+                df_db = pd.DataFrame(ArticleRepository.corpus_rows(arts, camel_keys=True))
                 df_db["date"] = pd.to_datetime(df_db["date"], utc=True, errors="coerce")
-                vectors = None if missing_vec else np.asarray(vecs, dtype=np.float32)
+                # Same fallback the ingestion pipeline uses: an article without a
+                # stored vector contributes nothing to the dense branch (zero cosine)
+                # instead of forcing the whole corpus to be re-embedded.
+                vectors = np.asarray(
+                    [a.embedding if a.embedding is not None else [0.0] * 768 for a in arts],
+                    dtype=np.float32,
+                )
 
                 new_rec = Recommender(df_db, vectors=vectors, use_disk_cache=False)
                 rec, articles = new_rec, new_rec.articles  # swap only after the new engine builds
@@ -182,29 +153,73 @@ def _article_dict(a: dict) -> dict:
     }
 
 
-def _row_to_dict(row) -> dict:
-    """Convert a DataFrame row to a serialisable article dict."""
-    desc = _clean_str(row.get("description", ""))
-    body = _clean_str(row.get("body", ""))
-    snippet = desc if desc else body[:200]
-    
-    date_val = row.get("date")
-    if hasattr(date_val, "strftime") and pd.notna(date_val):
-        date_str = date_val.strftime("%d %b %Y")
-    else:
-        date_str = _clean_str(date_val)
+# ─── Graceful degradation (technique 4) ─────────────────────────────────────
+# Thin related lists are filled by a SEPARATE "Trending in <section>" block, never
+# by padding the related list. Fallback items carry no score, confidence, reason or
+# evidence, so nothing downstream can mistake popularity for relevance.
+_fallback_stats = {"requests": 0, "triggered": 0, "items": 0}
 
+
+def _fallback_block(source_art, shown_ids) -> Optional[dict]:
+    """
+    Popular stories in the source's own section, around the source's own date.
+
+    ``source_art`` is the ORM row, so the date is a real timestamp (the serialised
+    dict only carries a display string). Model-free: one indexed query, no reranker,
+    no embeddings. Returns None when the section is unknown or nothing qualifies.
+    """
+    section = (getattr(source_art, "section", "") or "").strip()
+    if not section:
+        return None
+    window = config.fallback_window_days(section)
+    try:
+        with SessionLocal() as db:
+            rows = ArticleRepository.get_trending_in_section(
+                db,
+                section,
+                exclude_ids=[str(getattr(source_art, "id", ""))] + [str(i) for i in shown_ids],
+                ref_date=getattr(source_art, "date", None),
+                window_days=window,
+                limit=config.FALLBACK_LIMIT,
+            )
+            items = [
+                {
+                    **_article_dict(a.to_dict()),
+                    "type": "fallback",
+                    "pageViews": int(a.page_views or 0),
+                }
+                for a in rows
+            ]
+    except Exception as e:
+        print(f"[Fallback] lookup failed: {e}")
+        return None
+    if not items:
+        return None
     return {
-        "id":         _clean_str(row.get("id")),
-        "title":      _clean_str(row.get("title")),
-        "snippet":    snippet,
-        "section":    _clean_str(row.get("section")),
-        "subsection": _clean_str(row.get("subsection")),
-        "date":       date_str,
-        "url":        _clean_str(row.get("url")),
-        "image":      _clean_str(row.get("image")),
-        "is_live":    bool(row.get("is_live", False)),
+        "heading": f"Trending in {section.replace('-', ' ').replace('_', ' ').title()}",
+        "note": ("Popular in this section around the same dates. Not directly matched "
+                 "to this story, and not counted as related reading."),
+        "type": "fallback",
+        "count": len(items),
+        "window_days": round(window, 1),
+        "items": items,
     }
+
+
+def _attach_fallback(payload: dict, source_art, shown_ids) -> dict:
+    """Count one article-to-article request; attach the fallback block only when thin."""
+    _fallback_stats["requests"] += 1
+    if len(payload.get("recommendations") or []) >= config.FALLBACK_MIN_RELATED:
+        return payload
+    block = _fallback_block(source_art, shown_ids)
+    if not block:
+        return payload
+    payload["fallback"] = block
+    _fallback_stats["triggered"] += 1
+    _fallback_stats["items"] += block["count"]
+    print(f"[Fallback] {block['heading']!r} related={len(payload.get('recommendations') or [])} "
+          f"window={block['window_days']}d items={block['count']}")
+    return payload
 
 
 def _result_json(result, method: str) -> dict:
@@ -221,7 +236,10 @@ def _result_json(result, method: str) -> dict:
             {
                 "article": _article_dict(r.article),
                 "score":   _clean_float(getattr(r, "calibrated_score", r.score)),
-                "unboosted_score": _clean_float(r.score),
+                # Relevance after boosts, before calibration: the value the ordering
+                # used. Kept separately so `score` (confidence) is never confused
+                # with the boosted relevance that produced the rank.
+                "boosted_score": _clean_float(getattr(r, "boosted_score", 0.0)),
                 "confidence_band": getattr(r, "confidence_band", "MEDIUM"),
                 "margin": _clean_float(getattr(r, "margin", 0.0)),
                 "agreement_count": getattr(r, "agreement_count", 1),
@@ -254,6 +272,17 @@ def status():
             "n_candidates": config.N_CANDIDATES,
             "mmr_lambda":   config.MMR_LAMBDA,
             "use_neural":   config.USE_NEURAL_MODELS,
+        },
+        # Live measurement of technique 4: how often the related list came back thin
+        # enough to need a "Trending in <section>" block, since process start.
+        "fallback": {
+            "min_related": config.FALLBACK_MIN_RELATED,
+            "limit":       config.FALLBACK_LIMIT,
+            "requests":    _fallback_stats["requests"],
+            "triggered":   _fallback_stats["triggered"],
+            "items_served": _fallback_stats["items"],
+            "rate":        (round(_fallback_stats["triggered"] / _fallback_stats["requests"], 4)
+                            if _fallback_stats["requests"] else None),
         },
     }
 
@@ -358,7 +387,7 @@ def recommend(body: RecommendRequest):
                 from src.evidence import enrich_recommendation_evidence
                 enrich_recommendation_evidence(source_dict, precomputed)
                 mode_str = "MMR Diversified" if body.diversify else "Pure Relevance (No MMR)"
-                return {
+                payload = {
                     "method": "postgresql_precomputed_rerank",
                     "engine": "PostgreSQL pgvector + Precomputed Cross-Encoder",
                     "source": "postgresql",
@@ -376,6 +405,7 @@ def recommend(body: RecommendRequest):
                             "rerank_score": r.get("rerank_score", 0.0),
                         },
                         "score": r.get("score", 0.0),
+                        "boosted_score": r.get("boosted_score"),
                         "rank": r.get("rank", 1),
                         "rank_raw": r.get("rank_raw", 1),
                         "rerank_score": r.get("rerank_score", 0.0),
@@ -384,6 +414,12 @@ def recommend(body: RecommendRequest):
                     } for r in precomputed],
 
                 }
+                return _attach_fallback(
+                    payload,
+                    source_art,
+                    # These dicts are article payloads (their key is `id`), not raw rows.
+                    [r.get("id") for r in precomputed],
+                )
         except Exception as e:
             print(f"Error checking precomputed recommendations: {e}")
 
@@ -403,11 +439,25 @@ def recommend(body: RecommendRequest):
             diversify=body.diversify,
             section=body.section,
         )
-        return _result_json(result, body.method)
+        payload = _result_json(result, body.method)
+        # Only article-to-article requests have a section to scope "trending" to.
+        if body.article_id:
+            try:
+                with SessionLocal() as db:
+                    source_art = ArticleRepository.get_article(db, str(body.article_id))
+            except Exception as e:
+                print(f"[Fallback] source lookup failed: {e}")
+                source_art = None
+            if source_art is not None:
+                payload = _attach_fallback(
+                    payload,
+                    source_art,
+                    [r.article.get("id") for r in result.recommendations],
+                )
+        return payload
     except KeyError:
         raise HTTPException(status_code=404, detail="Article not found in the search index.")
     except Exception as e:
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -459,6 +509,20 @@ def serve_favicon():
 # Mount static dirs for CSS and JS
 app.mount("/css", StaticFiles(directory=FRONTEND_DIR / "css"), name="css")
 app.mount("/js",  StaticFiles(directory=FRONTEND_DIR / "js"),  name="js")
+
+
+@app.middleware("http")
+async def _revalidate_static(request, call_next):
+    """Force revalidation of CSS/JS so edits are not masked by a stale browser cache.
+
+    Starlette's StaticFiles sends ETag/Last-Modified but no Cache-Control, so browsers
+    reuse the asset without asking. `no-cache` still answers with a fast 304 when the
+    file is unchanged.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith(("/css/", "/js/")):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 # ─── Entry point ────────────────────────────────────────────────────────────

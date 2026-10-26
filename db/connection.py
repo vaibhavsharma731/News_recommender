@@ -2,12 +2,10 @@
 Database connection, session management, and extension initialization.
 """
 import os
-import sys
 from typing import Dict, Any, Generator
-from pathlib import Path
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.exc import OperationalError
 from dotenv import load_dotenv
 
 # Ensure environment variables are loaded
@@ -119,61 +117,52 @@ def check_db_health() -> Dict[str, Any]:
     return health
 
 
-def ensure_schema() -> bool:
-    """
-    Idempotent, lightweight migrations for columns added after the first release.
+# Columns added after the first release. `Base.metadata.create_all` only creates
+# missing TABLES, never alters an existing one, so every new column is declared
+# here once and applied idempotently at startup / ingestion.
+_ADDED_COLUMNS = [
+    # (table, column, SQL type, why it exists)
+    ("article_recommendations", "rerank_score", "DOUBLE PRECISION",
+     "raw cross-encoder score, so the reverse push can reuse it without re-scoring"),
+    ("article_recommendations", "rank_raw", "INTEGER",
+     "rank before boosts and MMR reordered the list"),
+    ("article_recommendations", "boosted_score", "DOUBLE PRECISION",
+     "relevance after boosts, before calibration - the value the ordering used"),
+    ("article_recommendations", "pipeline_version", "VARCHAR(32)",
+     "config fingerprint this row was scored under"),
+    ("ingestion_jobs", "refreshed_articles", "INTEGER DEFAULT 0",
+     "existing articles the reverse push refreshed in this upload"),
+    ("ingestion_jobs", "pipeline_version", "VARCHAR(32)",
+     "config fingerprint this job ran under"),
+    ("articles", "embed_token_count", "INTEGER DEFAULT 0",
+     "tokens actually sent to the embedder"),
+    ("articles", "rerank_token_count", "INTEGER DEFAULT 0",
+     "tokens actually sent to the cross-encoder"),
+    ("articles", "is_truncated", "BOOLEAN DEFAULT FALSE",
+     "the text was cut at the token budget"),
+    ("articles", "recipe_version", "VARCHAR(32)",
+     "text-composition recipe used for this row"),
+]
 
-    ``Base.metadata.create_all`` only creates *missing tables*; it never adds a
-    column to a table that already exists. So new columns must be added here with
-    ``ADD COLUMN IF NOT EXISTS`` (safe to run on every startup / ingestion).
-    """
+_ADDED_INDEXES = [
+    # "popular in <section>, within N days" filters on both columns, so a composite
+    # index beats the section-only one that came with the first release.
+    ("ix_articles_section_date", "ON articles (section, date)"),
+]
+
+
+def ensure_schema() -> bool:
+    """Idempotent, lightweight migrations (safe on every startup and ingestion)."""
     if not engine:
         return False
+    statements = [f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}"
+                  for table, column, sql_type, _why in _ADDED_COLUMNS]
+    statements += [f"CREATE INDEX IF NOT EXISTS {name} {target}"
+                   for name, target in _ADDED_INDEXES]
     try:
         with engine.connect() as conn:
-            # Store the raw cross-encoder score per recommendation pair so the
-            # incremental reverse-push can compare fairly without re-scoring old lists.
-            conn.execute(text(
-                "ALTER TABLE article_recommendations "
-                "ADD COLUMN IF NOT EXISTS rerank_score DOUBLE PRECISION"
-            ))
-            conn.execute(text(
-                "ALTER TABLE article_recommendations "
-                "ADD COLUMN IF NOT EXISTS rank_raw INTEGER"
-            ))
-            # Track pipeline/model configuration version on recommendations
-            conn.execute(text(
-                "ALTER TABLE article_recommendations "
-                "ADD COLUMN IF NOT EXISTS pipeline_version VARCHAR(32)"
-            ))
-            # Track how many EXISTING articles each upload refreshed via reverse-push,
-            # so the Editor dashboard can show per-upload history.
-            conn.execute(text(
-                "ALTER TABLE ingestion_jobs "
-                "ADD COLUMN IF NOT EXISTS refreshed_articles INTEGER DEFAULT 0"
-            ))
-            # Track pipeline/model configuration version on ingestion jobs
-            conn.execute(text(
-                "ALTER TABLE ingestion_jobs "
-                "ADD COLUMN IF NOT EXISTS pipeline_version VARCHAR(32)"
-            ))
-            # Track token budget statistics on articles
-            conn.execute(text(
-                "ALTER TABLE articles "
-                "ADD COLUMN IF NOT EXISTS embed_token_count INTEGER DEFAULT 0"
-            ))
-            conn.execute(text(
-                "ALTER TABLE articles "
-                "ADD COLUMN IF NOT EXISTS rerank_token_count INTEGER DEFAULT 0"
-            ))
-            conn.execute(text(
-                "ALTER TABLE articles "
-                "ADD COLUMN IF NOT EXISTS is_truncated BOOLEAN DEFAULT FALSE"
-            ))
-            conn.execute(text(
-                "ALTER TABLE articles "
-                "ADD COLUMN IF NOT EXISTS recipe_version VARCHAR(32)"
-            ))
+            for statement in statements:
+                conn.execute(text(statement))
             conn.commit()
         return True
     except Exception as e:

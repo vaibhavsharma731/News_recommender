@@ -331,15 +331,22 @@ class Reranker:
 
     def score(self, query: str, documents: list, batch_size: int = 32) -> np.ndarray:
         """Return a relevance probability (0-1) for each document.
-        
+
         The query and each document must already be pre-budgeted before calling.
         Use build_reranker_pairs() to prepare (query, passage) tuples.
+
+        ``bge-reranker-base`` is a ``num_labels=1`` cross-encoder, so
+        ``CrossEncoder.predict`` already returns ``sigmoid(logit)`` in [0, 1].
+        This method therefore must NOT apply a second sigmoid: doing so compresses
+        every score toward 0.5 (a confident 1.0 becomes 0.731) and flattens the
+        distribution into an unusable plateau. We detect which form we received and
+        only normalise when the model genuinely handed back raw logits.
         """
         if not documents:
             return np.array([])
         pairs = [(query, doc) for doc in documents]
         try:
-            logits = np.asarray(
+            raw = np.asarray(
                 self.model.predict(
                     pairs,
                     batch_size=batch_size,
@@ -349,13 +356,27 @@ class Reranker:
                 dtype=float,
             )
         except TypeError:
-            logits = np.asarray(
+            raw = np.asarray(
                 self.model.predict(pairs, batch_size=batch_size, show_progress_bar=False),
                 dtype=float,
             )
-            if logits.size and np.nanmax(np.abs(logits)) <= 1.0 + 1e-6:
-                return np.clip(logits, 0.0, 1.0)
-        return 1.0 / (1.0 + np.exp(-np.clip(logits, -30.0, 30.0)))
+        return self._to_probability(raw)
+
+    @staticmethod
+    def _to_probability(raw: np.ndarray) -> np.ndarray:
+        """
+        Convert a cross-encoder's output to probabilities exactly once.
+
+        Already-probability outputs are clipped; anything outside [0, 1] is a raw
+        logit and gets the sigmoid. The bound is on the MINIMUM (not the max): a
+        logit batch can legitimately contain values within [0, 1] while a
+        probability batch can never go below 0 or above 1.
+        """
+        if raw.size == 0:
+            return raw
+        if raw.min() >= 0.0 and raw.max() <= 1.0:
+            return np.clip(raw, 0.0, 1.0)
+        return 1.0 / (1.0 + np.exp(-np.clip(raw, -30.0, 30.0)))
 
     def score_pairs(
         self,

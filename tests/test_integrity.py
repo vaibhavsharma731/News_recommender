@@ -7,13 +7,20 @@ Comprehensive unit and integration tests for Data Integrity & Ingestion Pipeline
   5. Pipeline version fingerprinting.
   6. Idempotent re-upload and skip-unchanged logic.
 
-Run with: python -m unittest tests/test_integrity.py
+Run with: python tests/test_integrity.py     (or: python -m unittest discover -s tests)
 """
-import unittest
-import pandas as pd
-import numpy as np
 import hashlib
+import os
+import sys
+import unittest
 from unittest.mock import MagicMock, patch
+
+import numpy as np
+import pandas as pd
+
+# `tests/` is not a package, so make the repo root importable no matter where the
+# test is launched from (`python tests/test_integrity.py` otherwise fails at `import config`).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 from src.data_loader import clean_dataframe, _deduplicate, load_articles
@@ -239,11 +246,14 @@ class TestColabWorkflow(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
             json.dump(bad_data, tf)
             tf_name = tf.name
+        self.addCleanup(os.unlink, tf_name)
 
+        # The importer runs everything inside ONE `SessionLocal.begin()` transaction,
+        # so the mock has to hand the fake session to the context manager's __enter__.
         with patch("import_colab_export.SessionLocal") as mock_session:
             mock_db = MagicMock()
-            mock_session.return_value = mock_db
             mock_db.query.return_value.all.return_value = [("art_1",)]
+            mock_session.begin.return_value.__enter__.return_value = mock_db
             with self.assertRaises(ValueError) as ctx:
                 validate_and_import(tf_name)
             self.assertIn("NaN or Inf", str(ctx.exception))

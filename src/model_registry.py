@@ -1,6 +1,5 @@
 """One shared copy of each neural model per process (local or remote cloud GPU)."""
 import json
-import os
 import threading
 import urllib.error
 import urllib.request
@@ -16,6 +15,24 @@ def _get(key, factory):
         if key not in _cache:
             _cache[key] = factory()
         return _cache[key]
+
+
+def _remote_headers(content_type: bool = False) -> dict:
+    """
+    Headers for every call to the cloud GPU worker.
+
+    The worker can be reached over a public Cloudflare tunnel, so it optionally
+    requires a shared secret. Set ``REMOTE_MODEL_TOKEN`` in .env to the same value as
+    the Colab worker's ``WORKER_TOKEN``. When the worker has no token configured this
+    header is simply ignored.
+    """
+    headers = {"User-Agent": "NewsRec-Client"}
+    if content_type:
+        headers["Content-Type"] = "application/json"
+    token = getattr(config, "REMOTE_MODEL_TOKEN", "").strip()
+    if token:
+        headers["X-Worker-Token"] = token
+    return headers
 
 
 # ─── Remote Cloud GPU Clients ────────────────────────────────────────────────
@@ -59,7 +76,7 @@ class RemoteEmbedderClient:
                 req = urllib.request.Request(
                     f"{self.base_url}/embed",
                     data=payload,
-                    headers={"Content-Type": "application/json"}
+                    headers=_remote_headers(content_type=True)
                 )
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
@@ -112,7 +129,7 @@ class RemoteCrossEncoderClient:
                 req = urllib.request.Request(
                     f"{self.base_url}/rerank",
                     data=payload,
-                    headers={"Content-Type": "application/json"}
+                    headers=_remote_headers(content_type=True)
                 )
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
@@ -133,7 +150,7 @@ class RemoteCrossEncoderClient:
 def _check_remote_available(url: str) -> bool:
     """Quick 4-second ping to verify the remote GPU worker is live."""
     try:
-        req = urllib.request.Request(f"{url.rstrip('/')}/health", headers={"User-Agent": "NewsRec-Client"})
+        req = urllib.request.Request(f"{url.rstrip('/')}/health", headers=_remote_headers())
         with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return data.get("status") == "ok"

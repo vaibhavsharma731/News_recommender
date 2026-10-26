@@ -10,8 +10,8 @@ Validation guarantees:
   3. Every vector dimension is strictly 768.
   4. Zero NaNs or Infinite values in embeddings and recommendation scores.
   5. Vector L2 norms are normalized to approximately 1.0 (0.990 <= norm <= 1.010).
-  6. Atomic transaction: loads all articles & recommendations inside a single DB transaction.
-     If ANY row fails validation, the entire transaction rolls back cleanly.
+  6. Atomic transaction: validation reads and all article/recommendation writes run in a
+     single explicit transaction. If ANY row fails validation, nothing is committed.
 
 Usage:
   python import_colab_export.py path/to/newsrec_export.json
@@ -19,7 +19,6 @@ Usage:
 import argparse
 import json
 import math
-import sys
 import numpy as np
 
 import config
@@ -55,8 +54,11 @@ def validate_and_import(export_path: str, force_hash: bool = False):
     print(f"  Total Articles to Import : {len(articles_data)}")
 
     # 2. Database Pre-Validation
-    db = SessionLocal()
-    try:
+    # NOTE: SQLAlchemy 2.0 auto-begins a transaction on the first query. The whole
+    # read+write therefore runs inside ONE explicit transaction that we open up front,
+    # so the validation reads and the writes commit atomically (nothing to roll back
+    # separately). Calling db.begin() after a query would raise InvalidRequestError.
+    with SessionLocal.begin() as db:
         existing_ids = {r[0] for r in db.query(Article.id).all()}
         print(f"  Existing DB Articles     : {len(existing_ids)}")
 
@@ -101,41 +103,32 @@ def validate_and_import(export_path: str, force_hash: bool = False):
 
         print(f"  All {len(validated_payload)} vectors successfully passed mathematical integrity checks!")
 
-        # 4. Atomic Database Transaction
+        # 4. Write phase -- still inside the same transaction opened above
         print("\nExecuting atomic database transaction...")
-        with db.begin():
-            # Update embeddings
-            for aid, emb_list, recs in validated_payload:
-                art = db.query(Article).filter(Article.id == aid).first()
-                if art:
-                    art.embedding = emb_list
+        for aid, emb_list, recs in validated_payload:
+            art = db.query(Article).filter(Article.id == aid).first()
+            if art:
+                art.embedding = emb_list
 
-                # If precomputed recommendations are included, replace them
-                if recs:
-                    db.query(ArticleRecommendation).filter(ArticleRecommendation.article_id == aid).delete()
-                    for rank_idx, rec in enumerate(recs[:10], start=1):
-                        db.add(ArticleRecommendation(
-                            article_id=aid,
-                            recommended_article_id=rec["target_id"],
-                            rank=rank_idx,
-                            score=float(rec.get("score", 0.0)),
-                            rerank_score=float(rec.get("rerank_score", 0.0)) if rec.get("rerank_score") is not None else None,
-                            reason=rec.get("reason", "Colab GPU precomputed recommendation"),
-                            pipeline_version=exported_hash,
-                            method="colab_gpu_precompute"
-                        ))
+            # If precomputed recommendations are included, replace them
+            if recs:
+                db.query(ArticleRecommendation).filter(ArticleRecommendation.article_id == aid).delete()
+                for rank_idx, rec in enumerate(recs[:10], start=1):
+                    db.add(ArticleRecommendation(
+                        article_id=aid,
+                        recommended_article_id=rec["target_id"],
+                        rank=rank_idx,
+                        score=float(rec.get("score", 0.0)),
+                        rerank_score=float(rec.get("rerank_score", 0.0)) if rec.get("rerank_score") is not None else None,
+                        reason=rec.get("reason", "Colab GPU precomputed recommendation"),
+                        pipeline_version=exported_hash,
+                        method="colab_gpu_precompute"
+                    ))
 
-        print("  Database transaction committed successfully!")
-        print("=" * 70)
-        print("  IMPORT SUCCESSFUL: All embeddings and recommendations live in PostgreSQL.")
-        print("=" * 70)
-
-    except Exception as e:
-        db.rollback()
-        print(f"\n[ABORTED & ROLLED BACK] Failed validation or import: {e}")
-        raise
-    finally:
-        db.close()
+    print("  Database transaction committed successfully!")
+    print("=" * 70)
+    print("  IMPORT SUCCESSFUL: All embeddings and recommendations live in PostgreSQL.")
+    print("=" * 70)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # AGENTS.md — NewsRec v2.0 Project Memory
 
 > Persistent architecture memory for AI agents working in this repo.
-> Last verified against the working tree on **2026-10-22** (branch `add_db`).
+> Last verified against the working tree on **2026-10-26** (branch `add_db`).
 > **Authoritative source = live code, NOT `PROJECT_AI_SPEC.md`.** The spec doc is
 > several revisions stale (see "Spec Drift" below). Always re-read the code.
 
@@ -85,10 +85,12 @@ Otherwise → live in-memory `Recommender`.
 | `RECENCY_MAX_BOOST_MULT` | `1.104` | MEASURED (was 1.10) |
 | `BOOST_MODE` | `source_date_recency` | recency vs source article, not corpus max |
 | `MIN_RAW_RERANK_THRESHOLD` | `0.12` | raw CE prob gate → `low_confidence` |
-| `ARTICLE_DISCARD_FLOOR` | `0.05` | drops unrelated candidates |
-| `MAX_USER_HISTORY` / `USER_PROFILE_WEIGHT` | `10` / `0.35` | personalization |
-| `SECTION_HALF_LIVES` | live_blog 0.25d, sports 1d, entertainment 2d, business 3d, brand-story 4d, default 2d | |
-| `INCREMENTAL_RECOMMENDATIONS` | `True` | reverse-push on |
+| ~~`ARTICLE_DISCARD_FLOOR`~~ | **deleted** | was inert while the double-sigmoid bug pinned scores to 0.5–0.731 |
+| `RELEVANCE_FLOOR` / `ELBOW_RATIO` / `ELBOW_MIN_KEEP` | `0.40` / `0.45` / `4` | `config.admission_cut()` — the post-rerank relevance gate |
+| `LEXICAL_GATE` / `ENTITY_GATE` | `True` / `True` | pre-rerank gate: no shared BM25 term AND no shared entity → blocked |
+| `WEIGHT_RERANK` / `WEIGHT_BM25` / `WEIGHT_DENSE` | `0.70` / `0.20` / `0.10` | user-set; the measured search chose `0.5/0.3/0.2` |
+| `SECTION_HALF_LIVES` | Tiered IE decay: live_blog 0.25d, trending 1d, sports 1.5d, cities/india 2.5d, world/ent 3d, business/tech 4d, legal 5d, explained/opinion/upsc 7d, books 10d, default 3d | read via `section_half_life()` (hyphen/underscore/case tolerant) |
+| `FALLBACK_MIN_RELATED` / `FALLBACK_LIMIT` | `3` / `5` | technique 4: below 3 related items the API adds a separate "Trending in `<section>`" list; window = `fallback_window_days(section)` = `max(7, 3 × half-life)` |
 | `PRECOMPUTE_COMMIT_EVERY` | `5` | |
 | `REMOTE_MODEL_URL` | env | Colab/Cloudflare GPU worker |
 
@@ -96,7 +98,7 @@ Otherwise → live in-memory `Recommender`.
 Stored on `article_recommendations.pipeline_version` and `ingestion_jobs.pipeline_version`.
 **Changing any listed param changes the version → next ingestion auto-forces a full recompute.**
 
-### `src/data_loader.py` (649 lines) — THE authoritative loader
+### `src/data_loader.py` (650 lines) — THE authoritative loader
 Explicitly documented as the single authoritative data loader; do not duplicate cleaning logic.
 - `clean_dataframe(raw_df)` — the one cleaning function.
 - Dedup policy: **latest `postPublishDate` wins**, tie → last in file order. (`_deduplicate`, L380)
@@ -115,7 +117,7 @@ Explicitly documented as the single authoritative data loader; do not duplicate 
 - `text_bm25` = `title. title. title. desc. body` (title ×3 for entity weight).
 - `load_articles()` renames to camelCase (`pageViews`, `uniqueUsers`) and parses `linked_ids` to lists.
 
-### `src/retrieval.py` (380 lines)
+### `src/retrieval.py` (381 lines)
 - `tokenize()` — `[a-z0-9]+`, drops sklearn ENGLISH_STOP_WORDS, min length 2. No naive "s" stripping.
 - `BM25Index` — Okapi BM25, k1=1.5, b=0.75, IDF = `ln(1+(N-n+0.5)/(n+0.5))`.
   - Fuzzy Indian-entity correction: 2-gram candidate index → `difflib.SequenceMatcher`,
@@ -130,53 +132,89 @@ Explicitly documented as the single authoritative data loader; do not duplicate 
 - `TfidfIndex` — light fallback, `(1,2)` ngrams, `sublinear_tf`.
 - `reciprocal_rank_fusion(rankings, k=RRF_K)` — `sum 1/(k+rank)`.
 
-### `src/reranker.py` (382 lines)
+### `src/reranker.py` (403 lines)
 - `build_reranker_pairs()` — enforces ≤ `RERANK_MAX_LEN` (512) tokens per pair.
   - **Article-to-article**: both sides trimmed to `_SIDE_BUDGET` = 254.
   - **Live search**: query trimmed to 254, passage gets `_CONTENT_BUDGET - q_tokens`.
   - Asserts + hard-clamps on violation, logs `VIOLATION`.
 - `extract_query_centered_passage()` — title whole + description whole, then body sentence
   containing first query token, expanding left-then-right to fill budget.
-- `Reranker.score()` — `activation_fn=Identity` then stable sigmoid `1/(1+e^-clip(logit,±30))`.
-- `Reranker.score_pairs()` — budget-safe public entry point.
+- `Reranker._to_probability(raw)` — the model is `num_labels=1`, so `CrossEncoder.predict` ALREADY
+  applies sigmoid. This clips values already in `[0,1]` and sigmoids only genuine logits (which is
+  what `RemoteCrossEncoderClient` returns). Skipping it double-sigmoids every score into
+  `[0.5, 0.731]`.
+- `Reranker.score()` — `activation_fn=Identity` then `_to_probability`.
+- `Reranker.score_pairs()` — budget-safe public entry point, returns true probabilities in `[0,1]`.
 
-### `src/recommender.py` (462 lines)
+### `src/scoring.py` (125 lines) — the one implementation of the numeric cascade
+Pure functions, no DB, no model. Added 2026-10-26 (Change 13) because `db/pipeline.py` and
+`src/recommender.py` each carried their own copy of these steps and the copies had drifted.
+- `parse_ids(raw)` / `json_ids(raw)` / `linked_set(row)` — linked-ID handling that accepts the DB form
+  (JSON string), the CSV form (list) and both dicts and pandas Series.
+- `norm(values)` — max-normalise and **clip to `[0,1]`** (the live path used to skip the clip, so a
+  negative cosine produced a negative relevance term).
+- `blend(rerank, bm25, dense, positions)` — `config.WEIGHT_*` weights; returns
+  `(relevance, bm25_norm, dense_norm)`. The reranker term is evaluated in float64.
+- `boost_parts(source_row, cand_row, max_views, max_ref_date)` — returns
+  `{editorial, section, subsection, popularity, recency, total}`; `total` is the product.
+  Values are **unrounded**; rounding happens once, in `evidence.build_evidence_reason()`.
+- `mmr(scores, similarity, top_k, lam, theta)` — penalty applies only when similarity > θ.
+
+### `src/recommender.py` (412 lines)
 `Recommender.recommend(query, article_id, user_history, top_k, method, use_boosts, diversify, section)`
 - Article-to-article builds a **focused query**: title tokens + top-15 IDF body terms.
-- Relevance blend:
-  - Article-to-article: `0.55*rerank + 0.30*bm25_norm + 0.15*dense_norm`
-  - Text search: `0.65*rerank + 0.35*bm25_norm`
+- Relevance blend comes from `src.scoring.blend()`:
+  - Article-to-article: `WEIGHT_RERANK*rerank + WEIGHT_BM25*bm25_norm + WEIGHT_DENSE*dense_norm`
+  - Text search: `0.70*rerank + 0.20*bm25_norm` (no dense term)
 - `low_confidence` gate uses **raw** CE probability vs `MIN_RAW_RERANK_THRESHOLD` (0.12).
-- Discard floor filter: `rerank_score >= 0.05` OR candidate is an editorial link.
-- `_boost_mult()` — editorial 1.40 × section × subsection × log-popularity × recency half-life.
-- `_mmr()` — λ `0.91` (article) / `0.88` (search); θ `config.MMR_THETA` (article) / `0.85` (search).
-  **Penalty applies only when similarity > θ.**
+- Relevance gate: `config.admission_cut()` (hard floor + elbow + entity veto; editorial links bypass).
+  Replaced the deleted `ARTICLE_DISCARD_FLOOR`, which could never fire.
+- `_boost_parts()` — thin wrapper over `src.scoring.boost_parts()`; `total` is the product, so
+  `_boost_mult` is gone (one formula, not two).
+- `_mmr()` — thin wrapper over `src.scoring.mmr()`; λ `MMR_LAMBDA` (article) / `MMR_LAMBDA_SEARCH`
+  (search); θ `MMR_THETA` (article) / `MMR_THETA_SEARCH` (search).
 - Personalization: profile centroid with `0.8^r` decay, blended at weight 0.35.
 - Returns `Result(recommendations, low_confidence, best_relevance, method, notes)`.
-- Each `Recommendation` carries: `article, score (calibrated), calibrated_score, confidence_band,
+- Each `Recommendation` carries: `article, score (calibrated), boosted_score (pre-calibration,
+  post-boost — the value the ordering used), calibrated_score, confidence_band,
   margin, agreement_count, rank, rank_raw, reason (JSON evidence string)`.
+- `_explain()` is **deleted** (Change 13); the cascade is built once, by
+  `evidence.build_evidence_reason()`, and called identically from here and from the pipeline.
 
-### `src/calibration.py` (170 lines)
+### `src/calibration.py` (169 lines)
 - Platt scaling: `P = σ(a*score + b)`, defaults `a=4.85`, `b=-2.60`, clipped to [0.01, 0.99].
 - Bands: HIGH ≥ 0.65, MEDIUM ≥ 0.35, else LOW.
 - `fit_calibrator_on_corpus()` — positives = editorial Also-Read pairs, negatives = 3× random pairs;
   80/20 split, reports Brier score. Ground truth is editorially biased (documented).
 
-### `src/evidence.py` (570 lines) — deterministic, zero-LLM explanations
+### `src/evidence.py` — deterministic, zero-LLM explanations
 - `extract_shared_key_terms()` — IDF-ranked overlap (limit 4).
 - `extract_shared_entities()` — capitalized-phrase regex overlap (limit 3), multi-word first.
 - `extract_best_matching_sentence()` — top-overlap sentence from first 15, truncated at 180 chars.
 - `evaluate_signal_agreement()` — BM25 rank ≤20, Dense rank ≤20, CE ≥0.35 → agreement count 1–3.
-- `build_evidence_reason()` — serialises a JSON blob into `recommendations.reason`.
-- `enrich_recommendation_evidence()` — standardises the **7 grounded evaluation items**
-  across Editor Inspector + Reader tiles.
-  ⚠️ **Contains hard-coded fallbacks** that fabricate values when the API omits them
-  (e.g. `rerank_val = 0.65`, `final_score = 0.82`, boost percentages hard-coded to
-  1.08/1.05/1.10 instead of reading `config`). Treat its numbers as unreliable when
-  the upstream fields are absent.
+- `bm25_term_hits()` — the actual query terms that scored a candidate, with `tf`, `idf`, `weight`,
+  `contribution`. Uses the identical formula as `BM25Index.scores()`, so the contributions sum
+  exactly to the real BM25 score (verified to 4 dp).
+- `build_evidence_reason()` — **formats the whole score cascade itself** (since Change 13) and
+  serialises the JSON blob stored in `recommendations.reason`. Signature:
+  `(source_row, cand_row, bm25_index, bm25_rank, dense_rank, rerank_score, …, confidence_info,
+  scores=, rank_raw=, final_rank=, cand_pos, bm25_query, cosine, admission)`. Emits
+  `summary, terms, entities, source_sentence, best_sentence, signals, agreement_count, boosts,
+  context_facts, confidence, score_breakdown, rank_relevance, method_ranks, margin_cutoff`,
+  plus `bm25_terms`, `bm25_query`, `cosine`, `admission`. `rounded()` / `weighted()` return
+  `None` for a missing input (the `hybrid` method has no cross-encoder score) instead of raising.
+  The boost `amount` string is derived from the **same rounded multiplier that is printed**, so
+  `1.0414` can never sit next to `+4.2%`.
+- `enrich_recommendation_evidence()` — **pure formatter, no arithmetic**. It reads the stored
+  `score_breakdown` (`components`, `unboosted_confidence`, `boost_items`, `total_boost_mult`,
+  `boosted_raw`, `platt_calibrated`) and copies it. It never invents a number:
+  unrecorded values stay `None` and the UI prints "not recorded". `agreement_count` is read from
+  the scorer, not re-derived. The only things it computes are text facts from the article rows
+  (batch file, section/subsection match, publish-time gap). Verified to read rows written by the
+  previous revision unchanged.
 - `get_article_batch()` — maps article ID → "Batch NN (file.csv)" by scanning `data/articles_batches/*.csv`.
 
-### `src/model_registry.py` (194 lines)
+### `src/model_registry.py` (211 lines)
 - Thread-safe singleton cache (`threading.Lock` + dict) — one model instance per process.
 - `get_embedder()` / `get_cross_encoder()` — if `config.REMOTE_MODEL_URL` set, ping `/health`
   (4s timeout) and use `RemoteEmbedderClient` / `RemoteCrossEncoderClient`; on any failure
@@ -185,15 +223,22 @@ Explicitly documented as the single authoritative data loader; do not duplicate 
   `POST /rerank` `{"pairs":[[q,d],...]}` → `{"logits":[...]}`; `GET /health` → `{"status":"ok"}`.
   Chunked at 128 per request, 120s timeout.
 
-### `db/connection.py` (222 lines)
+### `db/connection.py` (212 lines)
 - Env-driven URL (`POSTGRES_*` or `DATABASE_URL`), `pool_size=10, max_overflow=20, pool_pre_ping=True`.
 - `check_db_health()` — connectivity, pgvector extension, `articles` table presence.
-- `ensure_schema()` — idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` for:
-  `rerank_score`, `rank_raw`, `pipeline_version` (recs); `refreshed_articles`, `pipeline_version` (jobs);
-  `embed_token_count`, `rerank_token_count`, `is_truncated`, `recipe_version` (articles).
+- `ensure_schema()` — idempotent migrations driven by two small declarative tables instead of 12
+  inline statements: `_ADDED_COLUMNS` = `(table, column, SQL type, why)` for
+  `rerank_score`, `rank_raw`, `boosted_score`, `pipeline_version` (recs);
+  `refreshed_articles`, `pipeline_version` (jobs);
+  `embed_token_count`, `rerank_token_count`, `is_truncated`, `recipe_version` (articles);
+  `_ADDED_INDEXES` = `CREATE INDEX IF NOT EXISTS ix_articles_section_date ON articles (section, date)`,
+  which serves technique 4's "popular in this section, within N days" lookup.
+  Adding a column now = adding one tuple.
 - `init_db()` — creates extension + `Base.metadata.create_all` + `ensure_schema()`.
+- `evaluate.py` calls `ensure_schema()` before querying, so a standalone run against a DB written
+  by an older revision (missing `boosted_score`) does not fail with `UndefinedColumn`.
 
-### `db/models.py` (192 lines)
+### `db/models.py` (197 lines)
 **`articles`** — `id` (PK, VARCHAR 100), `title` (NOT NULL), `description`, `body`, `section`,
 `subsection`, `date` (TZ), `url`, `image`, `is_live`, `page_views`, `unique_users`,
 `linked_ids` (JSON string), `text_embed`, `text_bm25`, `text_rerank`,
@@ -203,7 +248,9 @@ Indexes: `articles_pkey(id)`, `ix_articles_id`, `ix_articles_section`, `ix_artic
 
 **`article_recommendations`** — `id` SERIAL PK, `article_id` FK→articles CASCADE,
 `recommended_article_id` FK→articles CASCADE, `rank` (1..10), `rank_raw`,
-`score` (display, 0..1), `rerank_score` (raw CE prob, O-centric), `pipeline_version`,
+`score` (Platt confidence on the unboosted blend, 0..1),
+`boosted_score` (relevance AFTER boosts, BEFORE calibration — the value the ordering used),
+`rerank_score` (raw CE prob, O-centric), `pipeline_version`,
 `method` (`neural_hybrid_rerank`), `reason` (JSON evidence), `created_at`.
 Unique `(article_id, rank)`; index `(article_id, rank)`.
 
@@ -211,56 +258,97 @@ Unique `(article_id, rank)`; index `(article_id, rank)`.
 (`pending|processing|completed|failed`), `total_articles`, `processed_articles`,
 `refreshed_articles`, `message` (`STAGE:X|msg` protocol), `error`, `created_at`, `updated_at`.
 
-### `db/repository.py` (407 lines)
-`ArticleRepository` static methods: `bulk_upsert_articles_fast` (chunked `INSERT … ON CONFLICT`),
-`bulk_set_embeddings`, `search_similar_by_vector` (pgvector `<=>` cosine, **no ANN index**),
+### `db/repository.py` (412 lines)
+`ArticleRepository` static methods: `corpus_rows` (ORM articles → plain rows for **both** corpus
+loaders; `camel_keys=False` gives the snake_case the pipeline uses, `camel_keys=True` the
+`pageViews`/`created_at` the live `Recommender` DataFrame uses — a field can no longer be mapped one
+way in one loader and another way in the other), `bulk_upsert_articles_fast` (chunked
+`INSERT … ON CONFLICT`), `bulk_set_embeddings`,
 `save_recommendations` (delete-then-insert per source article, atomic),
 `get_precomputed_recommendations` (join, orders by `rank` or `coalesce(rank_raw, rank)`),
+`get_trending_in_section` (technique 4: `section = ?` + source-relative date window,
+`ORDER BY page_views DESC`, `LIMIT 5`, model-free, served by `ix_articles_section_date`),
 `list_articles_ranked_by_confidence` (avg stored score desc, then rec count, then date),
-`clear_all_data`, job CRUD, `get_ingestion_summary`, `get_active_job`, `fail_orphaned_jobs`.
+`clear_all_data`, job CRUD, `get_ingestion_summary` (**one** query with `FILTER` aggregates instead
+of five round-trips), `get_active_job`, `fail_orphaned_jobs`.
+Every scan is `ArticleRepository.corpus_rows`-shaped; `update_job` only touches the fields passed.
+There is **no** vector-search method here: the exact in-memory NumPy scan is 20–30× faster than a
+pgvector sequential scan at this corpus size (Change 3 deleted the Postgres retriever).
 
-### `db/pipeline.py` (884 lines) — the ingestion brain
+### `db/pipeline.py` (670 lines) — the ingestion brain
 `run_ingestion_pipeline(csv_source, job_id, limit=None, recompute_all_recommendations=False)`
 1. `init_db()`, record `pipeline_version`.
 2. **Version-change detection** — if last completed job's `pipeline_version` ≠ current →
    force `recompute_all_recommendations = True` (score-scale integrity).
 3. Parse CSV → `clean_dataframe()` → compute `new_ids` / `changed_ids` (changed = `text_embed` differs).
-4. `bulk_upsert_articles_fast` (chunk 500).
+4. `bulk_upsert_articles_fast` (chunk 500). `linked_ids` goes in as `json_ids(...)`, so a list can
+   never be stored as a Python repr.
 5. Embed only `needs_emb_ids` = new ∪ changed ∪ embedding-is-NULL.
-6. `_load_full_corpus()` — **whole DB** (old + new) → records + 768-d matrix.
+6. `_load_full_corpus()` — **whole DB** (old + new) → records + 768-d matrix, via `corpus_rows`.
 7. Target set = `new_ids ∪ changed_ids ∪ (uploaded ids lacking current-version recs)`.
    Early-exit if nothing to do (idempotent re-upload).
-8. `_precompute_for_article()` — BM25 (focused query) + dense → RRF → top-20 → CE rerank
-   → blend `0.55/0.30/0.15` → boosts → MMR → discard-floor filter → calibrate → evidence JSON.
+8. `_precompute_for_article()` — BM25 (focused query) + dense → RRF → top-20 → CE rerank →
+   `_rank_and_build()` → calibrate → evidence JSON.
    Stores `score` (calibrated) and `rerank_score` (raw CE, 6 dp) + `rank_raw`.
-9. **Reverse push** (`_reverse_push_for_old`, L255) — inverts candidate map to find old articles
+9. **Reverse push** (`_reverse_push_for_old`) — inverts the candidate map to find old articles
    close to new ones; for each: merges stored top-10 (reusing stored `rerank_score` **only if
    `pipeline_version` matches**, else re-scores) + new neighbours, re-scores only the missing pairs
-   O-centrically, recomputes BM25/dense/boosts/MMR, overwrites top-10.
+   O-centrically, then calls the **same** `_rank_and_build()`.
 10. `reload_engine_from_postgres()` in-process, then job marked `completed`.
+
+`_rank_and_build(source_row, cand_positions, rerank_vec, records, emb, bm25, bm25_all, dense_all,
+bm25_query, bm25_pos_of, dense_pos_of, max_views, max_date, current_ver)` is the **single** ranking
+path for forward and reverse rows: blend (`src.scoring.blend`) → boosts (`boost_parts`) → MMR
+(`scoring.mmr`, or plain relevance order when the pool is ≤ `TOP_K`) → `config.admission_cut()` →
+calibration → `build_evidence_reason()`. Change 13 deleted `_calculate_boosts`, `_apply_mmr` and
+`_generate_reason` (167 lines) so the reverse pass can no longer record less evidence than the
+forward pass for identical work. `_titles_summary()` replaced two copies of the
+`"“A”, “B” (+3 more)"` string builder.
 
 Job message protocol: `STAGE:PARSE|CLEAN|STORAGE|EMBEDDING|INDEX|RERANK|REVERSE|COMPLETE`.
 Progress bar reserved: 0–40% embedding, 40–95% rerank, 95–100% reverse.
 ETA includes a forward-extrapolated estimate of the reverse pass.
 
-### `api/server.py` (467 lines)
+### `api/server.py` (532 lines)
 - `lifespan()` → `ensure_schema()`, `fail_orphaned_jobs()`, `reload_engine_from_postgres()` in threadpool.
 - Globals `rec` (Recommender) and `articles` (DataFrame); `_reload_lock` guards swaps.
+- `reload_engine_from_postgres()` builds the live engine from `ArticleRepository.corpus_rows(arts,
+  camel_keys=True)` + one vector matrix; a row without a stored vector contributes a zero vector
+  (zero cosine) exactly like the pipeline, instead of forcing a whole-corpus re-embed. The old
+  hand-written row mapping (`_row_to_dict` and the inline loader) is deleted — Change 13.
 - Routes: `GET /api/status`, `GET /api/articles` (page, per_page≤100, section, sort=date|confidence),
   `GET /api/articles/trending`, `GET /api/articles/{id}`, `POST /api/recommend`,
   `GET /api/sections`, `GET /`, `/favicon.svg`, `/favicon.ico`; mounts `/css`, `/js`.
 - `POST /api/recommend` response: `{method, engine, source, low_confidence, best_relevance, notes,
-  recommendations:[{article, score, unboosted_score, confidence_band, margin, agreement_count,
-  rank, rank_raw, reason, evidence?}]}`.
-- Fast-path response adds `source_article`, `diversify`, per-rec `rerank_score`.
+  recommendations:[{article, score, boosted_score, confidence_band, margin, agreement_count,
+  rank, rank_raw, reason, evidence?}]}`. The old `unboosted_score` was removed — it actually held
+  the *calibrated* score, which was misleading next to `score` (the same number).
+- Fast-path response adds `source_article`, `diversify`, per-rec `rerank_score` + `boosted_score`.
+- `fallback` — **optional** second list (technique 4), present only on an article-to-article request
+  whose related list came back with fewer than `config.FALLBACK_MIN_RELATED` (3) items:
+  `{heading, note, type: "fallback", count, window_days, items: [{...article, type: "fallback",
+  pageViews}]}`. Items are same-section, within `[source_date ± fallback_window_days]`, ordered by
+  `page_views`, capped at `FALLBACK_LIMIT` (5), and exclude the source plus everything already in
+  `recommendations`. They carry **no** `score` / `boosted_score` / `rerank_score` /
+  `confidence_band` / `margin` / `agreement_count` / `reason` / `evidence` — they are popularity,
+  not relevance. `recommendations` itself is never padded or reordered. Search requests never get
+  a `fallback` block (no source section to scope it to).
+- `_fallback_block()` / `_attach_fallback()` in `api/server.py`; `/api/status` reports
+  `fallback.{min_related, limit, requests, triggered, items_served, rate}` since process start.
 - CORS wide open (`allow_origins=["*"]`).
+- `/css` and `/js` are `StaticFiles` mounts, wrapped by a `_revalidate_static` middleware that adds
+  `Cache-Control: no-cache`. Without it browsers reuse a stale stylesheet/script after an edit
+  (Starlette sends `ETag`/`Last-Modified` but no `Cache-Control`); unchanged files still answer 304.
 - Entry: `uvicorn.run("api.server:app", host="0.0.0.0", port=5000, reload=False)`.
 
-### `api/editor_routes.py` (221 lines) — prefix `/api/db`
+### `api/editor_routes.py` (219 lines) — prefix `/api/db`
 `GET /health`, `POST /init`, `POST /upload-csv` (50 MB cap, 1 MB chunks, .csv only,
 409 if a job is active, background `threading.Thread(daemon=True)`),
 `POST /ingest-default` (`data/articles_clean_train_80.csv`), `GET /jobs/{id}`,
 `GET /jobs` (+ summary), `GET /recommendations/{id}`, `POST /clear`, `POST /reload`.
+Three shared helpers (Change 13): `_require_idle(db)` = the 409 guard (upload checks it **before**
+writing 50 MB), `_launch(db, job_id, filename, csv_source, **kwargs)` = create job + daemon thread,
+`_reload_live_engine()` = the late `reload_engine_from_postgres` import, used by `/clear` and `/reload`.
 
 ---
 
@@ -294,8 +382,14 @@ uploadCsv, ingestDefault, jobStatus, recentJobs, precomputedRecs`.
   precomputed path; the category filter is applied client-side instead.
 - `buildOrbitTile()` renders rank chip, score chip, boost badges, agreement, and an "🔬 Eval" badge
   that opens `window.Evaluator.showModal(...)`.
+- `renderFallback()` (technique 4) renders `data.fallback` **below** the halo as its own dashed
+  block with its own heading + "not directly related" note. It is called from `renderWidgetRecs()`
+  on every render, and removes any previous block first, so MMR toggles cannot duplicate it.
+  Fallback titles go through `escHtml()` (new; DB strings never touch `innerHTML` raw here).
 - Search tab: `performSearch()` calls `Api.recommend({query, topK, method, useBoosts, diversify, section})`.
 - Quick Story Finder: client-side fuzzy title/section match, max 15 results, ↑/↓/Enter/Esc.
+- `Tabs` exposes `buildFeedWidget` and `renderWidgetRecs` so a halo can be rendered directly
+  (used by the render checks; no feed boot required).
 
 ### `js/editor.js` (594 lines)
 Upload → `Api.uploadCsv()` → `job_id` → `startPipelineMonitor()` polling `Api.jobStatus()` every 1200 ms.
@@ -322,72 +416,114 @@ randomizer widget, bootstrap sequence (`Api.status` → `Api.sections` → `Hero
 
 ### CSS
 `variables.css` is the only token file (`--cat-*` category colours, layout sizes, radii, shadows).
-Light theme `[data-theme="light"]` overrides only 13 tokens — `evaluator.css` and parts of
-`editor.css` hard-code light-on-dark colours and do **not** follow the light theme.
+It is also the whole glass system: every surface in the app already reads `--bg-surface` /
+`--bg-card` / `--border-*`, so those tokens are **translucent plates**, and `--glass-blur`,
+`--glass-sat`, `--glass-sheen`, `--glass-shadow`, `--ambient` complete the recipe. Retune glass
+there, never per-component.
+`base.css` paints the single ambient colour field (`body::before`, fixed, transform-only
+`ambient-drift`) that the glass refracts, then applies the blur to six chrome selectors
+(`.navbar`, `.sidebar`, `.right-panel`, `.toast`, `.story-finder-dropdown`, `.eval-modal-card`) and
+the plate shadow/specular edge to a card list. `.glass` is the portable plate for new components.
+**Cards deliberately skip `backdrop-filter`** — invisible against an already-soft field, but one GPU
+layer per card. `.main-content` must stay `transparent` or the field is hidden. Light theme
+`[data-theme="light"]` overrides the tokens only (it is the only such block now); `evaluator.css`
+and parts of `editor.css` still hard-code light-on-dark colours and do **not** follow the light theme.
 
 ---
 
 ## 4. Known Bugs / Drift (verified 2026-10-22)
 
 ### P0 — functional
-1. `app.js:335` — assigns to `const statusData` → TypeError swallowed by try/catch →
-   `checkReaderDatabaseState()` never refreshes engine status.
-2. `app.js:72` — calls `syncCategoryPills(sec)` which **does not exist** → ReferenceError thrown
-   *before* `triggerActiveTabReload()` → changing the category filter never rebuilds the feed.
-3. `tabs.js:628` + `ui.js:193` — `renderCards()` does `container.innerHTML = ''` and wipes the
-   notes banner that `renderNotes()` just prepended → search notes always disappear.
-4. `rightpanel.css:282` redefines the global `@keyframes shimmer` (opacity pulse) → breaks
-   `.skeleton` sweep animation app-wide.
-5. `.btn-secondary` is used 4× in `index.html` but **never defined** in any CSS file.
+1. ~~`app.js:335` — assigns to `const statusData`~~ **fixed (Change 6d)**.
+2. ~~`app.js:72` — calls `syncCategoryPills(sec)` which does not exist~~ **fixed (Change 6d)**.
+3. ~~`renderCards()` wipes the notes banner `renderNotes()` just prepended~~ **fixed (Change 6d)**.
+4. ~~`rightpanel.css` redefines the global `@keyframes shimmer`~~ **fixed (Change 6d)**.
+5. ~~`.btn-secondary` used 4× in `index.html` but never defined~~ **fixed (Change 6d)** — aliased to
+   `.btn-ghost`.
 6. `editor.js:150` uses raw `fetch('/api/db/clear')` with a hard-coded path instead of `Api`.
+6a. ~~`app.js` randomizer requested `perPage: 200`~~ **fixed (Change 12)** — `/api/articles` caps
+    `per_page` at 100, so the request 422'd and the randomizer widget stayed empty.
+6b. ~~Editing CSS/JS had no visible effect until a hard refresh~~ **fixed (Change 12)** —
+    `StaticFiles` sent no `Cache-Control`; `/css` and `/js` now revalidate.
 
 ### P1 — correctness
 7. XSS risk: `ui.js`, `tabs.js`, `app.js`, `hero.js` inject API strings via `innerHTML` without
    escaping. Only `evaluator.js` has `escapeHtml`.
 8. `evaluator.js:110` prints "(High)" regardless of actual score.
-9. `src/evidence.py:enrich_recommendation_evidence()` fabricates fallbacks (0.65 / 0.82 / 0.064 margin)
-   and hard-codes boost multipliers (1.08/1.05/1.10) that no longer match `config`
-   (1.072/1.09/1.104).
+9. ~~`src/evidence.py:enrich_recommendation_evidence()` fabricates fallbacks (0.65 / 0.82 / 0.064
+    margin) and hard-codes boost multipliers (1.08/1.05/1.10).~~ **fixed (Change 10/13)** — it is now
+    a pure formatter over the stored `score_breakdown`: unrecorded values stay `None` and the UI
+    prints "not recorded", and the boost labels come from the real multipliers the scorer applied.
 10. `evaluator.js:237` labels a signed score delta as "Platt Probability Calibration".
 11. `evaluator.js` accepts `rec.evidence`; `tabs.js:185` only reads `rec.reason` → inconsistent.
 12. `tabs.js:430` sets `dataset.loaded = 'true'` *before* the await → failed requests never retry.
 13. `tabs.js:535` `buildFeed()` has no request sequencing → concurrent calls can interleave.
-14. `tabs.js:254` `ev.signals.join(...)` assumes an array → throws on a string.
-15. `db/pipeline.py:390` reverse-push passes `rel_pos + 1` as both bm25_rank and dense_rank →
-    **fabricated agreement ranks** in reverse-pushed evidence (the forward path computes them properly).
-16. `db/pipeline.py:497` `_apply_mmr` hard-codes the similarity threshold `0.80`, ignoring
-    `config.MMR_THETA` (0.76) — the live path (`recommender._mmr`) uses the config value.
-    → **Ingested and live MMR differ.**
-17. `db/pipeline.py:421-474` `_calculate_boosts` uses `max_date` (corpus max) for recency,
-    while `config.BOOST_MODE = "source_date_recency"` implies source-relative recency.
-    `src/recommender.py:_boost_mult` also uses `self.articles["date"].max()` — both ignore the
-    declared `BOOST_MODE`.
+14. ~~`tabs.js:254` `ev.signals.join(...)` assumes an array → throws on a string.~~
+    **fixed** — `Array.isArray` guard.
+15. ~~`db/pipeline.py:390` reverse-push passes `rel_pos + 1` as both bm25_rank and dense_rank →
+    **fabricated agreement ranks** in reverse-pushed evidence.~~
+    **fixed** — real corpus ranks via `argsort` of the full BM25/dense score vectors, and since
+    Change 13 the reverse pass runs the same `_rank_and_build()` as the forward pass.
+16. ~~`db/pipeline.py:497` `_apply_mmr` hard-codes the similarity threshold `0.80`, ignoring
+    `config.MMR_THETA` (0.76).~~ **fixed** — `_apply_mmr` is deleted (Change 13); both paths call
+    `src.scoring.mmr(..., theta=config.MMR_THETA)`.
+17. ~~`_calculate_boosts` / `_boost_mult` recency uses corpus-max `date`, ignoring `BOOST_MODE`.~~
+    **fixed** — both call `config.recency_boost()` / `config.recency_ref_date()`; measured max
+    abs diff between the two paths is `0.0`. `_calculate_boosts` is deleted (Change 13); the recency
+    reference is passed into `src.scoring.boost_parts()`.
 18. ~~`db/pipeline.py:660` persists `linked_ids` as `str(...)` → not JSON.~~
-    **VERIFIED NOT A BUG.** `clean_dataframe()` already returns `linked_ids` as JSON *strings*
-    (`src/data_loader.py:554` → `json.dumps(l)`), and `pipeline.py:613` uses that DataFrame
-    directly (`df.to_dict("records")`). So `str()` is a **no-op** and the stored value is valid JSON.
-    Live rows confirm (`["10911764"]`). The latent risk is only if someone feeds a *list* into
-    `bulk_upsert_articles_fast` — that would silently store a Python repr. Keep it in mind when
-    refactoring, but the current path is correct.
+    **was not a live bug, latent risk now closed.** `clean_dataframe()` already returns `linked_ids`
+    as JSON *strings*, so `str()` was a no-op and the stored value was valid JSON (live rows confirm
+    `["10911764"]`). Change 13 replaced it with `scoring.json_ids(...)`, which normalises a list to
+    JSON instead of a Python repr — so feeding a list would now also be correct.
+18a. **Double sigmoid** — `Reranker.score()` applied sigmoid on top of `CrossEncoder.predict`'s
+    already-sigmoided output, trapping every score in `[0.5, 0.731]`. Fixed via
+    `_to_probability()`. This is why the old discard floor could never fire.
+18b. ~~Technique 4 (graceful degradation) not implemented — a source with no related article now
+    legitimately returns 1 item, and the UI has no "Trending in `<section>`" fallback list.~~
+    **fixed (Change 11)** — optional `fallback` block in `/api/recommend`, rendered as its own
+    labelled section below the halo. Measured trigger rate on 50 real sources: **34.0%**. The block
+    is excluded from evaluation by construction (never stored, never read by `evaluate.py`).
 
-### P1b — experiment harness is not reproducible as shipped
-19. `run_experiments.py:467` sets `a0_val_ndcg` to a **scalar** but passes it as the paired
-    baseline array at `:496` → `compute_bootstrap_ci` indexes a 0-d array →
-    **`IndexError: too many indices for array`**. Re-running the script today overwrites
-    `ablation_results.csv` then dies before writing `tuning_results.csv`. The shipped CSVs came
-    from an earlier revision. Fix = pass the per-article `a0_ndcg` list (as STEP 5 does at `:432`).
-20. `import_colab_export.py:60` runs `db.query(Article.id).all()` (SQLAlchemy 2.0 autobegins),
-    then `:106` does `with db.begin():` → **`InvalidRequestError: A transaction is already begun`**
-    → rollback → re-raise. **The Colab export can never be imported.** The unit test passes only
-    because it fails earlier at the NaN check.
-21. `freeze_pool.py:75` iterates a **`set`** to build the focused BM25 query
-    (`set(body_toks)`), so candidate selection depends on `PYTHONHASHSEED` → the frozen pool is
-    not bit-reproducible across processes.
-22. `freeze_pool.py:165` ignores `config.RERANKER_REVISION` and defaults `--max-len 192`
-    (production = 512). Every `tuning_results.csv` number comes from an **unpinned, truncated**
-    cross-encoder.
-23. `parity_test.py` can report **"FULL PARITY VERIFIED" with a dead tunnel** — the client falls
+### P1b — experiment harness: 19–22 verified fixed, 23 still open
+19. ~~`run_experiments.py` passed the scalar `a0_val_ndcg` as the paired baseline array →
+    `IndexError: too many indices`.~~ **fixed** — line 496 passes the per-article `a0_ndcg` list;
+    the scalar is only used for the `delta_vs_a0` field. (The shipped CSVs still came from an older
+    revision, so re-run the script if the numbers matter.)
+20. ~~`import_colab_export.py` ran `db.query(Article.id).all()` (SQLAlchemy 2.0 autobegins) and then
+    `with db.begin():` → `InvalidRequestError: A transaction is already begun`, so the Colab export
+    could never be imported.~~ **fixed** — one `with SessionLocal.begin() as db:` wraps the reads and
+    the writes. The unit test that "passed only because it failed earlier" was itself broken and is
+    fixed too (it now hands the fake session to `__enter__`).
+21. ~~`freeze_pool.py:75` iterated a `set` to build the focused BM25 query → not bit-reproducible.~~
+    **fixed** — `sorted(..., key=lambda pair: (-idf, term))` gives a deterministic tie-break.
+22. ~~`freeze_pool.py:165` ignored `config.RERANKER_REVISION` and defaulted `--max-len 192`.~~
+    **fixed** — `max_length = max_length or config.RERANK_MAX_LEN` and
+    `revision=config.RERANKER_REVISION`.
+23. `parity_test.py` can still report **"FULL PARITY VERIFIED" with a dead tunnel** — the client falls
     back to the local model on HTTP error, so it compares local vs local (cosine 1.0, same Top-5).
+    **Still open.** Fix = make the parity check assert the remote answer came from the remote.
+
+### P1c — found and fixed in Change 13 (backend audit)
+
+24. ~~`tests/test_integrity.py` could not run at all — `tests/` is not a package, so
+    `python tests/test_integrity.py` died on `import config` and `-m unittest tests.test_integrity`
+    died on `ModuleNotFoundError`. The "15 invariant tests" had never been executed.~~
+    **fixed** — `sys.path` bootstrap in the test module; **16 tests run and pass**.
+25. ~~`build_evidence_reason()` raised `TypeError` when `rerank_score` was `None` (the `hybrid`
+    method never calls the cross-encoder).~~ **fixed** — `rounded()` / `weighted()` return `None`.
+26. ~~The live path divided the dense score by its maximum **without clipping** to `[0,1]`, so a
+    negative cosine produced a negative relevance term, while the ingestion path clipped. The same
+    pair scored differently depending on which path served it.~~ **fixed** — `src.scoring.norm()`
+    clips in both.
+27. ~~Reverse-push rows carried less evidence than forward rows for identical work (no
+    `rank_relevance`, `method_ranks`, `margin_cutoff`) — the evaluation card showed "not recorded".~~
+    **fixed** — one `_rank_and_build()` for both.
+28. ~~`api/server.py`'s `reload_engine_from_postgres()` rebuilt article rows by hand and answered
+    "one embedding missing" by re-embedding the whole corpus.~~ **fixed** — `corpus_rows()`; a row
+    without a vector contributes a zero vector (zero cosine), exactly like the pipeline.
+29. ~~`db/pipeline.py` booted with an unused `from sqlalchemy.orm import Session` and `api/server.py`
+    imported `load_articles` it never called.~~ **fixed** — 13 unused imports removed across 9 files.
 
 ### P2 — dead code
 `State.subscribe`, `State.theme/engineInfo/allSections` (write-only), `State.addToHistory`/`saveHistory`
@@ -617,9 +753,12 @@ CSV columns seen: `articleId`, `articleTitle`, `description`, `body`, `sectionNa
 2. **`src/data_loader.clean_dataframe()` is the only cleaning path.** Do not write parallel cleaners.
 3. **Any change to a `get_pipeline_version()` token changes the version hash** → the next
    ingestion forces a full recompute (slow but correct). Update the doc string if you change it.
-4. **Ingested vs live scoring must stay in sync.** `db/pipeline.py` reimplements BM25/blend/
-   boosts/MMR separately from `src/recommender.py` — they have already drifted (bug #15, #16, #17).
-   Prefer routing the pipeline through `src.recommender.py` helpers when touching this.
+4. **Ingested vs live scoring must stay in sync — and it now is, by construction.** The blend, boost
+   table, MMR and linked-ID handling live in **`src/scoring.py`**; both `db/pipeline.py` and
+   `src/recommender.py` call it. Do not re-derive those formulas in a caller: edit `src/scoring.py`
+   once and both paths change together. (Before Change 13 the two copies had drifted — bugs #15–#17,
+   #26.) The only intentionally different piece is the text-search blend, which has no dense term.
+   Verify any change here with a golden run, not by eyeballing: same fixtures → same rows → diff.
 5. **`reason` is a JSON string**, not plain text. The frontend parses it (`ui.js`, `tabs.js`,
    `evaluator.js`). Keep the key set compatible: `summary, terms, entities, source_sentence,
    best_sentence, signals, agreement_count, boosts, context_facts, confidence,

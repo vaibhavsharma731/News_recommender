@@ -47,11 +47,6 @@ const Api = (() => {
     return _fetch('/sections');
   }
 
-  /** Single article */
-  async function getArticle(id) {
-    return _fetch(`/articles/${encodeURIComponent(id)}`);
-  }
-
   /**
    * Recommend endpoint: supports query or articleId.
    */
@@ -84,12 +79,11 @@ const Api = (() => {
   }
 
   async function dbInit() {
-    const res = await fetch(`${API_BASE}/db/init`, { method: 'POST' });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || 'DB Init failed');
-    }
-    return res.json();
+    return _fetch('/db/init', { method: 'POST' });
+  }
+
+  async function dbClear() {
+    return _fetch('/db/clear', { method: 'POST' });
   }
 
   async function uploadCsv(file) {
@@ -134,10 +128,10 @@ const Api = (() => {
     trending,
     articles,
     sections,
-    getArticle,
     recommend,
     dbHealth,
     dbInit,
+    dbClear,
     uploadCsv,
     ingestDefault,
     jobStatus,
