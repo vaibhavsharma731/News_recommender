@@ -17,6 +17,10 @@ Open **http://localhost:5000** in your browser. The frontend is served automatic
 The **first run downloads two models (~1.5 GB, needs internet once)** and embeds all articles
 (about a minute on CPU). Embeddings are cached in `data/cache/`, so later starts are instant.
 
+> **Datasets are not distributed with this repository.** News article corpora are not published
+> here, so a fresh clone has code but no articles. Supply your own CSV and ingest it through the
+> editor upload screen or `POST /api/db/upload-csv` before the reader view has anything to show.
+
 No internet or short on disk? Run in light mode (TF-IDF, no downloads, lower quality):
 
 ```bash
@@ -35,31 +39,43 @@ The app switches to light mode automatically if the models cannot be loaded.
 news_recommender/
 ├── api/
 │   ├── __init__.py
-│   └── server.py           FastAPI backend (REST endpoints + serves frontend)
+│   ├── server.py            FastAPI backend (REST endpoints + serves frontend)
+│   └── editor_routes.py     Ingestion routes (/api/db: upload, jobs, health)
+├── db/
+│   ├── connection.py        Engine, env config, idempotent schema migrations
+│   ├── models.py            SQLAlchemy tables (articles, recommendations, jobs)
+│   ├── repository.py        All SQL access
+│   └── pipeline.py          Ingestion + precompute pipeline
 ├── frontend/
 │   ├── index.html           Main HTML shell
-│   ├── css/                 12 modular CSS files (variables, base, layout, etc.)
-│   └── js/                  6 JS modules (api, state, ui, hero, tabs, app)
+│   ├── css/                 14 modular CSS files (variables, base, layout, etc.)
+│   └── js/                  8 JS modules (api, state, ui, evaluator, hero, tabs, editor, app)
 ├── config.py                ALL tunable numbers in one place
 ├── evaluate.py              Compare methods + demo queries
 ├── requirements.txt
-├── .env                     HuggingFace token (not tracked by git)
-├── data/
-│   └── articles.csv         Your dataset
+├── .env.example             Template for DB + model worker settings
+├── PROJECT_HANDOVER_FACTS.md Verified technical handover (architecture, numbers, defects)
+├── data/                    Not shipped. Your CSVs and caches live here (git-ignored)
 └── src/
     ├── data_loader.py       CSV -> clean table (dedupe, remove boilerplate, build texts)
     ├── retrieval.py         BM25 keyword search, embedding search, TF-IDF fallback, RRF fusion
     ├── reranker.py          Cross-encoder that re-scores the best candidates
+    ├── scoring.py           The one scoring/boost/MMR implementation (shared by both paths)
+    ├── evidence.py          Deterministic "why recommended" evidence
+    ├── calibration.py       Platt scaling of scores into confidence bands
+    ├── model_registry.py    Model loading, remote GPU worker client
     └── recommender.py       The full pipeline, boosts, diversity, explanations
 ```
 
-Read the code in this order: `config.py` -> `data_loader.py` -> `retrieval.py` -> `reranker.py` -> `recommender.py` -> `api/server.py`.
+Read the code in this order: `config.py` -> `data_loader.py` -> `retrieval.py` -> `reranker.py` -> `scoring.py` -> `recommender.py` -> `api/server.py`.
+
+For a detailed, measured description of every stage, see `PROJECT_HANDOVER_FACTS.md`.
 
 ## How it works
 
-1. **Clean:** 738 rows -> 699 unique articles; repeated boilerplate sentences are removed.
+1. **Clean:** duplicate articles are collapsed (latest publish date wins) and repeated boilerplate sentences are removed.
 2. **Two searches:** BM25 (exact words, names) and embeddings (meaning).
-3. **Fuse:** Reciprocal Rank Fusion merges both lists into 30 candidates.
+3. **Fuse:** Reciprocal Rank Fusion merges both lists into 20 candidates (`config.N_CANDIDATES`).
 4. **Rerank:** a cross-encoder reads input + candidate together and scores the match.
 5. **Boost (article input only):** small bonus for same section and similar publish time.
 6. **Diversify:** MMR avoids near-identical results.

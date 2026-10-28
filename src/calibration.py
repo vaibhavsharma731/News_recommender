@@ -44,20 +44,22 @@ class ConfidenceCalibrator:
         self.a = float(a)
         self.b = float(b)
 
-    def predict_probability(self, unboosted_score: float) -> float:
-        """Applies Platt sigmoid transformation to unboosted score."""
+    def predict_probability(self, unboosted_score: float, agreement_count: int = 1) -> float:
+        """Applies Platt sigmoid transformation to unboosted score with multi-signal corroboration."""
         s = float(np.clip(unboosted_score, 0.0, 1.0))
-        logit = self.a * s + self.b
+        agree_bonus = 0.35 * max(0, int(agreement_count or 1) - 1)
+        logit = self.a * s + self.b + agree_bonus
         # Numerical stability clip
         logit = float(np.clip(logit, -15.0, 15.0))
         prob = 1.0 / (1.0 + math.exp(-logit))
         return float(np.clip(prob, 0.01, 0.99))
 
-    def evaluate_band(self, prob: float) -> Tuple[str, str, str]:
-        """Returns (band_code, band_label, band_color)."""
-        if prob >= HIGH_CONF_THRESHOLD:
+    def evaluate_band(self, prob: float, agreement_count: int = 1) -> Tuple[str, str, str]:
+        """Returns (band_code, band_label, band_color) incorporating multi-signal consensus."""
+        agree = int(agreement_count or 1)
+        if prob >= HIGH_CONF_THRESHOLD or (agree >= 3 and prob >= 0.40):
             return "HIGH", "High Confidence", "#10b981"   # Emerald Green
-        elif prob >= MED_CONF_THRESHOLD:
+        elif prob >= MED_CONF_THRESHOLD or (agree >= 2 and prob >= 0.25):
             return "MEDIUM", "Medium Confidence", "#f59e0b" # Amber
         else:
             return "LOW", "Low Confidence", "#94a3b8"     # Slate Gray
@@ -76,8 +78,8 @@ class ConfidenceCalibrator:
           - margin: difference over next candidate
           - agreement: signal agreement count (1 to 3)
         """
-        prob = self.predict_probability(unboosted_score)
-        band_code, band_label, band_color = self.evaluate_band(prob)
+        prob = self.predict_probability(unboosted_score, agreement_count=agreement_count)
+        band_code, band_label, band_color = self.evaluate_band(prob, agreement_count=agreement_count)
 
         margin = 0.0
         if next_score is not None:

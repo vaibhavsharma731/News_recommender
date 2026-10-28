@@ -103,6 +103,7 @@ class Recommender:
         # --- 0. what are we searching with? -------------------------------
         user_vector = self._build_user_profile_vector(user_history) if user_history else None
 
+        self_bm25 = None
         if article_id is not None:
             query_pos = self.id_to_pos[article_id]
             base_row = self.articles.iloc[query_pos]
@@ -115,6 +116,7 @@ class Recommender:
             rerank_query = self.articles.at[query_pos, "text_rerank"]
             semantic_scores = self.semantic.scores_for_doc(query_pos)
             bm25_scores = self.bm25.scores(focused_text)
+            self_bm25 = float(bm25_scores[query_pos])
         elif query:
             query_pos = None
             clean_query, corrections, _ = self.bm25.normalize_query(query)
@@ -159,26 +161,6 @@ class Recommender:
         if not candidates:
             return Result([], True, 0.0, method, notes)
 
-        # --- 2b. Lexical / entity support gate (technique 3) ----------------
-        # Block candidates sharing neither a keyword nor a named entity BEFORE
-        # paying for cross-encoder inference. Editorial links always pass.
-        if method == "hybrid+rerank" and (config.LEXICAL_GATE or config.ENTITY_GATE):
-            from src.evidence import extract_shared_entities
-            src_text = rerank_query if query_pos is None else str(self.articles.iloc[query_pos]["text_rerank"])
-            src_ents = ({e.lower() for e in extract_shared_entities(src_text, "", limit=24)}
-                        if config.ENTITY_GATE else set())
-            linked = self._linked_ids(query_pos)
-            kept = []
-            for c in candidates:
-                if str(self.articles.iloc[c]["id"]) in linked:
-                    kept.append(c)
-                elif config.LEXICAL_GATE and bm25_scores[c] > 1e-9:
-                    kept.append(c)
-                elif src_ents and (src_ents & {e.lower() for e in extract_shared_entities(
-                        str(self.articles.iloc[c].get("text_rerank", "")), "", limit=24)}):
-                    kept.append(c)
-            candidates = kept or candidates
-
         # --- 3. relevance score of each candidate (0-1) -------------------
         # Normalised component arrays are kept at function scope so the evidence
         # card can show the real blend decomposition for whichever method ran.
@@ -209,7 +191,7 @@ class Recommender:
             else:
                 # Article-to-article: reranker + lexical + semantic blend
                 relevance, bm25_norm, dense_norm = blend(
-                    rerank_scores, bm25_scores, semantic_scores, candidates)
+                    rerank_scores, bm25_scores, semantic_scores, candidates, self_bm25=self_bm25)
             
             # Query-level gate: use raw cross-encoder probability, not max-normalized blend
             raw_rerank_max = float(np.max(rerank_scores)) if len(rerank_scores) > 0 else 0.0
@@ -230,33 +212,9 @@ class Recommender:
             rerank_scores = np.zeros(len(candidates))
 
         # --- Lower Filter: relevance admission (techniques 1 + 2) -----------
-        # Replaces the old ARTICLE_DISCARD_FLOOR, which was inert while the
-        # double-sigmoid bug trapped every score in [0.5, 0.731].
         source_linked_set = set()
         if query_pos is not None:
             source_linked_set = self._linked_ids(query_pos)
-
-        admission = None
-        if method == "hybrid+rerank" and len(candidates) > 1:
-            from src.evidence import extract_shared_entities
-            src_text = str(self.articles.iloc[query_pos]["text_rerank"]) if query_pos is not None else rerank_query
-            linked_flags = [str(self.articles.iloc[c]["id"]) in source_linked_set for c in candidates]
-            entity_flags = [
-                linked_flags[idx] or bool(extract_shared_entities(
-                    src_text, str(self.articles.iloc[candidates[idx]].get("text_rerank", "")), limit=1))
-                for idx in range(len(candidates))
-            ]
-            admission = config.admission_cut(
-                [float(r) for r in rerank_scores], entity_flags, linked_flags)
-            sel = admission["keep"]
-            if len(sel) < len(candidates):
-                candidates = [candidates[i] for i in sel]
-                relevance = relevance[sel]
-                rerank_scores = rerank_scores[sel]
-                if bm25_norm is not None:
-                    bm25_norm = bm25_norm[sel]
-                if dense_norm is not None:
-                    dense_norm = dense_norm[sel]
 
         # --- 4. Personalization & News Boost Calibration -------------------
         final = np.array(relevance, dtype=float)
@@ -269,7 +227,17 @@ class Recommender:
 
         boost_parts = {}
         if use_boosts and len(candidates) > 0:
-            boost_parts = {i: self._boost_parts(query_pos, pos) for i, pos in enumerate(candidates)}
+            bm25_rank_map = {c: i + 1 for i, c in enumerate(bm25_rank)}
+            dense_rank_map = {c: i + 1 for i, c in enumerate(semantic_rank)}
+            boost_parts = {
+                i: self._boost_parts(
+                    query_pos, pos,
+                    bm25_rank=bm25_rank_map.get(pos),
+                    dense_rank=dense_rank_map.get(pos),
+                    rerank_score=float(rerank_scores[i]) if len(rerank_scores) > i else None,
+                )
+                for i, pos in enumerate(candidates)
+            }
             final = final * np.array([boost_parts[i]["total"] for i in range(len(candidates))])
 
         # --- 5. diversity ---------------------------------------------------
@@ -288,6 +256,14 @@ class Recommender:
             "title": query_text, "description": "", "body": ""
         }
 
+        # Real cross-encoder rank among candidates
+        if method == "hybrid+rerank" and rerank_scores is not None and len(rerank_scores) > 0:
+            ce_arr = np.asarray(rerank_scores, dtype=float)
+            ce_order = list(np.argsort(-ce_arr))
+            ce_pos_of = {cand_idx: r + 1 for r, cand_idx in enumerate(ce_order)}
+        else:
+            ce_pos_of = {}
+
         for rank_idx, i in enumerate(order, start=1):
             pos = candidates[i]
             cand_row = dict(self.articles.iloc[pos])
@@ -296,10 +272,11 @@ class Recommender:
             next_unboosted = float(np.clip(relevance[order[rank_idx]], 0.0, 1.0)) if rank_idx < len(order) else None
 
             # Agreement signals
-            bm25_r = list(bm25_rank).index(pos) + 1 if pos in bm25_rank else 999
-            dense_r = list(semantic_rank).index(pos) + 1 if pos in semantic_rank else 999
+            bm25_r = list(bm25_rank).index(pos) + 1 if pos in bm25_rank else None
+            dense_r = list(semantic_rank).index(pos) + 1 if pos in semantic_rank else None
             raw_r = float(rerank_scores[i]) if method == "hybrid+rerank" else None
-            agree_count, signals = evaluate_signal_agreement(bm25_r, dense_r, raw_r)
+            ce_r = ce_pos_of.get(i)
+            agree_count, signals = evaluate_signal_agreement(bm25_r, dense_r, raw_r, rerank_rank=ce_r)
 
             conf_info = calibrator.calibrate(unboosted, next_score=next_unboosted, agreement_count=agree_count)
 
@@ -320,7 +297,7 @@ class Recommender:
                 cand_pos=pos,
                 bm25_query=query_text,
                 cosine=float(semantic_scores[pos]),
-                admission=admission,
+                rerank_rank=ce_r,
             )
 
             recommendations.append(Recommendation(
@@ -374,7 +351,7 @@ class Recommender:
         """Editorial Also-Read link IDs of the source article, as a string set."""
         return set() if query_pos is None else linked_set(self.articles.iloc[query_pos])
 
-    def _boost_parts(self, query_pos, pos) -> dict:
+    def _boost_parts(self, query_pos, pos, bm25_rank: int = None, dense_rank: int = None, rerank_score: float = None) -> dict:
         """Every boost multiplier actually applied to this candidate, as numbers.
 
         The total is simply the product of the parts, so the evaluation card can
@@ -382,7 +359,8 @@ class Recommender:
         """
         source = self.articles.iloc[query_pos] if query_pos is not None else None
         return boost_parts(source, self.articles.iloc[pos], self._max_page_views,
-                           self.articles["date"].max())
+                           self.articles["date"].max(),
+                           bm25_rank=bm25_rank, dense_rank=dense_rank, rerank_score=rerank_score)
 
     def _mmr(self, candidates, final, k, is_search: bool = False) -> list:
         """Pick results one by one: high relevance, but penalise near-duplicate articles."""

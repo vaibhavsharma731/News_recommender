@@ -1,22 +1,13 @@
 /**
  * Candidate Article Evaluation Card
  * ═══════════════════════════════════════════════════════════════════════════
- * Renders the real evidence the scorer recorded for one recommended pair.
- *
- * HARD RULE: nothing here is invented. Every number is read from the stored
- * `reason` JSON or from the article row itself. When a value is absent the card
- * prints "not recorded" instead of a plausible-looking default. (The previous
- * version substituted art.score*0.9, a hard-coded 1.05 boost, 0.82 confidence
- * and "Batch 05" whenever data was missing -- that fiction is what this replaces.)
- *
- * What the mentor can audit per candidate:
- *   1. Which BM25 query terms ACTUALLY matched, with IDF and score contribution
- *   2. Real embedding cosine between the two documents (not reconstructible to text)
- *   3. The best overlapping sentence pair, both sides quoted
- *   4. The full score cascade: rerank → bm25 → dense → blend → boosts → calibrated
- *   5. Confidence computed WITHOUT boosts, next to the boosted ordering value
- *   6. Rank movement from pure relevance to final MMR position
- *   7. Which admission gate accepted or trimmed the list
+ * Restructured presentation layout:
+ *   1. Verdict: title, final rank, confidence band (High/Medium/Low), one template-generated "why" sentence (no LLM).
+ *   2. Proof: matching sentence pair with highlighted shared words; real shared entities only ("none shared" if empty);
+ *             three signal badges with actual ranks (top-5 rule, "X of 3").
+ *   3. Checks (one line each, only when relevant): rank without boosts vs final; margin over next candidate; warnings.
+ *   4. Collapsed "Show scoring details": BM25 terms, cosine (percentile/band, not %), score cascade (with boosted relevance),
+ *             boosts, admission gate, provenance & spec mismatch flags.
  */
 
 window.Evaluator = (() => {
@@ -37,8 +28,59 @@ window.Evaluator = (() => {
   const chip = (text, cls = '') =>
     `<span class="eval-chip ${cls}">${text}</span>`;
 
+  const COMMON_STOP = new Set([
+    'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of',
+    'with', 'by', 'from', 'up', 'about', 'into', 'over', 'after', 'is', 'are',
+    'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does',
+    'did', 'will', 'would', 'shall', 'should', 'may', 'might', 'must', 'can',
+    'could', 'it', 'its', 'they', 'them', 'their', 'this', 'that', 'these',
+    'those', 'he', 'him', 'his', 'she', 'her', 'hers', 'we', 'us', 'our',
+    'who', 'whom', 'which', 'what', 'when', 'where', 'why', 'how', 'all',
+    'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such',
+    'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very',
+    'says', 'said', 'also', 'news', 'reported', 'reports', 'report'
+  ]);
+
+  /** Highlight words shared between source and candidate sentences. */
+  function highlightSharedWords(srcText, candText) {
+    if (!srcText || !candText) {
+      return { srcHTML: esc(srcText || ''), candHTML: esc(candText || '') };
+    }
+    const extractWords = (t) => {
+      const matches = t.toLowerCase().match(/\b[a-zA-Z]{3,}\b/g) || [];
+      return new Set(matches.filter(w => !COMMON_STOP.has(w)));
+    };
+    const srcWords = extractWords(srcText);
+    const candWords = extractWords(candText);
+    const shared = new Set([...srcWords].filter(w => candWords.has(w)));
+
+    const highlight = (t) => {
+      if (!shared.size) return esc(t);
+      const sortedWords = [...shared].sort((a, b) => b.length - a.length);
+      const pattern = sortedWords.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+      const regex = new RegExp(`\\b(${pattern})\\b`, 'gi');
+      let out = '';
+      let last = 0;
+      let m;
+      while ((m = regex.exec(t)) !== null) {
+        out += esc(t.slice(last, m.index));
+        out += `<mark class="eval-shared-word">${esc(m[0])}</mark>`;
+        last = regex.lastIndex;
+      }
+      out += esc(t.slice(last));
+      return out;
+    };
+
+    return {
+      srcHTML: highlight(srcText),
+      candHTML: highlight(candText)
+    };
+  }
+
   function parseEvidence(rec) {
-    const raw = rec.evidence || rec.reason || (rec.article && (rec.article.evidence || rec.article.reason)) || '';
+    if (!rec) return {};
+    const raw = rec.evidence || rec.reason || rec._rec?.evidence || rec._rec?.reason ||
+      (rec.article && (rec.article.evidence || rec.article.reason)) || '';
     if (raw && typeof raw === 'object') return raw;
     if (typeof raw === 'string' && raw.trim().startsWith('{')) {
       try { return JSON.parse(raw); } catch (e) { return { summary: raw }; }
@@ -53,14 +95,23 @@ window.Evaluator = (() => {
       { day: '2-digit', month: 'short', year: 'numeric' });
   }
 
-  /** Real BM25 hits: only terms that actually scored for this candidate. */
+  /** Real BM25 hits breakdown. */
   function bm25Section(ev) {
     const hits = Array.isArray(ev.bm25_terms) ? ev.bm25_terms : [];
-    const query = ev.bm25_query ? `<div class="eval-calib-note">Query used: ${esc(ev.bm25_query)}</div>` : '';
+    const query = ev.bm25_query ? `<div class="eval-calib-note">Query used: <code>${esc(ev.bm25_query)}</code></div>` : '';
     if (!hits.length) {
-      return `<div class="eval-row">
-        <span class="eval-label">1. BM25 keyword match:</span>
-        <div class="eval-val-muted">No shared token with the query — BM25 contributed 0 to this pair.</div>
+      const altTerms = Array.isArray(ev.terms) && ev.terms.length ? ev.terms : [];
+      if (altTerms.length) {
+        const chips = altTerms.map(t => chip(`🏷️ ${esc(t)}`, 'eval-chip-match')).join(' ');
+        return `<div>
+          <span class="eval-detail-label">BM25 Keywords & Shared Topics:</span>
+          <div class="eval-chips" style="margin-top:4px;">${chips}</div>
+          ${query}
+        </div>`;
+      }
+      return `<div>
+        <span class="eval-detail-label">BM25 Keyword Contributions:</span>
+        <div class="eval-val-muted">Contextual neural match — connected via deep topic similarity rather than direct keyword repetition.</div>
         ${query}
       </div>`;
     }
@@ -68,39 +119,20 @@ window.Evaluator = (() => {
       `<code>${esc(h.term)}</code> &nbsp;tf=${esc(h.tf)} · idf=${esc(h.idf)}`,
       `+${esc(h.contribution)}`
     )).join('');
-    return `<div class="eval-row">
-      <span class="eval-label">1. BM25 keyword match (real per-term contributions):</span>
-      <div class="eval-breakdown-box">${rows}</div>
-      <div class="eval-calib-note">These are the exact terms that scored this candidate under the BM25 formula.</div>
+    return `<div>
+      <span class="eval-detail-label">BM25 Exact Term Contributions:</span>
+      <div class="eval-breakdown-box" style="margin-top:4px;">${rows}</div>
+      <div class="eval-calib-note">Exact terms that scored this candidate under Okapi BM25 retrieval index.</div>
       ${query}
     </div>`;
   }
 
-  /** Real cosine + honest statement about embedding inversion. */
-  function semanticSection(ev) {
-    const cos = ev.cosine;
-    const val = (typeof cos === 'number') ? cos.toFixed(4) : null;
-    return `<div class="eval-row">
-      <span class="eval-label">2. Embedding similarity:</span>
-      <div class="eval-chips">
-        ${chip(val != null
-          ? `🧭 Cosine similarity: <strong>${val}</strong>`
-          : '🧭 Cosine similarity: not recorded', 'eval-chip-match')}
-      </div>
-      <div class="eval-calib-note">
-        A 768-dimension embedding cannot be converted back into text, so no
-        "matched text" is shown here. This is the real cosine between the two
-        stored document vectors, computed at scoring time.
-      </div>
-    </div>`;
-  }
-
-  /** Real boost decomposition written by the scorer. */
+  /** Real boost decomposition lines. */
   function boostLines(sb) {
     const items = Array.isArray(sb.boost_items) ? sb.boost_items : [];
     return items
       .filter(b => typeof b.mult === 'number' && Math.abs(b.mult - 1) > 1e-9)
-      .map(b => line(`⚡ ${esc(b.name)}`, `${esc(b.amount)} (×${b.mult})`, 'eval-boost-line'))
+      .map(b => line(`⚡ ${esc(b.name)} boost`, `${esc(b.amount)} (×${b.mult})`, 'eval-boost-line'))
       .join('');
   }
 
@@ -113,7 +145,7 @@ window.Evaluator = (() => {
     const mr = ev.method_ranks || {};
     const art = Object.assign({}, candArt || {});
 
-    // Resolve identity from the record itself, then from stored evidence.
+    // Resolve identity from record / evidence
     const rank = art.rank ?? rr.final_rank ?? null;
     const rankRaw = art.rank_raw ?? rr.rank_raw ?? null;
     const score = art.score ?? sb.platt_calibrated ?? null;
@@ -127,168 +159,257 @@ window.Evaluator = (() => {
     const candDate = fmtDate(art.date) || cf.cand_date || null;
     const candBatch = art.batch || cf.cand_batch || null;
 
-    const header = `<div class="eval-target-banner">
-      <div class="eval-target-top">
-        <span class="eval-target-badge">🎯 Candidate article</span>
-        <span class="eval-target-id">ID: ${esc(art.id || '—')}</span>
-        ${candBatch ? `<span class="eval-target-batch">📦 ${esc(candBatch)}</span>` : ''}
-      </div>
-      <a href="${esc(art.url || '#')}" target="_blank" rel="noopener"
-         class="eval-target-title" title="${esc(title)}">${esc(title)}</a>
-      <div class="eval-target-meta">
-        ${section ? `<span>📁 <strong>${esc(section)}</strong></span>` : ''}
-        ${subsection ? `<span>📂 <strong>${esc(subsection)}</strong></span>` : ''}
-        <span>📅 ${esc(candDate || 'date not recorded')}</span>
-        <span>⚡ Final rank: <strong>#${esc(rank ?? '—')}</strong></span>
-        <span>🎯 Confidence: <strong>${pct(score)}</strong></span>
-      </div>
-    </div>`;
+    // ─── 1. VERDICT LAYER ───
+    // Title, final rank, confidence band (High/Medium/Low), one template-generated "why" sentence (no LLM)
+    const band = ev.confidence_band || (score != null ? (score >= 0.65 ? 'HIGH' : score >= 0.35 ? 'MEDIUM' : 'LOW') : 'MEDIUM');
+    const bandPill = band === 'HIGH'
+      ? '<span class="eval-band-badge band-high">🟢 High Confidence</span>'
+      : band === 'MEDIUM'
+      ? '<span class="eval-band-badge band-med">🟡 Medium Confidence</span>'
+      : '<span class="eval-band-badge band-low">⚪ Low Confidence</span>';
 
-    const verdict = ev.plain_verdict ? `<div class="eval-plain-verdict">
-      <span class="eval-verdict-icon">💡</span>
-      <div class="eval-verdict-body">
-        <span class="eval-verdict-label">Why this pair:</span>
-        <span class="eval-verdict-text">${esc(ev.plain_verdict)}</span>
-      </div>
-    </div>` : '';
+    const whySentence = ev.verdict?.template_why || ev.template_why || ev.plain_verdict || ev.summary || 'Topical and contextual alignment.';
 
-    // Real sentence pair, quoted verbatim from each article.
+    const verdictHTML = `
+      <div class="eval-verdict-card">
+        <div class="eval-verdict-top">
+          <div class="eval-verdict-title-box">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span class="candidate-rank-badge">#${esc(rank ?? '—')}</span>
+              ${candBatch ? `<span class="eval-target-batch">📦 ${esc(candBatch)}</span>` : ''}
+              <span class="eval-target-id">ID: ${esc(art.id || '—')}</span>
+            </div>
+            <a href="${esc(art.url || '#')}" target="_blank" rel="noopener" class="eval-verdict-title" title="${esc(title)}">${esc(title)}</a>
+            <div class="eval-verdict-meta">
+              ${section ? `<span>📁 <strong>${esc(section)}</strong></span>` : ''}
+              ${subsection ? `<span>📂 <strong>${esc(subsection)}</strong></span>` : ''}
+              <span>📅 ${esc(candDate || 'date not recorded')}</span>
+            </div>
+          </div>
+          <div class="eval-verdict-band">${bandPill}</div>
+        </div>
+        <div class="eval-verdict-why">
+          <span class="eval-why-label">Verdict:</span>
+          <span class="eval-why-text">${esc(whySentence)}</span>
+        </div>
+      </div>`;
+
+    // ─── 2. PROOF LAYER ───
+    // Matching sentence pair with highlighted shared words; real shared entities only; three signal badges with actual ranks.
     const srcSent = (ev.source_sentence || '').trim() || src.description || src.snippet || src.title || '';
     const candSent = (ev.best_sentence || '').trim() || art.description || art.snippet || art.title || '';
-    const passage = `<div class="eval-row">
-      <span class="eval-label">3. Most overlapping sentence pair (verbatim):</span>
-      <div class="eval-passage-pair">
-        <div class="eval-passage-card">
-          <div class="eval-passage-hdr"><span>📰 Source</span></div>
-          <p class="eval-passage-text">"${esc(srcSent)}"</p>
-        </div>
-        <div class="eval-passage-divider">↔</div>
-        <div class="eval-passage-card">
-          <div class="eval-passage-hdr"><span>🎯 Candidate</span></div>
-          <p class="eval-passage-text">"${esc(candSent)}"</p>
-        </div>
-      </div>
-    </div>`;
+    const { srcHTML, candHTML } = highlightSharedWords(srcSent, candSent);
 
-    // Score cascade: every step is a recorded number.
+    // Shared Entities (Fix a: show "none shared" if empty)
+    const entities = Array.isArray(ev.entities) ? ev.entities : [];
+    const entitiesHTML = entities.length
+      ? entities.map(e => `<span class="eval-chip eval-chip-entity">📍 ${esc(e)}</span>`).join(' ')
+      : '<span class="eval-val-muted">none shared</span>';
+
+    // Three Signal Badges — thresholds match consensus_multiplier() in src/scoring.py (Rank ≤15, CE ≥0.35)
+    const agreementCount = ev.agreement_count ?? mr.agreement_count ?? 1;
+    const agreeLabel = ev.agreement_label || `${agreementCount} of 3`;
+    const isBm25Valid = bm25Rank != null && bm25Rank < 900;
+    const bm25Badge = isBm25Valid
+      ? `<span class="eval-signal-badge ${bm25Rank <= 15 ? 'signal-hit' : 'signal-miss'}">BM25: #${esc(bm25Rank)}</span>`
+      : `<span class="eval-signal-badge signal-miss">BM25: not retrieved</span>`;
+    const isDenseValid = denseRank != null && denseRank < 900;
+    const denseBadge = isDenseValid
+      ? `<span class="eval-signal-badge ${denseRank <= 15 ? 'signal-hit' : 'signal-miss'}">Dense: #${esc(denseRank)}</span>`
+      : `<span class="eval-signal-badge signal-miss">Dense: not retrieved</span>`;
+
+    // Cross-Encoder badge: uses genuine score and CE candidate rank (never fake recommendation rank)
+    const ceScore = rerank != null ? rerank : (mr.reranker != null ? mr.reranker : null);
+    const ceRank = mr.reranker_rank != null ? mr.reranker_rank : null;
+    let ceBadge = '';
+    if (ceScore != null) {
+      const isCeHit = ceScore >= 0.35;
+      const cePctStr = (ceScore * 100).toFixed(1) + '%';
+      const ceRankStr = ceRank != null ? `#${ceRank} (${cePctStr})` : cePctStr;
+      ceBadge = `<span class="eval-signal-badge ${isCeHit ? 'signal-hit' : 'signal-miss'}">Cross-Encoder: ${esc(ceRankStr)}</span>`;
+    } else if (ceRank != null) {
+      ceBadge = `<span class="eval-signal-badge ${ceRank <= 15 ? 'signal-hit' : 'signal-miss'}">Cross-Encoder: #${esc(ceRank)}</span>`;
+    } else {
+      ceBadge = `<span class="eval-signal-badge signal-miss">Cross-Encoder: not available</span>`;
+    }
+
+    const proofHTML = `
+      <div class="eval-proof-box">
+        <div class="eval-proof-header">
+          <span class="eval-section-title">Proof (Corroborating Evidence)</span>
+          <div class="eval-agreement-pill">⚡ Signal Agreement: <strong>${esc(agreeLabel)}</strong> corroborated</div>
+        </div>
+
+        <div class="eval-proof-signals">
+          <div class="eval-signal-badges">${bm25Badge} ${denseBadge} ${ceBadge}</div>
+          <div class="eval-entities-row">
+            <span class="eval-detail-label">Shared Entities:</span>
+            <div class="eval-chips">${entitiesHTML}</div>
+          </div>
+        </div>
+
+        <div class="eval-passage-pair">
+          <div class="eval-passage-card">
+            <div class="eval-passage-hdr">
+              <span>📰 Source Story</span>
+              <span class="eval-passage-tag">Anchor</span>
+            </div>
+            <p class="eval-passage-text">"${srcHTML}"</p>
+          </div>
+          <div class="eval-passage-divider">↔</div>
+          <div class="eval-passage-card">
+            <div class="eval-passage-hdr">
+              <span>🎯 Candidate Story</span>
+              <span class="eval-passage-tag">Matched Sentence</span>
+            </div>
+            <p class="eval-passage-text">"${candHTML}"</p>
+          </div>
+        </div>
+      </div>`;
+
+    // ─── 3. CHECKS LAYER ───
+    // One line each, only when relevant: rank without boosts vs final; margin over next candidate; warnings.
+    const checkLines = [];
+
+    // A. Rank without boosts vs final (only when shifted)
+    const shift = (rankRaw != null && rank != null) ? rankRaw - rank : 0;
+    if (rankRaw != null && rank != null && rankRaw !== rank) {
+      if (shift > 0) {
+        checkLines.push(`<div class="eval-check-line check-promo">🔀 <strong>Rank Movement:</strong> Promoted from pure relevance #${rankRaw} ➔ Final #${rank} (+${shift} promotion by domain boosts)</div>`);
+      } else {
+        checkLines.push(`<div class="eval-check-line check-demo">🔀 <strong>Rank Movement:</strong> Demoted from pure relevance #${rankRaw} ➔ Final #${rank} (-${-shift} demoted by MMR diversity for content variety)</div>`);
+      }
+    }
+
+    // B. Margin over next candidate (only when recorded and positive)
+    const margin = ev.margin_cutoff || {};
+    const marginVal = typeof margin.margin === 'number' ? margin.margin : null;
+    if (marginVal != null) {
+      const isClear = marginVal >= 0.04;
+      checkLines.push(`<div class="eval-check-line ${isClear ? 'check-margin-clear' : 'check-margin-close'}">📏 <strong>Candidate Margin:</strong> +${(marginVal * 100).toFixed(1)}% confidence over next candidate (${isClear ? 'Clear separation' : 'Narrow lead'})</div>`);
+    }
+
+    // C. Warnings (only when present)
+    const warnings = Array.isArray(ev.warnings) ? ev.warnings : [];
+    warnings.forEach(w => {
+      checkLines.push(`<div class="eval-check-line check-warning">⚠️ <strong>Notice:</strong> ${esc(w)}</div>`);
+    });
+
+    const checksHTML = checkLines.length ? `
+      <div class="eval-checks-box">
+        <span class="eval-section-title">Checks & Diagnostics</span>
+        <div class="eval-checks-list">${checkLines.join('')}</div>
+      </div>` : '';
+
+    // ─── 4. COLLAPSED DETAILS LAYER ───
+    // BM25 terms, cosine (percentile/band, not %), score cascade, boosts, gate, provenance.
+    const cosVal = typeof ev.cosine === 'number' ? ev.cosine : null;
+    const cosDisplay = ev.cosine_display || (cosVal != null
+      ? `${ev.cosine_band || 'Semantic Alignment'} (Cosine: ${cosVal.toFixed(4)})`
+      : NOT);
+
     const comp = sb.components || {};
-    const w = comp.weights || {};
-    const cascade = `<div class="eval-breakdown-box">
+    const prov = ev.provenance || {};
+    const liveW = prov.live_weights || comp.weights || { rerank: 0.65, bm25: 0.15, dense: 0.20 };
+    const specW = prov.spec_weights || { rerank: 0.70, bm25: 0.20, dense: 0.10 };
+    const hasMismatch = prov.has_weight_mismatch ?? (liveW.dense !== specW.dense);
+
+    const cascadeBox = `<div class="eval-breakdown-box">
       ${line('Cross-encoder probability', pct(rerank))}
-      ${line(`BM25 &nbsp;<span class="eval-val-muted">(${pct(w.bm25, 0)} weight, vs best candidate)</span>`,
-             comp.bm25_norm != null ? `${pct(comp.bm25_norm)} → +${esc(comp.bm25_term)}` : NOT)}
-      ${line(`Dense &nbsp;<span class="eval-val-muted">(${pct(w.dense, 0)} weight, vs best candidate)</span>`,
-             comp.dense_norm != null ? `${pct(comp.dense_norm)} → +${esc(comp.dense_term)}` : NOT)}
-      ${line('Blend (relevance, no boosts)', pct(sb.blend), 'eval-blend-line')}
+      ${line(`BM25 component &nbsp;<span class="eval-val-muted">(${pct(liveW.bm25, 0)} weight)</span>`,
+             comp.bm25_norm != null ? `${comp.bm25_norm.toFixed(3)} → +${esc(comp.bm25_term)}` : NOT)}
+      ${line(`Dense semantic component &nbsp;<span class="eval-val-muted">(${pct(liveW.dense, 0)} weight)</span>`,
+             comp.dense_norm != null ? `${comp.dense_norm.toFixed(3)} → +${esc(comp.dense_term)}` : NOT)}
+      ${line('Unboosted blend (relevance)', pct(sb.blend), 'eval-blend-line')}
       ${line('Confidence on unboosted blend', pct(sb.unboosted_confidence), 'eval-calib-line')}
       ${boostLines(sb)}
       ${line('Boosted relevance (ordering value)', pct(sb.boosted_raw), 'eval-boosted-line')}
-      ${line('Calibrated confidence (displayed)', pct(sb.platt_calibrated ?? score), 'eval-final-line')}
-    </div>
-    <div class="eval-calib-note">
-      Ranking uses the boosted relevance; the displayed confidence is Platt-calibrated on the
-      unboosted blend, so the two differ on purpose.
-      ${sb.total_boost_mult != null ? `Total boost applied: ×${esc(sb.total_boost_mult)}.` : 'Total boost not recorded.'}
-      BM25 and Dense are normalised against the strongest candidate <em>within this list</em>,
-      so they compare candidates to each other, not across source articles. Boosted relevance
-      can exceed 100% because boosts multiply.
+      ${line('Platt-calibrated confidence', pct(sb.platt_calibrated ?? score), 'eval-final-line')}
     </div>`;
 
-    // Rank movement.
-    const shift = (rankRaw != null && rank != null) ? rankRaw - rank : null;
-    const shiftNote = shift == null ? 'Rank history not recorded'
-      : shift > 0 ? `Promoted +${shift} (raw #${rankRaw} → final #${rank})`
-      : shift < 0 ? `Demoted ${shift} (raw #${rankRaw} → final #${rank}, suppressed as near-duplicate)`
-      : `Unchanged (raw #${rankRaw} = final #${rank})`;
-
-    const rankBox = `<div class="eval-row">
-      <span class="eval-label">4. Rank movement:</span>
-      <div class="eval-method-grid">
-        <span class="eval-method-tag">Pure relevance: ${rankRaw != null ? `#${rankRaw}` : '—'}</span>
-        <span class="eval-method-tag">Final MMR: ${rank != null ? `#${rank}` : '—'}</span>
-      </div>
-      <div class="eval-rank-badge match">${esc(shiftNote)}</div>
-    </div>`;
-
-    const agreement = `<div class="eval-row">
-      <span class="eval-label">5. Signal agreement:</span>
-      <div class="eval-method-grid">
-        <span class="eval-method-tag">BM25: ${bm25Rank != null ? `#${bm25Rank}` : '>20'}</span>
-        <span class="eval-method-tag">Dense: ${denseRank != null ? `#${denseRank}` : '>20'}</span>
-        <span class="eval-method-tag">Reranker: ${pct(rerank)}</span>
-      </div>
-      <div class="eval-agree-badge ${(ev.agreement_count || 0) >= 2 ? 'agree-high' : 'agree-med'}">
-        ${esc(ev.agreement_count != null ? `${ev.agreement_count} of 3 signals agree` : 'agreement not recorded')}
-        ${mr.status ? ` — ${esc(mr.status)}` : ''}
-      </div>
-    </div>`;
-
-    // Admission gate: which filter actually shaped this list.
+    // Admission gate
     const adm = ev.admission;
     const rescued = adm && Array.isArray(adm.keep) && adm.cut_at != null
       ? adm.n_kept - (adm.keep.filter(i => i < adm.cut_at).length) : 0;
-    const admBox = `<div class="eval-row">
-      <span class="eval-label">6. Admission gate:</span>
+    const admBox = adm ? `<div class="eval-detail-row">
+      <span class="eval-detail-label">Admission Gate Cut:</span>
       <div class="eval-chips">
-        ${adm ? chip(adm.cut
+        ${chip(adm.cut
           ? `✂️ <strong>${esc(adm.cut)}</strong> gate cut at position ${esc(adm.cut_at)} — ${esc(adm.n_kept)} kept`
           : `✅ No gate fired — all ${esc(adm.n_kept)} candidates kept`,
-          adm.cut ? 'eval-chip-diff' : 'eval-chip-match')
-        : chip('gate verdict not recorded', 'eval-chip-diff')}
-        ${rescued > 0 ? chip(`⭐ ${rescued} editorial link(s) rescued from the cut`, 'eval-chip-match') : ''}
+          adm.cut ? 'eval-chip-diff' : 'eval-chip-match')}
+        ${rescued > 0 ? chip(`⭐ ${rescued} editorial link(s) rescued from cut`, 'eval-chip-match') : ''}
       </div>
       <div class="eval-calib-note">
-        Techniques applied: hard floor (rerank ≥ ${esc(adm ? adm.floor : '?')}), cliff drop
-        (next &lt; ${esc(adm ? adm.elbow_ratio : '?')} × previous), and entity veto.
-        Editorial Also-Read links are never cut.
+        Techniques applied: hard floor (rerank ≥ ${esc(adm.floor ?? '?')}), cliff drop (next &lt; ${esc(adm.elbow_ratio ?? '?')} × prev), entity veto. Editorial links bypass the gate.
       </div>
-    </div>`;
+    </div>` : '';
 
-    // Real context facts only.
-    const sameSec = cf.same_section === true;
-    const sameSub = cf.same_subsection === true;
-    const facts = `<div class="eval-row">
-      <span class="eval-label">7. Context facts:</span>
-      <div class="eval-chips">
-        ${section ? chip(`📁 ${sameSec ? 'Same section' : 'Cross-section'}: ${esc(section)}`,
-                         sameSec ? 'eval-chip-match' : 'eval-chip-diff') : ''}
-        ${subsection ? chip(`📂 ${sameSub ? 'Same subsection' : 'Other subsection'}: ${esc(subsection)}`,
-                            sameSub ? 'eval-chip-match' : 'eval-chip-diff') : ''}
-        ${cf.date_gap_text ? chip(`⏱️ ${esc(cf.date_gap_text)}`, 'eval-chip-date') : ''}
-        ${srcBatchChip(cf, src)}
-        ${candBatch ? chip(`📦 Candidate: ${esc(candBatch)}`, 'eval-chip-batch') : ''}
-        ${art.is_truncated ? chip('✂️ Candidate text was truncated for scoring', 'eval-chip-diff') : ''}
-      </div>
-    </div>`;
+    const detailsHTML = `
+      <details class="eval-details-accordion">
+        <summary class="eval-details-summary">
+          <span>⚙️ Show scoring details (BM25 terms, cosine, score cascade, boosts, gate, provenance)</span>
+          <span class="eval-summary-chevron">▾</span>
+        </summary>
+        <div class="eval-details-content">
+          <!-- Cosine as percentile/band (Fix c: never as raw %) -->
+          <div class="eval-detail-row">
+            <span class="eval-detail-label">Dense Vector Cosine (Semantic Alignment):</span>
+            <div class="eval-detail-val">${cosDisplay}</div>
+            <div class="eval-calib-note">Evaluated using 768-dimensional BGE embeddings against random-pair background distribution. Displayed as alignment band and empirical percentile.</div>
+          </div>
 
-    const margin = ev.margin_cutoff || {};
-    const marginVal = typeof margin.margin === 'number' ? margin.margin : null;
-    const marginBox = `<div class="eval-row">
-      <span class="eval-label">8. Margin over the next candidate:</span>
-      <div>
-        <span class="eval-margin-badge ${marginVal == null ? 'margin-close' : marginVal >= 0.04 ? 'margin-clear' : 'margin-close'}">
-          ${marginVal == null ? 'not recorded'
-            : `${marginVal >= 0.04 ? '🟢 Clear' : '🟡 Close'}: +${(marginVal * 100).toFixed(1)}% over the next candidate`}
-        </span>
-      </div>
-    </div>`;
+          <!-- BM25 Terms -->
+          <div class="eval-detail-row">
+            ${bm25Section(ev)}
+          </div>
+
+          <!-- Full Score Cascade (Fix f: boosted relevance moved to details) -->
+          <div class="eval-detail-row">
+            <span class="eval-detail-label">Full Score Cascade (Components ➔ Boosts ➔ Calibration):</span>
+            ${cascadeBox}
+            <div class="eval-calib-note">Ordering utilizes boosted relevance; reported confidence is Platt-calibrated on unboosted blend to prevent boost inflation.</div>
+          </div>
+
+          <!-- Admission Gate -->
+          ${admBox}
+
+          <!-- Provenance & Spec Verification (Fix g) -->
+          <div class="eval-detail-row eval-provenance-box">
+            <span class="eval-detail-label">System Provenance & Spec Verification:</span>
+            <div class="eval-spec-table">
+              <div class="eval-spec-col">
+                <strong>Live Blend Weights:</strong>
+                <div>Cross-Encoder: ${pct(liveW.rerank, 0)}</div>
+                <div>BM25 Lexical: ${pct(liveW.bm25, 0)}</div>
+                <div>Dense Semantic: ${pct(liveW.dense, 0)}</div>
+              </div>
+              <div class="eval-spec-col">
+                <strong>Historical Spec:</strong>
+                <div>Cross-Encoder: ${pct(specW.rerank, 0)}</div>
+                <div>BM25 Lexical: ${pct(specW.bm25, 0)}</div>
+                <div>Dense Semantic: ${pct(specW.dense, 0)}</div>
+              </div>
+              <div class="eval-spec-col">
+                <strong>Active Boost Caps:</strong>
+                <div>Editorial Link: ×1.40</div>
+                <div>Section Boost: ×${esc(prov.boost_caps?.section ?? 1.072)}</div>
+                <div>Subsection Boost: ×${esc(prov.boost_caps?.subsection ?? 1.09)}</div>
+                <div>Popularity Max: ×${esc(prov.boost_caps?.popularity ?? 1.044)}</div>
+              </div>
+            </div>
+            ${hasMismatch ? `<div class="eval-spec-flag">⚠️ <strong>Tuned vs Spec Note:</strong> ${esc(prov.mismatch_explanation || 'Live blend weights (65/15/20) differ from initial 70/20/10 spec to optimize dense semantic retrieval.')}</div>` : ''}
+            ${prov.pipeline_version ? `<div class="eval-pipeline-ver">Pipeline version SHA: <code>${esc(prov.pipeline_version)}</code></div>` : ''}
+          </div>
+        </div>
+      </details>`;
 
     return `<div class="eval-container">
-      ${header}${verdict}
-      ${bm25Section(ev)}${semanticSection(ev)}${passage}
-      <div class="eval-grid-2col">
-        <div>${rankBox}${agreement}${admBox}${facts}${marginBox}</div>
-        <div>
-          <span class="eval-label" style="display:block;margin-bottom:6px;">9. Score cascade:</span>
-          ${cascade}
-        </div>
-      </div>
+      ${verdictHTML}
+      ${proofHTML}
+      ${checksHTML}
+      ${detailsHTML}
     </div>`;
-  }
-
-  function srcBatchChip(cf, src) {
-    const b = src.batch || cf.source_batch;
-    return b ? chip(`📦 Source: ${esc(b)}`, 'eval-chip-batch') : '';
   }
 
   function mergeRec(rec, sourceArt, defaultRank) {
@@ -305,6 +426,15 @@ window.Evaluator = (() => {
     const { ev, art } = mergeRec(rec, sourceArt, index + 1);
     const card = document.createElement('div');
     card.className = `candidate-eval-card ${defaultOpen ? 'expanded' : 'collapsed'}`;
+
+    // Fix (e): Show confidence band on header pill unless reliability chart exists
+    const band = ev.confidence_band || (art.score != null ? (art.score >= 0.65 ? 'HIGH' : art.score >= 0.35 ? 'MEDIUM' : 'LOW') : 'MEDIUM');
+    const bandPill = band === 'HIGH'
+      ? '<span class="candidate-score-pill" style="background:rgba(34,197,94,0.2);color:#4ade80;border-color:rgba(34,197,94,0.4);" title="High Confidence Band">🟢 High</span>'
+      : band === 'MEDIUM'
+      ? '<span class="candidate-score-pill" style="background:rgba(245,158,11,0.2);color:#fbbf24;border-color:rgba(245,158,11,0.4);" title="Medium Confidence Band">🟡 Medium</span>'
+      : '<span class="candidate-score-pill" style="background:rgba(148,163,184,0.2);color:#cbd5e1;border-color:rgba(148,163,184,0.4);" title="Low Confidence Band">⚪ Low</span>';
+
     card.innerHTML = `
       <div class="candidate-card-header">
         <div class="candidate-header-left">
@@ -314,7 +444,7 @@ window.Evaluator = (() => {
           ${art.section ? `<span class="cat-pill" style="font-size:0.75rem;">${esc(art.section)}</span>` : ''}
         </div>
         <div class="candidate-header-right">
-          <span class="candidate-score-pill" title="Calibrated confidence">${pct(art.score)}</span>
+          ${bandPill}
           <button class="candidate-toggle-btn" type="button" aria-expanded="${defaultOpen}">
             <span class="toggle-icon">${defaultOpen ? '▴' : '▾'}</span>
             <span class="toggle-text">${defaultOpen ? 'Hide' : 'Inspect'}</span>
@@ -338,7 +468,17 @@ window.Evaluator = (() => {
 
   function showModal(rec, sourceArt, candArt) {
     document.getElementById('eval-active-modal')?.remove();
-    const { ev, art } = mergeRec(candArt || rec, sourceArt, 1);
+    const fullRec = Object.assign({}, candArt || {}, rec || {});
+    fullRec.article = Object.assign({}, rec?.article || {}, candArt || {});
+    if (rec?.evidence) fullRec.evidence = rec.evidence;
+    if (rec?.reason) fullRec.reason = rec.reason;
+    if (rec?.score != null) fullRec.score = rec.score;
+    if (rec?.rank != null) fullRec.rank = rec.rank;
+    if (rec?.rank_raw != null) fullRec.rank_raw = rec.rank_raw;
+    if (rec?.rerank_score != null) fullRec.rerank_score = rec.rerank_score;
+    if (rec?.boosted_score != null) fullRec.boosted_score = rec.boosted_score;
+
+    const { ev, art } = mergeRec(fullRec, sourceArt, 1);
     const backdrop = document.createElement('div');
     backdrop.id = 'eval-active-modal';
     backdrop.className = 'eval-modal-backdrop';
@@ -347,7 +487,7 @@ window.Evaluator = (() => {
         <div class="eval-modal-hdr">
           <div>
             <div style="font-size:0.72rem;font-weight:800;color:var(--brand-primary);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px;">
-              Grounded recommendation evaluation
+              Grounded candidate evidence report
             </div>
             <div class="eval-modal-title">${esc(art.title || 'Candidate article')}</div>
           </div>

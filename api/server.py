@@ -383,7 +383,7 @@ def recommend(body: RecommendRequest):
                 precomputed = ArticleRepository.get_precomputed_recommendations(
                     db, str(body.article_id), limit=body.top_k, diversify=body.diversify
                 )
-            if precomputed:
+            if precomputed and len(precomputed) >= body.top_k:
                 from src.evidence import enrich_recommendation_evidence
                 enrich_recommendation_evidence(source_dict, precomputed)
                 mode_str = "MMR Diversified" if body.diversify else "Pure Relevance (No MMR)"

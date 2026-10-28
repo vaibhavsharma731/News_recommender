@@ -68,60 +68,30 @@ def _load_full_corpus(db):
     return records, emb, {r["id"]: pos for pos, r in enumerate(records)}
 
 
-def _gate_candidates(row, cands, records, bm25_scores):
-    """
-    Technique 3 - lexical / entity support gate.
-
-    Drop any candidate that shares NEITHER a BM25 keyword NOR a named entity with
-    the source article. Never returns an empty list: if everything would be
-    gated out the original candidates are returned unchanged, because a genuinely
-    isolated article still deserves whatever the reranker thinks is closest.
-
-    Editorial Also-Read links are admitted unconditionally - they are the ground
-    truth the whole evaluation is built on.
-    """
-    if not (config.LEXICAL_GATE or config.ENTITY_GATE):
-        return cands
-
-    source_linked = linked_set(row)
-
-    src_ents = set()
-    if config.ENTITY_GATE:
-        src_ents = {e.lower() for e in extract_shared_entities(row.get("text_rerank", ""), "", limit=24)}
-
-    kept = []
-    for c in cands:
-        if str(records[c]["id"]) in source_linked:
-            kept.append(c)
-            continue
-        if config.LEXICAL_GATE and bm25_scores[c] > 1e-9:
-            kept.append(c)
-            continue
-        if src_ents:
-            c_ents = {e.lower() for e in extract_shared_entities(records[c].get("text_rerank", ""), "", limit=24)}
-            if src_ents & c_ents:
-                kept.append(c)
-    return kept or cands
-
-
 def _rank_and_build(
     source_row, cand_positions, rerank_vec, records, emb, bm25,
     bm25_all, dense_all, bm25_query, bm25_pos_of, dense_pos_of,
-    max_views, max_date, current_ver,
+    max_views, max_date, current_ver, self_bm25: float = None,
 ):
     """
-    Blend -> boosts -> MMR -> admission gate -> evidence rows.
+    Blend -> boosts -> MMR -> calibration -> evidence rows.
 
     The single ranking implementation, called by BOTH the forward precompute and
-    the reverse push. They used to be two hand-maintained copies and had already
-    drifted (one clipped the dense term and one did not, and reverse-pushed rows
-    were missing part of the evidence). ``bm25_pos_of`` / ``dense_pos_of`` map a
+    the reverse push. ``bm25_pos_of`` / ``dense_pos_of`` map a
     corpus position to its real rank so an agreement signal is never invented.
     """
     relevance, bm25_norm, dense_norm = blend(
-        rerank_vec, bm25_all, dense_all, cand_positions)
+        rerank_vec, bm25_all, dense_all, cand_positions, self_bm25=self_bm25)
 
-    parts = [boost_parts(source_row, records[c], max_views, max_date) for c in cand_positions]
+    parts = [
+        boost_parts(
+            source_row, records[c], max_views, max_date,
+            bm25_rank=bm25_pos_of.get(c),
+            dense_rank=dense_pos_of.get(c),
+            rerank_score=float(rerank_vec[i]) if rerank_vec is not None else None,
+        )
+        for i, c in enumerate(cand_positions)
+    ]
     boosted = relevance * np.array([p["total"] for p in parts])
 
     # Relevance order before diversity: what every rank shift is measured against.
@@ -132,21 +102,15 @@ def _rank_and_build(
     order = raw_order if len(cand_positions) <= config.TOP_K else mmr(
         boosted, emb[cand_positions] @ emb[cand_positions].T, config.TOP_K)
 
-    # Relevance admission gate (techniques 1-3): trim to genuinely related
-    # articles instead of padding to a fixed TOP_K. Editorial Also-Read links
-    # bypass every gate - they are the ground truth the evaluation is built on.
-    linked = linked_set(source_row)
-    src_text = source_row.get("text_rerank", "")
-    linked_flags = [str(records[cand_positions[r]]["id"]) in linked for r in order]
-    entity_flags = [
-        linked_flags[i] or bool(extract_shared_entities(
-            src_text, records[cand_positions[r]].get("text_rerank", ""), limit=1))
-        for i, r in enumerate(order)
-    ]
-    gate = config.admission_cut([float(rerank_vec[r]) for r in order], entity_flags, linked_flags)
-    order = [order[i] for i in gate["keep"]]
+    # Real cross-encoder rank among the candidates
+    if rerank_vec is not None and len(rerank_vec) > 0:
+        ce_order = list(np.argsort(-np.asarray(rerank_vec, dtype=float)))
+        ce_pos_of = {cand_idx: r + 1 for r, cand_idx in enumerate(ce_order)}
+    else:
+        ce_pos_of = {}
 
     calibrator = ConfidenceCalibrator()
+    linked = linked_set(source_row)
     recs = []
     for rank, rel in enumerate(order, start=1):
         pos = cand_positions[rel]
@@ -156,8 +120,9 @@ def _rank_and_build(
         raw = float(rerank_vec[rel])
 
         # Real corpus ranks for the agreement signals.
-        bm25_pos, dense_pos = bm25_pos_of.get(pos, 999), dense_pos_of.get(pos, 999)
-        agree, _ = evaluate_signal_agreement(bm25_pos, dense_pos, raw)
+        bm25_pos, dense_pos = bm25_pos_of.get(pos), dense_pos_of.get(pos)
+        ce_pos = ce_pos_of.get(rel)
+        agree, _ = evaluate_signal_agreement(bm25_pos, dense_pos, raw, rerank_rank=ce_pos)
         conf = calibrator.calibrate(unboosted, next_score=nxt, agreement_count=agree)
 
         recs.append({
@@ -182,7 +147,8 @@ def _rank_and_build(
                 },
                 rank_raw=raw_rank.get(rel, rank), final_rank=rank,
                 cand_pos=pos, bm25_query=bm25_query,
-                cosine=float(dense_all[pos]), admission=gate,
+                cosine=float(dense_all[pos]),
+                rerank_rank=ce_pos,
             ),
         })
     return recs
@@ -205,6 +171,7 @@ def _precompute_for_article(
     # show which terms actually matched (bm25_term_hits).
     bm25_query = _focused_query(row, bm25)
     bm25_scores = bm25.scores(bm25_query)
+    self_bm25 = float(bm25_scores[idx])
     bm25_scores[idx] = -np.inf
     bm25_rank = [
         int(p) for p in np.argsort(-bm25_scores)[:n_retrieve] if bm25_scores[p] > 1e-9
@@ -215,14 +182,12 @@ def _precompute_for_article(
     dense_scores[idx] = -np.inf
     dense_rank = [int(p) for p in np.argsort(-dense_scores)[:n_retrieve]]
 
-    # C. Reciprocal-rank fusion, then the lexical/entity gate (technique 3): a
-    # candidate with no shared keyword AND no shared entity is noise however close
-    # it sits in embedding space, so it never reaches the cross-encoder.
+    # C. Reciprocal-rank fusion → top-N candidates for the cross-encoder.
+    # (Gates were disabled in Change 15; candidates pass through as-is.)
     fused = reciprocal_rank_fusion([bm25_rank, dense_rank], k=config.RRF_K)
     cands = sorted(fused, key=fused.get, reverse=True)[:n_cand]
     if not cands:
         return [], []
-    cands = _gate_candidates(row, cands, records, bm25_scores)
 
     # D. Cross-encoder reranking (article-to-article: 50/50 budget split)
     rerank_scores = np.asarray(
@@ -242,6 +207,7 @@ def _precompute_for_article(
         {c: i + 1 for i, c in enumerate(bm25_rank)},
         {c: i + 1 for i, c in enumerate(dense_rank)},
         max_views, max_date, config.get_pipeline_version(),
+        self_bm25=self_bm25,
     )
     return recs, cands
 
@@ -331,6 +297,8 @@ def _reverse_push_for_old(
         #    `rel_pos + 1` for both BM25 and dense, which invented agreement.
         bm25_query_old = _focused_query(records[opos], bm25)
         bm25_all = bm25.scores(bm25_query_old)
+        self_bm25_old = float(bm25_all[opos])
+        bm25_all[opos] = -np.inf
         dense_all = emb @ emb[opos]
 
         # 6. Blend -> boosts -> MMR -> gate -> evidence, exactly as the forward
@@ -341,6 +309,7 @@ def _reverse_push_for_old(
             {int(p): i + 1 for i, p in enumerate(np.argsort(-bm25_all))},
             {int(p): i + 1 for i, p in enumerate(np.argsort(-dense_all))},
             max_views, max_date, current_ver,
+            self_bm25=self_bm25_old,
         )
         ArticleRepository.save_recommendations(db, old_id, recs, commit=False)
         refreshed.append({"id": old_id, "title": str(records[opos].get("title", ""))})

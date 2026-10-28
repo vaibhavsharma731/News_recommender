@@ -90,21 +90,20 @@ function buildArticleCard(article, {
   const agreement = conf.agreement_count ?? agreement_count ?? (ev ? ev.agreement_count : null);
   const marginVal = conf.margin ?? margin;
 
-  // Build Confidence & Agreement Badges
+  // Build Confidence Band (Fix e) & Agreement Badges
   let scoreHTML = '';
-  if (finalProb !== null) {
-    const pct = Math.round(finalProb * 100);
-    if (band === 'HIGH') {
-      scoreHTML = `<span class="badge badge-conf badge-conf-high" title="Calibrated Empirical Probability: ${pct}%">🟢 ${pct}% High</span>`;
-    } else if (band === 'MEDIUM') {
-      scoreHTML = `<span class="badge badge-conf badge-conf-med" title="Calibrated Empirical Probability: ${pct}%">🟡 ${pct}% Med</span>`;
-    } else {
-      scoreHTML = `<span class="badge badge-conf badge-conf-low" title="Calibrated Empirical Probability: ${pct}%">⚪ ${pct}% Low</span>`;
-    }
+  if (band === 'HIGH') {
+    scoreHTML = `<span class="badge badge-conf badge-conf-high" title="High Confidence Band">🟢 High Conf</span>`;
+  } else if (band === 'MEDIUM') {
+    scoreHTML = `<span class="badge badge-conf badge-conf-med" title="Medium Confidence Band">🟡 Med Conf</span>`;
+  } else if (band === 'LOW') {
+    scoreHTML = `<span class="badge badge-conf badge-conf-low" title="Low Confidence Band">⚪ Low Conf</span>`;
   }
 
-  const agreeHTML = (agreement && agreement >= 2)
-    ? `<span class="badge badge-agreement" title="Agreement across retrieval methods">⚡ ${agreement}/3 Agreed</span>`
+  const agreeCount = ev?.agreement_count ?? agreement;
+  const agreeLabel = ev?.agreement_label || `${agreeCount}/3`;
+  const agreeHTML = (agreeCount && agreeCount >= 2)
+    ? `<span class="badge badge-agreement" title="Agreement across retrieval methods in top-5">⚡ ${agreeLabel} Agreed</span>`
     : '';
 
   const marginHTML = (marginVal && marginVal >= 0.03)
@@ -118,24 +117,28 @@ function buildArticleCard(article, {
   const subHTML = article.subsection
     ? `<span class="badge badge-section">${article.subsection.toUpperCase()}</span>` : '';
 
-  // Deterministic Evidence Box
+  // Deterministic Evidence Box (Verdict & Proof summary)
   let evidenceHTML = '';
   if (ev) {
-    const entitiesHTML = (ev.entities || []).map(e => `<span class="evidence-tag entity-tag">📍 ${e}</span>`).join('');
+    const entities = ev.entities || [];
+    const entitiesHTML = entities.length
+      ? entities.map(e => `<span class="evidence-tag entity-tag">📍 ${e}</span>`).join('')
+      : `<span class="evidence-tag" style="opacity:0.65;">📍 none shared</span>`;
     const termsHTML = (ev.terms || []).slice(0, 3).map(t => `<span class="evidence-tag term-tag">🏷️ ${t}</span>`).join('');
-    const boostsHTML = (ev.boosts || []).slice(0, 2).map(b => `<span class="evidence-tag boost-tag">✨ ${b}</span>`).join('');
     const quoteHTML = ev.best_sentence
       ? `<div class="evidence-quote"><span class="quote-icon">❝</span> ${ev.best_sentence}</div>`
       : '';
+    const whyText = ev.verdict?.template_why || ev.template_why || ev.summary || '';
+    const whyHTML = whyText ? `<div class="card-reason" style="margin-top:6px;">💡 ${whyText}</div>` : '';
 
     evidenceHTML = `
       <div class="card-evidence-box">
         <div class="evidence-tags">
           ${entitiesHTML}
           ${termsHTML}
-          ${boostsHTML}
         </div>
         ${quoteHTML}
+        ${whyHTML}
       </div>`;
   } else if (reason) {
     evidenceHTML = `<div class="card-reason">💡 ${reason}</div>`;

@@ -181,16 +181,20 @@ const Tabs = (() => {
     const thumb = art.image
       ? `<img src="${art.image}" alt="" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'orbit-tile-fallback\\'>${emoji}</div>'" />`
       : `<div class="orbit-tile-fallback">${emoji}</div>`;
-    const scoreVal = rec.score != null ? Math.round(rec.score * 100) : null;
-    const score = scoreVal != null
-      ? `<span class="orbit-score" title="Pairwise Relevance Confidence: ${scoreVal}%">${scoreVal}%</span>` : '';
-
     // Evidence extraction
     const rawReason = rec.reason || art.reason || '';
     let ev = null;
     if (rawReason && typeof rawReason === 'string' && rawReason.trim().startsWith('{')) {
       try { ev = JSON.parse(rawReason); } catch (e) { ev = null; }
     }
+
+    const confBand = (ev && ev.confidence_band) || (rec.score != null ? (rec.score >= 0.65 ? 'HIGH' : rec.score >= 0.35 ? 'MEDIUM' : 'LOW') : 'MEDIUM');
+    const scoreVal = rec.score != null ? Math.round(rec.score * 100) : null;
+    const score = confBand === 'HIGH'
+      ? `<span class="orbit-score" style="background:rgba(34,197,94,0.2);color:#4ade80;border:1px solid rgba(34,197,94,0.4);" title="High Confidence Band">🟢 High</span>`
+      : confBand === 'MEDIUM'
+      ? `<span class="orbit-score" style="background:rgba(245,158,11,0.2);color:#fbbf24;border:1px solid rgba(245,158,11,0.4);" title="Medium Confidence Band">🟡 Med</span>`
+      : `<span class="orbit-score" style="background:rgba(148,163,184,0.2);color:#cbd5e1;border:1px solid rgba(148,163,184,0.4);" title="Low Confidence Band">⚪ Low</span>`;
 
     const rawRank = rec.rank_raw || rec.rank || 1;
     const mmrRank = rec.rank || 1;
@@ -210,7 +214,7 @@ const Tabs = (() => {
       }
     } else {
       rankLabel = `Raw #${rawRank}`;
-      rankTitle = `Pure Relevance Rank: #${rawRank} (${scoreVal || 0}% confidence, sorted without MMR diversity)`;
+      rankTitle = `Pure Relevance Rank: #${rawRank} (Confidence: ${confBand}, sorted without MMR diversity)`;
     }
     const rankChip = `<span class="orbit-rank-chip" title="${rankTitle}">${rankLabel}</span>`;
 
@@ -229,57 +233,43 @@ const Tabs = (() => {
         tags.push(`<span class="orbit-badge orbit-badge-raw" title="Pure relevance ordering (no MMR penalty applied)">🎯 Raw #${rawRank}</span>`);
       }
 
-      // 2. Active boosts — read the real multipliers the scorer applied.
-      const BOOST_LABEL = {
-        editorial: '⭐ Editor pick', section: '⚡ Section', subsection: '⚡ Subsection',
-        popularity: '📈 Popular', recency: '⏱️ Recency',
-      };
-      const boostItems = (ev.score_breakdown && ev.score_breakdown.boost_items) || [];
-      boostItems
-        .filter(b => b && typeof b.mult === 'number' && Math.abs(b.mult - 1) > 1e-9)
-        .forEach(b => {
-          const label = BOOST_LABEL[b.name] || b.name;
-          tags.push(`<span class="orbit-badge orbit-badge-boost" title="${b.name} multiplier ×${b.mult}">${label} ${b.amount}</span>`);
-        });
+      // 2. Real shared entities only (Fix a: show "none shared" if empty)
+      if (ev.entities && ev.entities.length) {
+        tags.push(`<span class="orbit-badge" title="Shared entity: ${ev.entities.join(', ')}">📍 ${ev.entities[0]}</span>`);
+      } else {
+        tags.push(`<span class="orbit-badge" style="opacity:0.65;" title="No shared named entities detected">📍 none shared</span>`);
+      }
 
-      // 3. Real BM25 match — the top term that actually scored this candidate.
+      // 3. Real BM25 match
       const topTerm = (ev.bm25_terms && ev.bm25_terms[0]) || null;
       if (topTerm) {
         tags.push(`<span class="orbit-badge" title="Top BM25 term: ${topTerm.term} (tf ${topTerm.tf}, idf ${topTerm.idf}, contributed +${topTerm.contribution})">🏷️ ${topTerm.term}</span>`);
-      } else if (ev.entities && ev.entities.length) {
-        tags.push(`<span class="orbit-badge" title="Shared entity: ${ev.entities.join(', ')}">📍 ${ev.entities[0]}</span>`);
       }
 
-      // 4. Real embedding cosine between the two documents.
-      if (typeof ev.cosine === 'number') {
-        tags.push(`<span class="orbit-badge" title="Cosine similarity between the two document embeddings">🧭 ${ev.cosine.toFixed(2)}</span>`);
+      // 4. Real embedding cosine alignment band (Fix c: never raw %)
+      if (ev.cosine_band) {
+        tags.push(`<span class="orbit-badge" title="${ev.cosine_display || ev.cosine_band}">🧭 ${ev.cosine_band.replace(' Semantic Alignment', '')}</span>`);
+      } else if (typeof ev.cosine === 'number') {
+        tags.push(`<span class="orbit-badge" title="Cosine similarity: ${ev.cosine.toFixed(4)}">🧭 Cosine ${ev.cosine.toFixed(2)}</span>`);
       }
 
-      // 5. Signal agreement
-      if (ev.agreement_count >= 2) {
-        const sig = Array.isArray(ev.signals) ? ev.signals.join(' + ') : `${ev.agreement_count}/3 methods`;
-        tags.push(`<span class="orbit-badge" title="Signals agreed: ${sig}">⚡ ${ev.agreement_count}/3</span>`);
+      // 5. Signal agreement (Fix b: top-5 rule, "X of 3")
+      const agreeCount = ev.agreement_count ?? 1;
+      const agreeLabel = ev.agreement_label || `${agreeCount}/3`;
+      if (agreeCount >= 2) {
+        tags.push(`<span class="orbit-badge" title="Signals agreed in top-5">⚡ ${agreeLabel} Agreed</span>`);
       }
 
-      // 5. Inspect Evaluation Breakdown
+      // 6. Inspect Evaluation Breakdown
       tags.push(`<span class="orbit-badge orbit-badge-eval" title="Inspect complete grounded evaluation" style="cursor:pointer;background:rgba(168,85,247,0.2);color:#c084fc;border:1px solid rgba(168,85,247,0.4);font-weight:700;">🔬 Eval</span>`);
 
       const tagsHTML = tags.length
         ? `<div class="orbit-tile-badges">${tags.join('')}</div>`
         : '';
 
-      let summaryText = ev.summary || '';
-      if (ev.boosts && ev.boosts.length) {
-        summaryText = `${summaryText} • Active Boosts: ${ev.boosts.join(', ')}`;
-      }
-      if (useMmr && hasShift) {
-        summaryText = `[MMR Shift #${rawRank} ➔ #${mmrRank}] ${summaryText}`;
-      } else if (!useMmr) {
-        summaryText = `[Pure Relevance Raw #${rawRank}] ${summaryText}`;
-      }
-
-      const summaryHTML = summaryText
-        ? `<div class="orbit-tile-reason" title="${summaryText.replace(/"/g, '&quot;')}">💡 ${ev.summary || summaryText}</div>`
+      const whyText = ev.verdict?.template_why || ev.template_why || ev.summary || '';
+      const summaryHTML = whyText
+        ? `<div class="orbit-tile-reason" title="${whyText.replace(/"/g, '&quot;')}">💡 ${whyText}</div>`
         : '';
       evidenceHTML = `${tagsHTML}${summaryHTML}`;
     } else if (rawReason && !rawReason.startsWith('Rank #')) {

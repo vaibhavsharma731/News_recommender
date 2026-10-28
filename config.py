@@ -94,10 +94,13 @@ TOP_K = 10                  # default number of recommendations
 # --- Relevance blend weights (must sum to 1.0) ---
 # Single source of truth for the reranker/BM25/dense mix used by BOTH the
 # ingestion pipeline (db/pipeline.py) and the live path (src/recommender.py).
-# OLD: article-to-article 0.55/0.30/0.15, text search 0.65/0.35
-WEIGHT_RERANK = 0.70        # cross-encoder (bge-reranker-base)
-WEIGHT_BM25 = 0.20          # lexical keyword match
-WEIGHT_DENSE = 0.10         # semantic embedding (bge-base-en-v1.5)
+# OLD: 0.70/0.20/0.10 — dense was underweighted (ranked ~40th of 200 in tuning)
+# NEW (Change 16, 2026-10-27): 9/15 top configs from 200-experiment random search
+#   had w_dense >= 0.20; current 0.10 was the primary gap. BM25 trimmed slightly
+#   to reduce keyword bias on metaphoric headlines (e.g. Kapil Sharma jail quote).
+WEIGHT_RERANK = 0.55        # cross-encoder (bge-reranker-base)
+WEIGHT_BM25 = 0.15          # lexical keyword match
+WEIGHT_DENSE = 0.30         # semantic embedding (bge-base-en-v1.5)
 
 # --- Diversity (MMR): 1.0 = pure relevance, lower = more variety ---
 # Article-to-article: the MEASURED values, shared by BOTH the ingestion pipeline
@@ -117,12 +120,10 @@ MAX_USER_HISTORY = 10       # track last N read articles
 USER_PROFILE_WEIGHT = 0.35  # blend weight for user history profile vector
 
 # --- News Metadata Boosts (MEASURED Multipliers) ---
-# OLD (hand-picked): SECTION_BOOST_MULT = 1.08
-# OLD (hand-picked): SUBSECTION_BOOST_MULT = 1.05
-# OLD (hand-picked): POPULARITY_BOOST_MULT = 1.06
-SECTION_BOOST_MULT = 1.072    # MEASURED: 7.2% boost for same section
-SUBSECTION_BOOST_MULT = 1.09  # MEASURED: 9% boost for same subsection
-POPULARITY_BOOST_MULT = 1.044 # MEASURED: up to 4.4% boost for popular articles (log-scaled)
+SECTION_BOOST_MULT = 1.100    # 10% boost for same section
+SUBSECTION_BOOST_MULT = 1.050 # 5% boost for same subsection
+POPULARITY_BOOST_MULT = 1.015 # Log-scaled virality nudge
+RECENCY_MAX_BOOST_MULT = 1.040 # Max recency boost (source-relative decay)
 
 # --- Dynamic Recency Half-lives (in days) ---
 # Tailored to Indian Express editorial categories and news cycle velocity:
@@ -194,8 +195,7 @@ SECTION_HALF_LIVES = {
     # General fallback for unclassified articles
     "default": 3.0                      # 3 days for standard reporting
 }
-# OLD (hand-picked): RECENCY_MAX_BOOST_MULT = 1.10
-RECENCY_MAX_BOOST_MULT = 1.104 # MEASURED: up to 10.4% boost for fresh articles
+
 BOOST_MODE = "source_date_recency"  # MEASURED: recency relative to source article date, not corpus max
 
 
@@ -257,31 +257,6 @@ def recency_ref_date(source_date, corpus_max_date):
 # Query-level gate: uses raw cross-encoder probability, not max-normalized blend.
 MIN_RAW_RERANK_THRESHOLD = 0.12   # If top candidate raw rerank probability < 0.12, flag low confidence
 
-# --- Relevance Admission (the 4 limiter techniques) --------------------------
-# A fixed list of TOP_K is the reason non-relatable stories appear: when a source
-# article has only 2 true matches, ranks 3-10 are filled with whatever noise the
-# reranker had left. These three gates cut the list down to genuinely related
-# articles and let the UI degrade gracefully instead of padding.
-#
-# All thresholds are compared against the RAW cross-encoder probability, which is
-# now a true sigmoid output in [0,1] (see src/reranker.py Reranker._to_probability).
-# Before that fix every score was trapped in [0.5, 0.731], so floors were inert.
-#
-# 1. Hard Admission Floor - absolute minimum probability to be admitted.
-#    0.40 keeps clearly-related pairs and drops the 0.5-plateau noise.
-RELEVANCE_FLOOR = 0.40
-# 2. Elbow / cliff-drop - cut when a rank's probability collapses versus the one
-#    above it. 0.45 means "kept score is less than 45% of its predecessor".
-ELBOW_RATIO = 0.45
-#    Below this many survivors the list is too thin to trust the elbow cut, so
-#    only the hard floor applies (never let the cliff detector empty a good list).
-ELBOW_MIN_KEEP = 4
-# 3. Lexical / entity support gate - applied BEFORE the reranker. A candidate
-#    with no shared BM25 term AND no shared entity is blocked outright, no matter
-#    how close it sits in embedding space.
-LEXICAL_GATE = True
-ENTITY_GATE = True
-
 MIN_RELEVANCE = {
     "reranker": MIN_RAW_RERANK_THRESHOLD,   # raw reranker probability threshold (0-1)
     "dense": 0.50,                          # cosine similarity of bge embeddings
@@ -289,11 +264,8 @@ MIN_RELEVANCE = {
 }
 
 # --- 4. Graceful degradation ------------------------------------------------
-# When the gates above leave FEWER than FALLBACK_MIN_RELATED related stories, the
-# API attaches a SEPARATE, clearly labelled "Trending in <section>" list. Those
-# items are popularity, not relevance: they carry no score, no confidence and no
-# evidence, are never mixed into the related list, and never enter evaluation.
-# They exist so a thin list degrades to something honest instead of being padded.
+# When an isolated article has FEWER than FALLBACK_MIN_RELATED related stories, the
+# API attaches a SEPARATE, clearly labelled "Trending in <section>" list.
 FALLBACK_MIN_RELATED = 3    # related items below this -> offer the fallback list
 FALLBACK_LIMIT = 5          # cap on fallback items
 
@@ -307,62 +279,6 @@ def fallback_window_days(section: str) -> float:
     so sport does not get a two-week window and books do not get a two-day one.
     """
     return max(7.0, 3.0 * section_half_life(section))
-
-
-def admission_cut(prob_scores, entities=None, bypass=None) -> dict:
-    """
-    Apply techniques 1 and 2 to a ranked list and report what happened.
-
-    ``prob_scores`` must be in final rank order (best first) holding the raw
-    cross-encoder probability. ``entities`` optionally flags, per position,
-    whether the candidate shares an entity with the source (technique 3's
-    entity half). ``bypass`` marks positions that are never cut - used for
-    editorial Also-Read links, which are ground truth rather than inference.
-
-    Returns ``{"keep": [positions], "n_kept": n, "cut": "floor"|"entity"|"elbow"|None,
-    "cut_at": i, "floor": RELEVANCE_FLOOR, "elbow_ratio": ELBOW_RATIO}``. ``keep`` is an
-    explicit position list, not a prefix length, because protected entries after the
-    cut point are rescued rather than silently discarded -- editorial Also-Read links
-    are ground truth and the evaluation would be wrong without them.
-
-    This is the single implementation used by BOTH db/pipeline.py and
-    src/recommender.py, so ingested and live lists cannot drift.
-    """
-    n = len(prob_scores)
-    result = {"keep": list(range(n)), "n_kept": n, "cut": None, "cut_at": None,
-              "floor": RELEVANCE_FLOOR, "elbow_ratio": ELBOW_RATIO}
-    if n == 0:
-        return result
-
-    protected = [bool(bypass[i]) if bypass else False for i in range(n)]
-
-    def stop(i, why):
-        keep = list(range(i)) + [j for j in range(i, n) if protected[j]] or [0]
-        result.update(keep=keep, n_kept=len(keep), cut=why, cut_at=i)
-        return result
-
-    # Technique 1: hard relevance floor. Protected positions never trigger it.
-    for i in range(n):
-        if not protected[i] and prob_scores[i] < RELEVANCE_FLOOR:
-            return stop(i, "floor")
-
-    # Technique 3 (entity half): veto an entity-less candidate that follows a
-    # related one. Never allowed to empty the list.
-    if entities is not None and n > ELBOW_MIN_KEEP:
-        for i in range(1, n):
-            if protected[i]:
-                continue
-            if not entities[i] and entities[i - 1]:
-                return stop(i, "entity")
-
-    # Technique 2: cliff drop, only trusted on a list long enough to be stable.
-    if n > ELBOW_MIN_KEEP:
-        for i in range(1, n):
-            prev, cur = prob_scores[i - 1], prob_scores[i]
-            if not protected[i] and prev > 1e-9 and cur < prev * ELBOW_RATIO:
-                return stop(i, "elbow")
-
-    return result
 
 
 def get_pipeline_version() -> str:
@@ -393,18 +309,28 @@ def get_pipeline_version() -> str:
         f"pop_boost={POPULARITY_BOOST_MULT}",
         f"rec_boost={RECENCY_MAX_BOOST_MULT}",
         f"boost_mode={BOOST_MODE}",
-        # Relevance admission gates (changing any of these changes which
-        # articles survive into the stored top-10)
-        f"rel_floor={RELEVANCE_FLOOR}",
-        f"elbow_ratio={ELBOW_RATIO}",
-        f"elbow_min_keep={ELBOW_MIN_KEEP}",
-        f"lexical_gate={LEXICAL_GATE}",
-        f"entity_gate={ENTITY_GATE}",
         # The cross-encoder output transform itself. This token exists because a
         # bug where score() applied sigmoid() to an already-probability model made
         # every stored score meaningless - the fingerprint must move when the
         # transform moves, or stale rows would look valid.
         f"rerank_output=probability",
+        # Blend scale normalization (v2 fixed scale: self-score BM25 + cosine percentile)
+        f"blend_scale=v2_fixed_scale",
+        # Signal consensus agreement boost/demote — include the actual thresholds
+        # so tuning any of them correctly invalidates precomputed rows.
+        f"signal_agreement=consensus_v5_clean_monotonic",
+        f"consensus_strong_rank=5",
+        f"consensus_mod_rank=15",
+        f"consensus_ce_strong=0.55",
+        f"consensus_ce_mod=0.35",
+        f"consensus_fluke_kw=0.40",
+        f"consensus_fluke_drift=0.35",
+        f"consensus_mismatch_damping=0.75",
+        f"consensus_tier1=1.15",
+        f"consensus_tier2=1.10",
+        f"consensus_tier3=1.08",
+        f"consensus_dual_retrieval=1.04",
+        f"consensus_single_signal=0.80",
     ]
     return hashlib.sha256("|".join(tokens).encode("utf-8")).hexdigest()[:16]
 

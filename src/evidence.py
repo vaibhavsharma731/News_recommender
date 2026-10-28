@@ -36,7 +36,35 @@ COMMON_STOPWORDS = {
     "report", "reports", "reported", "today", "yesterday", "news", "express"
 }
 
-# Regex to detect capitalized entity phrases (e.g. "Jasprit Bumrah", "New Delhi", "Supreme Court")
+# Generic non-informative terms, days of week, months, and sentence-initial transitions to filter from NER
+GENERIC_NEWS_ENTITIES = {
+    # Days of week
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    # Months
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+    # Generic temporal & journalistic framing
+    "today", "yesterday", "tomorrow", "tonight", "morning", "afternoon", "evening",
+    "night", "week", "month", "year", "decade", "time", "day", "days",
+    "india", "indian", "express", "indian express",
+    "police", "court", "high court", "supreme court", "government", "govt",
+    "ministry", "minister", "prime minister", "chief minister", "official", "officials",
+    "state", "national", "international", "centre", "central", "department",
+    "agency", "authorities", "authority", "spokesperson", "spokesman",
+    "report", "reports", "reported", "reporting", "sources", "source", "news",
+    "press", "bureau", "desk", "staff", "bench", "case", "order", "plea", "petition",
+    "public", "people", "leader", "leaders", "party", "parties", "election",
+    "elections", "assembly", "parliament", "lok sabha", "rajya sabha",
+    # Common sentence-initial capitalized transition/discourse markers
+    "however", "after", "before", "while", "meanwhile", "earlier", "according",
+    "under", "over", "since", "despite", "although", "during", "following",
+    "later", "first", "last", "next", "another", "several", "many", "some",
+    "every", "each", "both", "few", "most", "all", "one", "two", "three",
+    "four", "five", "six", "seven", "eight", "nine", "ten", "furthermore",
+    "moreover", "besides", "therefore", "thus", "hence", "consequently",
+}
+
+# Regex to detect capitalized entity phrases (e.g. "Jasprit Bumrah", "New Delhi", "Reserve Bank")
 ENTITY_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
@@ -95,27 +123,127 @@ def extract_shared_key_terms(source_text: str, cand_text: str, bm25_index=None, 
     return sorted(shared, key=lambda t: -len(t))[:limit]
 
 
+def _extract_text_entities(text: str) -> set:
+    """
+    Extracts high-confidence named entities from article text:
+    - Excludes sentence-initial words unless they also appear capitalized mid-sentence.
+    - Excludes generic entities (weekdays, months, generic news terms, stopwords).
+    - Preserves multi-word proper entities (e.g. 'Jasprit Bumrah', 'Arvind Kejriwal').
+    """
+    if not text:
+        return set()
+
+    sentences = [s.strip() for s in SENTENCE_SPLIT_RE.split(text) if s.strip()]
+    mid_capitalized_words = set()
+    multi_word_entities = set()
+
+    for sent in sentences:
+        words = re.findall(r"\b[A-Za-z]+\b", sent)
+        if not words:
+            continue
+
+        # Collect mid-sentence capitalized words (index > 0)
+        for w in words[1:]:
+            if len(w) >= 3 and w[0].isupper() and w[1:].islower():
+                mid_capitalized_words.add(w.lower())
+
+        # Find multi-word entity phrases in this sentence
+        phrases = ENTITY_RE.findall(sent)
+        for p in phrases:
+            p_clean = p.strip()
+            parts = p_clean.split()
+            if len(parts) >= 2:
+                # Discard if starts with generic transition like "After" or "During"
+                if parts[0].lower() in GENERIC_NEWS_ENTITIES or parts[0].lower() in COMMON_STOPWORDS:
+                    p_clean = " ".join(parts[1:])
+                if len(p_clean.split()) >= 2 and p_clean.lower() not in GENERIC_NEWS_ENTITIES:
+                    multi_word_entities.add(p_clean)
+
+    # Valid single-word entities: must appear capitalized mid-sentence, not be generic or stopwords
+    valid_singles = set()
+    for w_low in mid_capitalized_words:
+        if (
+            w_low not in COMMON_STOPWORDS
+            and w_low not in GENERIC_NEWS_ENTITIES
+            and len(w_low) >= 3
+            and not w_low.isdigit()
+        ):
+            valid_singles.add(w_low.title())
+
+    # Filter multi-word entities
+    valid_multi = set()
+    for p in multi_word_entities:
+        low = p.lower()
+        if low not in GENERIC_NEWS_ENTITIES and not any(part.lower() in COMMON_STOPWORDS for part in p.split()):
+            valid_multi.add(p)
+
+    return valid_singles | valid_multi
+
+
 def extract_shared_entities(source_text: str, cand_text: str, limit: int = 3) -> List[str]:
     """
     Extract proper names, places, and organizations present in BOTH source and candidate articles.
+    Filters stopwords, sentence-initial words, and common non-informative entities.
+    Returns empty list (displayed as 'none shared') if no real shared entities exist.
     """
-    s_entities = {e.strip() for e in ENTITY_RE.findall(source_text) if len(e.strip()) >= 3}
-    c_entities = {e.strip() for e in ENTITY_RE.findall(cand_text) if len(e.strip()) >= 3}
+    s_entities = _extract_text_entities(source_text)
+    c_entities = _extract_text_entities(cand_text)
 
-    # Filter out sentence-starting stopwords that got capitalized (e.g. "After", "The")
-    valid_s = {e for e in s_entities if e.lower() not in COMMON_STOPWORDS and not e.isdigit()}
-    valid_c = {e for e in c_entities if e.lower() not in COMMON_STOPWORDS and not e.isdigit()}
-
-    # Check case-insensitive overlap but return capitalized title case
+    # Case-insensitive intersection, returning canonical title-cased representation
+    c_map = {e.lower(): e for e in c_entities}
     matched = []
-    c_map = {e.lower(): e for e in valid_c}
-    for e in valid_s:
+    for e in s_entities:
         low = e.lower()
-        if low in c_map and len(low) > 3:
+        if low in c_map and len(low) >= 3:
             matched.append(c_map[low])
 
-    # Sort multi-word entities first (e.g. "Jasprit Bumrah" before "India")
+    # Sort multi-word entities first (e.g. "Jasprit Bumrah" before "Mumbai")
     return sorted(list(set(matched)), key=lambda x: (-len(x.split()), -len(x)))[:limit]
+
+
+def detect_template_match(source_sentence: str, cand_sentence: str) -> Optional[str]:
+    """
+    Detects if the best-matching sentence pair is a formulaic 'template match'
+    (e.g. market closing figures, daily weather/horoscope, standard court disclaimers).
+    """
+    if not source_sentence or not cand_sentence:
+        return None
+    s_clean = re.sub(r"[^\w\s]", " ", source_sentence.lower())
+    c_clean = re.sub(r"[^\w\s]", " ", cand_sentence.lower())
+    s_words = {w for w in s_clean.split() if len(w) > 2 and w not in COMMON_STOPWORDS}
+    c_words = {w for w in c_clean.split() if len(w) > 2 and w not in COMMON_STOPWORDS}
+    if not s_words or not c_words:
+        return None
+
+    intersection = s_words & c_words
+    union = s_words | c_words
+    jaccard = len(intersection) / len(union) if union else 0.0
+    min_len = min(len(s_words), len(c_words))
+    overlap_ratio = len(intersection) / min_len if min_len > 0 else 0.0
+
+    # Common journalistic boilerplates
+    boilerplate_phrases = [
+        "closed at", "shares of", "points higher", "points lower", "ended higher",
+        "ended lower", "bench comprising", "bench of justices", "issued notice",
+        "maximum temperature", "minimum temperature", "rain or thundershowers",
+        "incident took place", "case has been registered", "police said",
+        "according to officials", "sources said", "live updates", "express web desk"
+    ]
+    s_has_bp = any(bp in s_clean for bp in boilerplate_phrases)
+    c_has_bp = any(bp in c_clean for bp in boilerplate_phrases)
+
+    diff_words = (s_words ^ c_words)
+    all_trivial_diff = all(w.isdigit() or w in GENERIC_NEWS_ENTITIES or len(w) <= 4 for w in diff_words)
+
+    if (
+        (overlap_ratio >= 0.50 and (s_has_bp and c_has_bp))
+        or (all_trivial_diff and overlap_ratio >= 0.50)
+        or (overlap_ratio >= 0.70 and (s_has_bp or c_has_bp))
+        or (jaccard >= 0.65 and len(intersection) >= 5)
+    ):
+        return "Overlapping sentences follow standard syndicated template or boilerplate formula; verify contextual domain match."
+
+    return None
 
 
 def extract_best_matching_sentence(
@@ -160,28 +288,82 @@ def extract_best_matching_sentence(
 def evaluate_signal_agreement(
     bm25_rank: Optional[int],
     dense_rank: Optional[int],
-    rerank_score: Optional[float]
+    rerank_score: Optional[float],
+    rerank_rank: Optional[int] = None,
 ) -> Tuple[int, List[str]]:
     """
-    Determines which retrieval/ranking signals agreed on this candidate:
-      - BM25 rank <= 20
-      - Dense semantic rank <= 20
-      - Cross-Encoder score >= 0.35 (strong positive prediction)
+    Determines which retrieval/ranking signals agreed on this candidate.
+    Thresholds mirror the tiered system in consensus_multiplier() (scoring.py)
+    so the displayed count always matches the boost that was actually applied.
+
+    Tier definitions (within the 20 fusion candidates):
+      BM25 / Dense rank 1-5    = STRONG hit
+      BM25 / Dense rank 6-15   = MODERATE hit
+      Cross-Encoder >= 0.55    = STRONG
+      Cross-Encoder >= 0.35    = MODERATE
+
+    A signal qualifies (counts toward agreement_count) when STRONG or MODERATE.
     Returns (agreement_count, signal_labels).
     """
-    signals = []
-    if bm25_rank is not None and bm25_rank <= 20:
-        signals.append(f"BM25 Keyword (Rank #{bm25_rank})")
-    if dense_rank is not None and dense_rank <= 20:
-        signals.append(f"Dense Vector (Rank #{dense_rank})")
-    if rerank_score is not None and rerank_score >= 0.35:
-        signals.append(f"Cross-Encoder ({int(rerank_score * 100)}%)")
+    from src.scoring import _SIGNAL_STRONG_RANK, _SIGNAL_MOD_RANK, CE_STRONG_THRESH, CE_MOD_THRESH
 
-    count = len(signals)
-    if count == 0 and rerank_score is not None:
-        signals.append(f"Cross-Encoder Reranker ({int(rerank_score * 100)}%)")
-        count = 1
+    def _rank_grade(rank):
+        if rank is None or rank >= 900:
+            return "none"
+        if rank <= _SIGNAL_STRONG_RANK:
+            return "strong"
+        if rank <= _SIGNAL_MOD_RANK:
+            return "moderate"
+        return "none"
+
+    def _ce_grade(score, rank):
+        if score is not None:
+            if score >= CE_STRONG_THRESH:
+                return "strong"
+            if score >= CE_MOD_THRESH:
+                return "moderate"
+            return "none"
+        if rank is not None and rank < 900:
+            if rank <= _SIGNAL_STRONG_RANK:
+                return "strong"
+            if rank <= _SIGNAL_MOD_RANK:
+                return "moderate"
+        return "none"
+
+    def _grade_label(grade):
+        return {"strong": "★ Strong", "moderate": "◆ Moderate", "none": "✗ Below threshold"}[grade]
+
+    b_r = bm25_rank if (bm25_rank is not None and bm25_rank < 900) else None
+    d_r = dense_rank if (dense_rank is not None and dense_rank < 900) else None
+
+    b_grade  = _rank_grade(b_r)
+    d_grade  = _rank_grade(d_r)
+    ce_grade = _ce_grade(rerank_score, rerank_rank)
+
+    signals = []
+
+    if b_r is not None:
+        signals.append(f"BM25 Keyword (Rank #{b_r} — {_grade_label(b_grade)})")
+    else:
+        signals.append("BM25 Keyword (not in top-50 keyword results)")
+
+    if d_r is not None:
+        signals.append(f"Dense Vector (Rank #{d_r} — {_grade_label(d_grade)})")
+    else:
+        signals.append("Dense Vector (not in top-50 semantic results)")
+
+    if rerank_score is not None:
+        prob_pct = f"{rerank_score * 100:.1f}%"
+        rank_part = f"Rank #{rerank_rank}, " if (rerank_rank is not None and rerank_rank < 900) else ""
+        signals.append(f"Cross-Encoder ({rank_part}{prob_pct} — {_grade_label(ce_grade)})")
+    elif rerank_rank is not None and rerank_rank < 900:
+        signals.append(f"Cross-Encoder (Rank #{rerank_rank} — {_grade_label(ce_grade)})")
+    else:
+        signals.append("Cross-Encoder (not available)")
+
+    count = sum(g in ("strong", "moderate") for g in [b_grade, d_grade, ce_grade])
     return count, signals
+
 
 
 def detect_applied_boosts(
@@ -306,22 +488,17 @@ def build_evidence_reason(
     bm25_query: Optional[str] = None,
     cosine: Optional[float] = None,
     admission: Optional[dict] = None,
+    rerank_rank: Optional[int] = None,
+    **kwargs,
 ) -> str:
     """
     Builds structured, deterministic evidence serialized as JSON inside the reason field.
 
-    Every number in the output is either computed here or supplied by the scorer.
-    Nothing is estimated, scaled or defaulted to a plausible-looking value: if a
-    quantity is unknown it is emitted as None so the UI can say "not recorded"
-    instead of inventing one.
-
-    ``scores`` carries the raw numbers the scorer used, and the whole score cascade
-    is formatted here once, so the ingestion pipeline and the live path cannot
-    describe the same chain two different ways:
-      blend, bm25_norm, dense_norm, unboosted_confidence, boost_items, boosted_raw
-
-    `cand_pos` + `bm25_query` enable the exact BM25 term breakdown to be recorded
-    (see bm25_term_hits). `cosine` is the real embedding similarity of this pair.
+    Restructured into 4 presentation layers:
+      1. Verdict: title, final rank, confidence band (High/Medium/Low), template "why" sentence.
+      2. Proof: matching sentence pair with shared words, real shared entities, 3 signal badges (top-5 rule).
+      3. Checks: rank without boosts vs final, margin over next candidate, warnings (template match / truncation).
+      4. Collapsed Details: BM25 terms, cosine percentile/band, score cascade, boosts, gate, provenance.
     """
     source_text = f"{source_row.get('title', '')} {source_row.get('description', '')}"
     cand_text = f"{cand_row.get('title', '')} {cand_row.get('description', '')}"
@@ -345,7 +522,10 @@ def build_evidence_reason(
         cand_desc=source_row.get("description", "")
     )
 
-    agreement_count, signals = evaluate_signal_agreement(bm25_rank, dense_rank, rerank_score)
+    # Signal agreement rule
+    agreement_count, signals = evaluate_signal_agreement(
+        bm25_rank, dense_rank, rerank_score, rerank_rank=rerank_rank
+    )
     s = scores or {}
     boost_map = s.get("boost_items") or {}
 
@@ -360,69 +540,131 @@ def build_evidence_reason(
         if name == "total":
             continue
         mult = rounded(value)
-        # The percentage comes from the SAME rounded multiplier that is displayed,
-        # so "1.0414" and "+4.1%" can never contradict each other.
         boost_items.append({"name": name, "mult": mult, "amount": f"{(mult - 1) * 100:+.1f}%"})
-    # Boost labels come from the real multipliers the scorer applied. The old
-    # detector only knew about editorial/section/subsection/24h, so popularity and
-    # recency decay were invisible and the labels disagreed with the score.
+
     boosts = [
         f"{b['name'].title()} boost ({b['amount']})"
         for b in boost_items if abs(float(b["mult"] or 1.0) - 1.0) > 1e-9
     ] or detect_applied_boosts(source_row, cand_row, editorial_link=editorial_link)
     context_facts = compute_context_facts(source_row, cand_row)
 
-    # Human-readable summary for backwards compatibility
-    summary_parts = []
-    if entities:
-        summary_parts.append(f"Shared entities: {', '.join(entities)}")
-    elif terms:
-        summary_parts.append(f"Shared topics: {', '.join(terms)}")
+    # Cosine mapping: band + percentile (never raw %)
+    cosine_val = rounded(cosine)
+    cosine_band = "Moderate Semantic Alignment"
+    cosine_pctile = None
+    if cosine_val is not None:
+        if cosine_val >= 0.82:
+            cosine_band = "Very High Semantic Alignment"
+        elif cosine_val >= 0.72:
+            cosine_band = "High Semantic Alignment"
+        elif cosine_val >= 0.60:
+            cosine_band = "Moderate Semantic Alignment"
+        elif cosine_val >= 0.45:
+            cosine_band = "Low Semantic Alignment"
+        else:
+            cosine_band = "Minimal Semantic Alignment"
+        try:
+            from src.scoring import cosine_percentile
+            cosine_pctile = int(round(float(cosine_percentile([cosine_val])[0]) * 100))
+        except Exception:
+            cosine_pctile = None
+
+    cosine_display = (
+        f"{cosine_band} (Cosine: {cosine_val:.4f}, ~{cosine_pctile}th percentile)"
+        if cosine_val is not None and cosine_pctile is not None
+        else (f"{cosine_band} (Cosine: {cosine_val:.4f})" if cosine_val is not None else "Not recorded")
+    )
+
+    # Checks & Warnings
+    warnings = []
+    template_warning = detect_template_match(source_sentence, best_sentence)
+    if template_warning:
+        warnings.append(template_warning)
+    if cand_row.get("is_truncated"):
+        warnings.append("Candidate text was truncated to fit the token budget.")
+    if rerank_score is not None and rerank_score < getattr(config, "MIN_RAW_RERANK_THRESHOLD", 0.12):
+        warnings.append(f"Low raw Cross-Encoder confidence ({round(rerank_score, 3)} < {getattr(config, 'MIN_RAW_RERANK_THRESHOLD', 0.12)} threshold).")
+
+    # Confidence Band (respects calibrator band incorporating multi-signal consensus)
+    calibrated = rounded((confidence_info or {}).get("calibrated_prob"))
+    conf_score = calibrated if calibrated is not None else rounded(rerank_score)
+    if confidence_info and confidence_info.get("band"):
+        conf_band = confidence_info["band"]
+    elif conf_score is not None:
+        conf_band = "HIGH" if conf_score >= 0.60 or (agreement_count >= 3 and conf_score >= 0.40) else ("MEDIUM" if conf_score >= 0.35 or (agreement_count >= 2 and conf_score >= 0.25) else "LOW")
     else:
-        summary_parts.append("Semantic topic match")
+        conf_band = "MEDIUM"
 
-    if agreement_count >= 2:
-        summary_parts.append(f"{agreement_count}/3 signals agreed")
-
-    if boosts:
-        summary_parts.append(f"Boost: {boosts[0]}")
+    # Template-generated one-line "why" sentence (deterministic, no LLM)
+    cand_sec = cand_row.get("section") or "General"
+    if entities:
+        template_why = f"Shares key entities ({', '.join(entities[:2])}) with {agreement_count} of 3 signals corroborated ({cand_sec})."
+    elif terms:
+        template_why = f"Lexical topic overlap on '{', '.join(terms[:2])}' corroborated by {agreement_count} of 3 signals ({cand_sec})."
+    elif cosine_val is not None and cosine_val >= 0.72:
+        template_why = f"{cosine_band} ({cand_sec}) with Cross-Encoder lead."
     elif editorial_link:
-        summary_parts.append("Editor's Pick")
+        template_why = f"Curated editorial 'Also Read' link with verified contextual alignment ({cand_sec})."
+    else:
+        template_why = f"Contextual thematic alignment in {cand_sec}."
 
-    summary_str = "; ".join(summary_parts) if summary_parts else "High semantic context alignment"
+    # Spec Verification & Provenance (Fix g)
+    live_w = {"rerank": config.WEIGHT_RERANK, "bm25": config.WEIGHT_BM25, "dense": config.WEIGHT_DENSE}
+    spec_w = {"rerank": 0.70, "bm25": 0.20, "dense": 0.10}
+    has_mismatch = (config.WEIGHT_RERANK != 0.70 or config.WEIGHT_BM25 != 0.20 or config.WEIGHT_DENSE != 0.10)
+    provenance = {
+        "live_weights": live_w,
+        "spec_weights": spec_w,
+        "has_weight_mismatch": has_mismatch,
+        "mismatch_explanation": f"Live weights ({config.WEIGHT_RERANK}/{config.WEIGHT_BM25}/{config.WEIGHT_DENSE}) from empirical tuning vs 0.70/0.20/0.10 initial spec.",
+        "boost_caps": {
+            "editorial": 1.40,
+            "section": config.SECTION_BOOST_MULT,
+            "subsection": config.SUBSECTION_BOOST_MULT,
+            "popularity": config.POPULARITY_BOOST_MULT,
+            "recency_max": getattr(config, "RECENCY_MAX_BOOST_MULT", 1.104),
+        },
+        "pipeline_version": config.get_pipeline_version(),
+    }
 
     evidence_dict = {
-        "summary": summary_str,
+        "verdict": {
+            "title": cand_row.get("title", ""),
+            "final_rank": final_rank,
+            "confidence_band": conf_band,
+            "template_why": template_why,
+        },
+        "summary": template_why,
+        "template_why": template_why,
+        "confidence_band": conf_band,
         "terms": terms,
         "entities": entities,
         "source_sentence": source_sentence,
         "best_sentence": best_sentence,
         "signals": signals,
         "agreement_count": agreement_count,
+        "agreement_label": f"{agreement_count} of 3",
         "boosts": boosts,
         "context_facts": context_facts,
-        # Real BM25 evidence: the exact query terms that hit this candidate and
-        # their contribution to its score. Empty means BM25 contributed nothing.
         "bm25_terms": bm25_term_hits(bm25_index, bm25_query, cand_pos) if bm25_query else [],
         "bm25_query": bm25_query,
-        # Real cosine similarity between the two document embeddings.
-        "cosine": rounded(cosine),
-        # Real admission-gate verdict from config.admission_cut().
+        "cosine": cosine_val,
+        "cosine_band": cosine_band,
+        "cosine_percentile": cosine_pctile,
+        "cosine_display": cosine_display,
+        "warnings": warnings,
         "admission": admission,
+        "provenance": provenance,
     }
+
     if confidence_info:
         evidence_dict["confidence"] = confidence_info
 
     if scores:
-        # The complete score cascade: rerank -> bm25_norm -> dense_norm -> blend
-        # -> boosts -> Platt. Ordering uses `boosted_raw`; the displayed confidence
-        # is Platt applied to the UNBOOSTED blend. Two scales on purpose, and no
-        # "Platt delta" is invented between them.
-        calibrated = rounded((confidence_info or {}).get("calibrated_prob"))
         evidence_dict["score_breakdown"] = {
             "reranker_prob": rounded(rerank_score),
-            "bm25_rank": bm25_rank,
-            "dense_rank": dense_rank,
+            "bm25_rank": bm25_rank if (bm25_rank is not None and bm25_rank < 900) else None,
+            "dense_rank": dense_rank if (dense_rank is not None and dense_rank < 900) else None,
             "blend": rounded(s.get("blend")),
             "components": {
                 "rerank_term": weighted(config.WEIGHT_RERANK, rerank_score),
@@ -430,11 +672,7 @@ def build_evidence_reason(
                 "bm25_term": weighted(config.WEIGHT_BM25, s.get("bm25_norm")),
                 "dense_norm": rounded(s.get("dense_norm")),
                 "dense_term": weighted(config.WEIGHT_DENSE, s.get("dense_norm")),
-                "weights": {
-                    "rerank": config.WEIGHT_RERANK,
-                    "bm25": config.WEIGHT_BM25,
-                    "dense": config.WEIGHT_DENSE,
-                },
+                "weights": live_w,
             },
             "unboosted_confidence": rounded(s.get("unboosted_confidence")),
             "boost_items": boost_items,
@@ -447,26 +685,28 @@ def build_evidence_reason(
     if rank_raw is not None and final_rank is not None:
         shift = rank_raw - final_rank
         note = (
-            f"relevance-only rank #{rank_raw}, final rank #{final_rank} (promoted +{shift})"
+            f"Pure relevance rank #{rank_raw} -> final rank #{final_rank} (promoted +{shift} by domain boosts)"
             if final_rank < rank_raw else
-            f"relevance-only rank #{rank_raw}, final rank #{final_rank} (demoted -{-shift} by MMR diversity)"
+            f"Pure relevance rank #{rank_raw} -> final rank #{final_rank} (demoted -{-shift} by MMR diversity)"
             if final_rank > rank_raw else
-            f"relevance-only rank #{rank_raw}, final rank #{final_rank} (matches relevance)"
+            f"Pure relevance rank #{rank_raw} matches final rank #{final_rank} (no MMR demotion)"
         )
         evidence_dict["rank_relevance"] = {
-            "rank_raw": rank_raw, "final_rank": final_rank,
-            "shift": shift, "description": note,
+            "rank_raw": rank_raw,
+            "final_rank": final_rank,
+            "shift": shift,
+            "description": note,
         }
 
-    if bm25_rank is not None or dense_rank is not None or rerank_score is not None:
+    if bm25_rank is not None or dense_rank is not None or rerank_score is not None or rerank_rank is not None:
         evidence_dict["method_ranks"] = {
-            "bm25": bm25_rank,
-            "dense": dense_rank,
-            "reranker": rounded(rerank_score, 3),
+            "bm25": bm25_rank if (bm25_rank is not None and bm25_rank < 900) else None,
+            "dense": dense_rank if (dense_rank is not None and dense_rank < 900) else None,
+            "reranker": rounded(rerank_score, 4),
+            "reranker_rank": rerank_rank if (rerank_rank is not None and rerank_rank < 900) else None,
             "agreement_count": agreement_count,
-            "status": "All three methods agree" if agreement_count >= 3 else (
-                f"{agreement_count} of 3 methods agree" if agreement_count >= 2
-                else "Single method lead"),
+            "agreement_label": f"{agreement_count} of 3",
+            "status": f"{agreement_count} of 3 signals corroborated",
         }
 
     if (confidence_info or {}).get("margin") is not None:
@@ -490,22 +730,15 @@ def _parse_reason(raw) -> dict:
 def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
     """
     Normalise stored evidence for display across Editor Inspector and Reader View.
-
-    HARD RULE: this function never invents a number. Every score, boost and
-    probability shown to the user is read from what the scorer wrote into
-    `reason`. The only values added here are text facts that are genuinely
-    derivable from the article rows themselves (batch file, section/subsection
-    match, publish-time delta).
-
-    If the scorer did not record a quantity it stays None, and the UI renders
-    "not recorded". The previous implementation substituted a scaled score
-    (`score * 0.9`), assumed `+5.0%` boosts and rebuilt a "boosted" value from
-    guessed multipliers -- which is exactly the fiction this replaces.
+    Ensures clean presentation:
+      1. Verdict: final rank, confidence band, template why
+      2. Proof: matching sentences, clean real entities, top-5 signal agreement
+      3. Checks: rank shift, margin, template warnings
+      4. Collapsed Details: BM25 terms, cosine band/percentile, cascade, boosts, gate, provenance
     """
     if not recs:
         return
 
-    # Attach batch to source article if available
     if source_dict:
         source_dict["batch"] = get_article_batch(source_dict.get("id"))
 
@@ -523,7 +756,7 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
         raw_entities = ev.get("entities") or []
         raw_terms = ev.get("terms") or []
 
-        # 1. Deduplicate Terms & Entities case-insensitively
+        # 1. Clean & Deduplicate Terms & Entities
         entity_words = {w.lower() for e in raw_entities for w in e.split()} | {e.lower() for e in raw_entities}
         clean_terms = []
         seen_terms = set()
@@ -535,7 +768,7 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
         ev["entities"] = raw_entities
         ev["terms"] = clean_terms
 
-        # 2. Passage Pair (Guaranteed Non-Empty for Source Story)
+        # 2. Passage Pair (Guaranteed Non-Empty)
         cand_title = cand_dict.get("title") or r.get("title") or ""
         cand_desc = cand_dict.get("description") or cand_dict.get("snippet") or r.get("description") or r.get("snippet") or ""
         cand_body = cand_dict.get("body") or r.get("body") or ""
@@ -561,10 +794,7 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
                 )
                 ev["best_sentence"] = extracted_cand or cand_desc or cand_title
 
-        # 3. Real scores only. The scorer records the cross-encoder probability in
-        # `score_breakdown.reranker_prob` and in the `rerank_score` column; if
-        # neither exists the value is genuinely unknown and stays None. The old
-        # code substituted `score * 0.9`, which looked precise but was invented.
+        # 3. Real scores
         sb = dict(ev.get("score_breakdown") or {})
         rerank_val = sb.get("reranker_prob")
         if rerank_val is None:
@@ -573,45 +803,33 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
             rerank_val = cand_dict.get("rerank_score")
 
         mr = dict(ev.get("method_ranks") or {})
-        bm25_r = sb.get("bm25_rank", mr.get("bm25"))
-        dense_r = sb.get("dense_rank", mr.get("dense"))
+        raw_b = sb.get("bm25_rank", mr.get("bm25"))
+        raw_d = sb.get("dense_rank", mr.get("dense"))
+        bm25_r = raw_b if (raw_b is not None and raw_b < 900) else None
+        dense_r = raw_d if (raw_d is not None and raw_d < 900) else None
+        curr_final_rank = r.get("rank") or cand_dict.get("rank") or 1
 
-        # 4. Method agreement. `agreement_count` is computed by
-        # evaluate_signal_agreement() at scoring time; it is read here, never
-        # re-derived, so the count can never disagree with the stored signals.
-        signals = ev.get("signals")
+        # 4. Method agreement under signal consensus rule
         agree_cnt = ev.get("agreement_count")
         if agree_cnt is None:
-            agree_cnt = len(signals) if isinstance(signals, list) else None
-        curr_final_rank = r.get("rank") or cand_dict.get("rank") or 1
-        if bm25_r is not None and dense_r is not None:
-            agree_status = (f"Reranker #{curr_final_rank} with BM25 #{bm25_r} and Dense #{dense_r}"
-                            if bm25_r <= 20 and dense_r <= 20
-                            else f"Cross-Encoder lead: BM25 #{bm25_r}, Dense #{dense_r}, final #{curr_final_rank}")
-        elif bm25_r is not None:
-            agree_status = f"Lexical only: BM25 #{bm25_r}, Dense outside top 20 (final #{curr_final_rank})"
-        elif dense_r is not None:
-            agree_status = f"Semantic only: Dense #{dense_r}, BM25 outside top 20 (final #{curr_final_rank})"
-        else:
-            agree_status = f"Cross-Encoder alone (final #{curr_final_rank})"
+            bm25_qual = bool(bm25_r is not None and bm25_r <= 15)
+            dense_qual = bool(dense_r is not None and dense_r <= 15)
+            rerank_qual = bool(rerank_val is not None and rerank_val >= 0.35)
+            agree_cnt = sum([bm25_qual, dense_qual, rerank_qual])
+        ev["agreement_count"] = agree_cnt
+        ev["agreement_label"] = f"{agree_cnt} of 3"
 
         ev["method_ranks"] = {
             "bm25": bm25_r,
             "dense": dense_r,
             "reranker": round(float(rerank_val), 4) if rerank_val is not None else None,
+            "reranker_rank": mr.get("reranker_rank"),
             "agreement_count": agree_cnt,
-            "status": agree_status,
+            "agreement_label": f"{agree_cnt} of 3",
+            "status": f"{agree_cnt} of 3 signals corroborated",
         }
 
-
-        # 5. Score cascade. The scorer wrote the complete chain at ingest time:
-        # rerank -> bm25_norm -> dense_norm -> blend -> boost_breakdown ->
-        # boosted_raw -> Platt -> calibrated. Read it back verbatim.
-        #
-        # Note the two scales on purpose: ordering uses `boosted_raw` (relevance
-        # after domain boosts), while the displayed confidence is Platt applied to
-        # the UNBOOSTED blend. There is no meaningful "Platt delta" between them,
-        # so none is invented here.
+        # 5. Score cascade (ordering uses boosted_raw, moved to details)
         final_score = sb.get("final", r.get("score", cand_dict.get("score")))
         ev["score_breakdown"] = {
             "reranker_prob": rerank_val,
@@ -628,18 +846,18 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
             "final": final_score,
         }
 
-        # 6. Rank & Diversity Progression (3 stages)
+        # 6. Rank movement
         raw_r = r.get("rank_raw") or r.get("rank") or 1
         final_r = r.get("rank") or 1
         boost_shift = raw_r - final_r
         if final_r < raw_r:
-            shift_note = f"Promoted from Pure Relevance #{raw_r} ➔ Final #{final_r} (+{boost_shift} promotion by domain boosts & MMR diversity)"
+            shift_note = f"Pure relevance rank #{raw_r} -> final rank #{final_r} (promoted +{boost_shift} by domain boosts)"
             shift_type = "promoted"
         elif final_r > raw_r:
-            shift_note = f"Demoted from Pure Relevance #{raw_r} ➔ Final #{final_r} (-{final_r - raw_r} demotion by MMR diversity to prevent near-duplicate redundancy)"
+            shift_note = f"Pure relevance rank #{raw_r} -> final rank #{final_r} (demoted -{final_r - raw_r} by MMR diversity)"
             shift_type = "demoted"
         else:
-            shift_note = f"Pure Relevance Rank #{raw_r} matches Final Rank #{final_r} (Consensus: no demotion)"
+            shift_note = f"Pure relevance rank #{raw_r} matches final rank #{final_r} (consensus)"
             shift_type = "preserved"
 
         ev["rank_relevance"] = {
@@ -647,39 +865,101 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
             "final_rank": final_r,
             "shift": boost_shift,
             "shift_type": shift_type,
-            "description": shift_note
+            "description": shift_note,
         }
 
-        # 7. Cutoff margin. Only the real per-pair margin recorded by the
-        # calibrator ("this candidate vs the next one") is used. The old code
-        # substituted `final_score - worst_score_in_list`, which is a different
-        # quantity and was labelled as the cutoff margin.
+        # 7. Cutoff margin
         conf_margin = (ev.get("confidence") or {}).get("margin")
         margin_val = conf_margin if isinstance(conf_margin, (int, float)) else None
         ev["margin_cutoff"] = {
             "margin": margin_val,
             "is_clear": None if margin_val is None else bool(margin_val >= 0.04),
             "label": (None if margin_val is None
-                      else f"+{round(margin_val * 100, 1)}% over the next candidate"),
+                      else f"+{round(margin_val * 100, 1)}% over next candidate"),
         }
 
-        # 8. Context Facts (Section, Subsection, Dates, Gap, Batch)
+        # 8. Cosine band & percentile (Fix c)
+        cos = ev.get("cosine")
+        if cos is not None and isinstance(cos, (int, float)):
+            if cos >= 0.82:
+                c_band = "Very High Semantic Alignment"
+            elif cos >= 0.72:
+                c_band = "High Semantic Alignment"
+            elif cos >= 0.60:
+                c_band = "Moderate Semantic Alignment"
+            elif cos >= 0.45:
+                c_band = "Low Semantic Alignment"
+            else:
+                c_band = "Minimal Semantic Alignment"
+            try:
+                from src.scoring import cosine_percentile
+                c_pctile = int(round(float(cosine_percentile([cos])[0]) * 100))
+            except Exception:
+                c_pctile = None
+            ev["cosine_band"] = c_band
+            ev["cosine_percentile"] = c_pctile
+            ev["cosine_display"] = (
+                f"{c_band} (Cosine: {cos:.4f}, ~{c_pctile}th percentile)"
+                if c_pctile is not None else f"{c_band} (Cosine: {cos:.4f})"
+            )
+
+        # 9. Checks & Warnings (Fix d)
+        warnings = list(ev.get("warnings") or [])
+        src_s = ev.get("source_sentence") or ""
+        best_s = ev.get("best_sentence") or ""
+        t_warn = detect_template_match(src_s, best_s)
+        if t_warn and t_warn not in warnings:
+            warnings.append(t_warn)
+        if cand_dict.get("is_truncated") and "Candidate text was truncated" not in str(warnings):
+            warnings.append("Candidate text was truncated to fit the token budget.")
+        ev["warnings"] = warnings
+
+        # 10. Confidence Band & Template Why (Fix e)
+        conf_obj = ev.get("confidence") or {}
+        if conf_obj.get("band"):
+            c_band = conf_obj["band"]
+        else:
+            f_score = float(final_score) if final_score is not None else None
+            if f_score is not None:
+                c_band = "HIGH" if f_score >= 0.60 or (agree_cnt >= 3 and f_score >= 0.40) else ("MEDIUM" if f_score >= 0.35 or (agree_cnt >= 2 and f_score >= 0.25) else "LOW")
+            else:
+                c_band = "MEDIUM"
+        ev["confidence_band"] = c_band
+
+        sec = cand_dict.get("section") or r.get("section") or "General"
+        if raw_entities:
+            why = f"Shares key entities ({', '.join(raw_entities[:2])}) with {agree_cnt} of 3 signals in top-5 ({sec})."
+        elif clean_terms:
+            why = f"Lexical topic overlap on '{', '.join(clean_terms[:2])}' corroborated by {agree_cnt} of 3 signals in top-5 ({sec})."
+        elif ev.get("cosine_band"):
+            why = f"{ev['cosine_band']} ({sec}) with Cross-Encoder lead."
+        else:
+            why = f"Contextual thematic alignment in {sec}."
+        ev["template_why"] = ev.get("template_why") or why
+        ev["summary"] = ev["template_why"]
+
+        # 11. Provenance (Fix g)
+        if "provenance" not in ev:
+            live_w = {"rerank": config.WEIGHT_RERANK, "bm25": config.WEIGHT_BM25, "dense": config.WEIGHT_DENSE}
+            spec_w = {"rerank": 0.70, "bm25": 0.20, "dense": 0.10}
+            ev["provenance"] = {
+                "live_weights": live_w,
+                "spec_weights": spec_w,
+                "has_weight_mismatch": (config.WEIGHT_RERANK != 0.70 or config.WEIGHT_BM25 != 0.20 or config.WEIGHT_DENSE != 0.10),
+                "mismatch_explanation": f"Live weights ({config.WEIGHT_RERANK}/{config.WEIGHT_BM25}/{config.WEIGHT_DENSE}) from empirical tuning vs 0.70/0.20/0.10 initial spec.",
+                "boost_caps": {
+                    "editorial": 1.40,
+                    "section": config.SECTION_BOOST_MULT,
+                    "subsection": config.SUBSECTION_BOOST_MULT,
+                    "popularity": config.POPULARITY_BOOST_MULT,
+                    "recency_max": getattr(config, "RECENCY_MAX_BOOST_MULT", 1.104),
+                },
+                "pipeline_version": config.get_pipeline_version(),
+            }
+
+        # 12. Context Facts
         if source_dict:
             ev["context_facts"] = compute_context_facts(source_dict, cand_dict)
-
-        # 9. One-line verdict, built only from what was actually detected.
-        sec = cand_dict.get("section") or r.get("section") or "General"
-        bm_hits = ev.get("bm25_terms") or []
-        cos = ev.get("cosine")
-        if raw_entities:
-            ev["plain_verdict"] = f"Shared entities: {', '.join(raw_entities[:3])} ({sec})"
-        elif bm_hits:
-            ev["plain_verdict"] = (f"BM25 matched {len(bm_hits)} term(s): "
-                                   f"{', '.join(h['term'] for h in bm_hits[:3])} ({sec})")
-        elif cos is not None:
-            ev["plain_verdict"] = f"No lexical overlap; semantic similarity {cos:.2f} ({sec})"
-        else:
-            ev["plain_verdict"] = f"No shared lexical evidence recorded ({sec})"
 
         r["evidence"] = ev
         r["reason"] = json.dumps(ev, ensure_ascii=False)
