@@ -87,20 +87,30 @@ def bm25_term_hits(bm25_index, query: str, cand_pos: int, limit: int = 8) -> Lis
     except Exception:
         return []
 
-    k1, b = bm25_index.k1, bm25_index.b
-    length_norm = 1 - b + b * bm25_index.lengths[cand_pos] / bm25_index.avg_len
-    counts = Counter(bm25_index.docs[cand_pos])
+    k1 = getattr(bm25_index, "k1", 1.5)
+    # Check if field-aware postings (BM25F)
+    postings = getattr(bm25_index, "postings", {})
 
     hits = []
     for term, weight in expanded:
-        tf = counts.get(term, 0)
-        if not tf:
-            continue
         idf = bm25_index.idf.get(term, 0.0)
-        contrib = weight * idf * tf * (k1 + 1) / (tf + k1 * length_norm)
+        if idf <= 0.0:
+            continue
+        
+        # Look up precomputed tf_tilde for cand_pos if available in postings
+        tf_tilde = None
+        for pos, val in postings.get(term, []):
+            if pos == cand_pos:
+                tf_tilde = val
+                break
+        
+        if tf_tilde is None or tf_tilde <= 0:
+            continue
+
+        contrib = weight * idf * (tf_tilde * (k1 + 1.0)) / (tf_tilde + k1)
         hits.append({
             "term": term,
-            "tf": int(tf),
+            "tf": round(float(tf_tilde), 2),
             "idf": round(idf, 3),
             "weight": round(weight, 2),
             "contribution": round(contrib, 4),
@@ -619,8 +629,10 @@ def build_evidence_reason(
         "mismatch_explanation": f"Live weights ({config.WEIGHT_RERANK}/{config.WEIGHT_BM25}/{config.WEIGHT_DENSE}) from empirical tuning vs 0.70/0.20/0.10 initial spec.",
         "boost_caps": {
             "editorial": 1.40,
-            "section": config.SECTION_BOOST_MULT,
-            "subsection": config.SUBSECTION_BOOST_MULT,
+            "section_focused": getattr(config, "SECTION_BOOST_FOCUSED", 1.100),
+            "section_umbrella": getattr(config, "SECTION_BOOST_UMBRELLA", 1.020),
+            "subsection_focused": getattr(config, "SUBSECTION_BOOST_FOCUSED", 1.050),
+            "subsection_umbrella": getattr(config, "SUBSECTION_BOOST_UMBRELLA", 1.020),
             "popularity": config.POPULARITY_BOOST_MULT,
             "recency_max": getattr(config, "RECENCY_MAX_BOOST_MULT", 1.104),
         },
@@ -661,10 +673,23 @@ def build_evidence_reason(
         evidence_dict["confidence"] = confidence_info
 
     if scores:
+        from src.scoring import _signal_grade, CE_STRONG_THRESH, CE_MOD_THRESH
+        b_grade = _signal_grade(bm25_rank)
+        d_grade = _signal_grade(dense_rank)
+        ce_val = float(rerank_score) if rerank_score is not None else 0.0
+        ce_grade = "strong" if ce_val >= CE_STRONG_THRESH else ("moderate" if ce_val >= CE_MOD_THRESH else "weak")
+        domain_mult = boost_map.get("domain_multiplier", boost_map.get("total", 1.0))
+        agreement_adj = boost_map.get("agreement_adjustment", 0.0)
+
         evidence_dict["score_breakdown"] = {
             "reranker_prob": rounded(rerank_score),
             "bm25_rank": bm25_rank if (bm25_rank is not None and bm25_rank < 900) else None,
+            "bm25_grade": b_grade,
             "dense_rank": dense_rank if (dense_rank is not None and dense_rank < 900) else None,
+            "dense_grade": d_grade,
+            "cross_encoder_grade": ce_grade,
+            "agreement_adjustment": rounded(agreement_adj, 4),
+            "domain_multiplier": rounded(domain_mult, 4),
             "blend": rounded(s.get("blend")),
             "components": {
                 "rerank_term": weighted(config.WEIGHT_RERANK, rerank_score),
@@ -676,7 +701,7 @@ def build_evidence_reason(
             },
             "unboosted_confidence": rounded(s.get("unboosted_confidence")),
             "boost_items": boost_items,
-            "total_boost_mult": rounded(boost_map.get("total", 1.0)),
+            "total_boost_mult": rounded(domain_mult),
             "boosted_raw": rounded(s.get("boosted_raw")),
             "platt_calibrated": calibrated,
             "final": calibrated,
@@ -949,8 +974,10 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
                 "mismatch_explanation": f"Live weights ({config.WEIGHT_RERANK}/{config.WEIGHT_BM25}/{config.WEIGHT_DENSE}) from empirical tuning vs 0.70/0.20/0.10 initial spec.",
                 "boost_caps": {
                     "editorial": 1.40,
-                    "section": config.SECTION_BOOST_MULT,
-                    "subsection": config.SUBSECTION_BOOST_MULT,
+                    "section_focused": getattr(config, "SECTION_BOOST_FOCUSED", 1.100),
+                    "section_umbrella": getattr(config, "SECTION_BOOST_UMBRELLA", 1.020),
+                    "subsection_focused": getattr(config, "SUBSECTION_BOOST_FOCUSED", 1.050),
+                    "subsection_umbrella": getattr(config, "SUBSECTION_BOOST_UMBRELLA", 1.020),
                     "popularity": config.POPULARITY_BOOST_MULT,
                     "recency_max": getattr(config, "RECENCY_MAX_BOOST_MULT", 1.104),
                 },

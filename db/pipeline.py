@@ -15,7 +15,7 @@ import config
 from .connection import SessionLocal, init_db
 from .models import Article, ArticleRecommendation, IngestionJob
 from .repository import ArticleRepository
-from src.retrieval import BM25Index, tokenize, reciprocal_rank_fusion
+from src.retrieval import BM25Index, tokenize, reciprocal_rank_fusion, select_quota_candidates
 from src.model_registry import get_embedder
 from src.reranker import Reranker
 from src.data_loader import clean_dataframe
@@ -92,7 +92,9 @@ def _rank_and_build(
         )
         for i, c in enumerate(cand_positions)
     ]
-    boosted = relevance * np.array([p["total"] for p in parts])
+    domain_mults = np.array([p.get("domain_multiplier", p.get("total", 1.0)) for p in parts])
+    agreement_adjs = np.array([p.get("agreement_adjustment", 0.0) for p in parts])
+    boosted = (relevance * domain_mults) + agreement_adjs
 
     # Relevance order before diversity: what every rank shift is measured against.
     raw_order = list(np.argsort(-boosted))
@@ -180,12 +182,21 @@ def _precompute_for_article(
     # B. Semantic candidates
     dense_scores = emb @ emb[idx]
     dense_scores[idx] = -np.inf
-    dense_rank = [int(p) for p in np.argsort(-dense_scores)[:n_retrieve]]
+    dense_rank = [int(p) for p in np.argsort(-dense_scores)[:n_retrieve] if p != idx]
 
-    # C. Reciprocal-rank fusion → top-N candidates for the cross-encoder.
-    # (Gates were disabled in Change 15; candidates pass through as-is.)
-    fused = reciprocal_rank_fusion([bm25_rank, dense_rank], k=config.RRF_K)
-    cands = sorted(fused, key=fused.get, reverse=True)[:n_cand]
+    # C. Quota-based candidate generation → top-N candidates for the cross-encoder.
+    # Uses 12 RRF, up to 5 strong Dense-only, up to 3 BM25-only, backfilling with RRF.
+    cands = select_quota_candidates(
+        bm25_rank,
+        dense_rank,
+        n_cand=n_cand,
+        k_rrf=config.RRF_K,
+        rrf_quota=12,
+        dense_quota=5,
+        bm25_quota=3,
+        strong_dense_cutoff=5,
+        strong_bm25_cutoff=5,
+    )
     if not cands:
         return [], []
 
@@ -293,21 +304,31 @@ def _reverse_push_for_old(
                 rerank_scores[i] = float(scored[k])
         rerank_vec = np.asarray(rerank_scores, dtype=np.float32)
 
-        # 5. Real corpus ranks for the agreement signals. The old code passed
-        #    `rel_pos + 1` for both BM25 and dense, which invented agreement.
+        # 5. Real retrieval rank maps for the agreement signals.
+        # Zero-score or unretrieved articles must NOT receive an artificial rank.
         bm25_query_old = _focused_query(records[opos], bm25)
         bm25_all = bm25.scores(bm25_query_old)
         self_bm25_old = float(bm25_all[opos])
         bm25_all[opos] = -np.inf
+        bm25_retrieved = [
+            int(p) for p in np.argsort(-bm25_all)[:config.N_RETRIEVE] if bm25_all[p] > 1e-9
+        ]
+        bm25_pos_of = {p: i + 1 for i, p in enumerate(bm25_retrieved)}
+
         dense_all = emb @ emb[opos]
+        dense_all[opos] = -np.inf
+        dense_retrieved = [
+            int(p) for p in np.argsort(-dense_all)[:config.N_RETRIEVE] if p != opos
+        ]
+        dense_pos_of = {p: i + 1 for i, p in enumerate(dense_retrieved)}
 
         # 6. Blend -> boosts -> MMR -> gate -> evidence, exactly as the forward
         #    path does, then persist.
         recs = _rank_and_build(
             records[opos], cand_positions, rerank_vec, records, emb, bm25,
             bm25_all, dense_all, bm25_query_old,
-            {int(p): i + 1 for i, p in enumerate(np.argsort(-bm25_all))},
-            {int(p): i + 1 for i, p in enumerate(np.argsort(-dense_all))},
+            bm25_pos_of,
+            dense_pos_of,
             max_views, max_date, current_ver,
             self_bm25=self_bm25_old,
         )
@@ -466,7 +487,7 @@ def run_ingestion_pipeline(
         n_total = len(full_records)
         if n_total == 1:
             print("[Pipeline] Only one article in the corpus; no neighbours to precompute.")
-        bm25 = BM25Index([r["text_bm25"] for r in full_records])
+        bm25 = BM25Index(full_records)
 
         # 6. Determine articles needing recommendations
         new_id_set = set(ids)

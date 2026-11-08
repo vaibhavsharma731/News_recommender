@@ -119,9 +119,58 @@ MMR_THETA_SEARCH = 0.85
 MAX_USER_HISTORY = 10       # track last N read articles
 USER_PROFILE_WEIGHT = 0.35  # blend weight for user history profile vector
 
-# --- News Metadata Boosts (MEASURED Multipliers) ---
-SECTION_BOOST_MULT = 1.100    # 10% boost for same section
-SUBSECTION_BOOST_MULT = 1.050 # 5% boost for same subsection
+# --- News Metadata Boosts (Asymmetric Strategy E) ---
+SECTION_BOOST_MULT = 1.100        # Legacy default / focused fallback
+SUBSECTION_BOOST_MULT = 1.050     # Legacy default / focused fallback
+SECTION_BOOST_FOCUSED = 1.100     # 10% boost for cohesive editorial beats
+SECTION_BOOST_UMBRELLA = 1.020    # 2% dampened boost for catch-all / heterogeneous sections
+SUBSECTION_BOOST_FOCUSED = 1.050  # 5% boost for matching subsection in focused beats
+SUBSECTION_BOOST_UMBRELLA = 1.020 # 2% dampened boost for matching subsection in umbrella beats
+
+# Section Classifications for Asymmetric Boosting (Strategy E — full 56-section audit 2026-11-07)
+# Every distinct section in the PostgreSQL articles table is listed in exactly one set.
+# Unknown future sections fall back to UMBRELLA (1.020) multipliers — the safer conservative default.
+UMBRELLA_SECTIONS = {
+    # Primary geographic catch-alls (heterogeneous topic mix — section match is weak signal)
+    "cities", "india", "world", "miscellaneous",
+    # Standalone city sections (same logic as cities subsections)
+    "delhi", "mumbai", "chandigarh", "pune",
+    # National news alias / synonym
+    "india-news",
+    # Generic multi-beat news formats and daily digests
+    "news-today", "news-archive", "news-video", "3-things",
+    # Multi-category video and multimedia feeds
+    "video-detail",
+    # Sponsored / multi-topic commercial content
+    "brand-story", "in-collaboration",
+}
+FOCUSED_SECTIONS = {
+    # Sports
+    "sports", "sports-gallery",
+    # Entertainment & Cinema
+    "entertainment", "bollywood", "movies", "entertainment-gallery", "casually-obsessed",
+    # Lifestyle, Health, Food & Parenting
+    "lifestyle", "lifestyle-gallery", "health-wellness", "health-and-wellness",
+    "food", "parenting", "love-matters", "love-matters-with-leeza-mangaldas",
+    # Legal & Justice
+    "legal-news", "legal",
+    # Education, Exams & Knowledge
+    "explained", "education", "upsc-current-affairs", "research",
+    # Politics & Governance
+    "political-pulse", "delhi-confidential",
+    # Business & Economy
+    "business",
+    # Technology & Science
+    "technology",
+    # Opinion, Analysis & Dialogue
+    "opinion", "fresh-take", "idea-exchange", "express-exclusive",
+    # Culture, Features & Long-form
+    "books-and-literature", "travel", "long-reads", "eye", "express-sunday-eye",
+    "express-investigations", "people", "horoscope", "puzzles-and-games",
+    "e-p-unny-cartoons-gallery",
+    # Trending & Viral (deliberate editorial vertical — kept as Focused)
+    "trending",
+}
 POPULARITY_BOOST_MULT = 1.015 # Log-scaled virality nudge
 RECENCY_MAX_BOOST_MULT = 1.040 # Max recency boost (source-relative decay)
 
@@ -306,6 +355,12 @@ def get_pipeline_version() -> str:
         # Boost multipliers (changing any of these invalidates stored scores)
         f"sec_boost={SECTION_BOOST_MULT}",
         f"subsec_boost={SUBSECTION_BOOST_MULT}",
+        f"sec_boost_focused={SECTION_BOOST_FOCUSED}",
+        f"sec_boost_umbrella={SECTION_BOOST_UMBRELLA}",
+        f"subsec_boost_focused={SUBSECTION_BOOST_FOCUSED}",
+        f"subsec_boost_umbrella={SUBSECTION_BOOST_UMBRELLA}",
+        f"umbrella_sections_hash={hashlib.sha256(','.join(sorted(UMBRELLA_SECTIONS)).encode('utf-8')).hexdigest()[:8]}",
+        f"focused_sections_hash={hashlib.sha256(','.join(sorted(FOCUSED_SECTIONS)).encode('utf-8')).hexdigest()[:8]}",
         f"pop_boost={POPULARITY_BOOST_MULT}",
         f"rec_boost={RECENCY_MAX_BOOST_MULT}",
         f"boost_mode={BOOST_MODE}",

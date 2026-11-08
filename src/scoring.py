@@ -106,15 +106,13 @@ def blend(rerank_scores, bm25_scores, dense_scores, positions, self_bm25: float 
 
 
 # --- Signal agreement tier thresholds ---
-# Ranks here are positions within the N_CANDIDATES (20) fusion pool the reranker
-# actually sees -- not the full 50-article retrieval list.
-# A rank of #1 or #5 means "both BM25 and Dense chose this as a top hit",
-# which is far stronger evidence than being #22 out of 50.
-_SIGNAL_STRONG_RANK = 5   # rank 1-5  within candidates  = STRONG keyword/semantic hit
-_SIGNAL_MOD_RANK   = 15   # rank 6-15 within candidates  = MODERATE hit
-# _SIGNAL_WEAK_RANK = 16-20: below moderate, still in the pool but barely
-CE_STRONG_THRESH = 0.55   # cross-encoder probability >= 0.55 = STRONG neural read
-CE_MOD_THRESH    = 0.35   # cross-encoder probability >= 0.35 = MODERATE neural read
+# Note: Ranks passed here are the original retrieval ranks (top-50) from BM25 and Dense
+# search, preserving authentic retrieval strength.
+_SIGNAL_STRONG_RANK = 5    # rank 1-5  = STRONG hit
+_SIGNAL_MOD_RANK   = 15    # rank 6-15 = MODERATE hit
+_SIGNAL_WEAK_RANK  = 25    # rank 16-25 = WEAK hit
+CE_STRONG_THRESH = 0.55    # cross-encoder probability >= 0.55 = STRONG neural read
+CE_MOD_THRESH    = 0.35    # cross-encoder probability >= 0.35 = MODERATE neural read
 
 
 def _signal_grade(rank: int) -> str:
@@ -125,9 +123,86 @@ def _signal_grade(rank: int) -> str:
         return "strong"
     if rank <= _SIGNAL_MOD_RANK:
         return "moderate"
-    if rank <= 25:
+    if rank <= _SIGNAL_WEAK_RANK:
         return "weak"
     return "none"
+
+
+def signal_agreement_adjustment(
+    cand_row,
+    source_row=None,
+    bm25_rank: int = None,
+    dense_rank: int = None,
+    rerank_score: float = None,
+) -> float:
+    """
+    Additive Signal Agreement Adjustment (Stage 2):
+
+    Replaces the previous multiplicative consensus multiplier with a small,
+    bounded additive adjustment [-0.03, +0.03] to the post-boost relevance score.
+
+    Ensures strong semantic matches (Dense strong + CE strong) are not penalized
+    for lacking BM25 keyword overlap, while maintaining penalties for confirmed
+    keyword flukes and embedding drift.
+    """
+    # Editorial ground truth: always neutral
+    if source_row is not None and str(cand_row.get("id")) in linked_set(source_row):
+        return 0.0
+
+    if bm25_rank is None and dense_rank is None and rerank_score is None:
+        return 0.0
+
+    b_r = bm25_rank if (bm25_rank is not None and bm25_rank < 900) else None
+    d_r = dense_rank if (dense_rank is not None and dense_rank < 900) else None
+    ce = float(rerank_score) if rerank_score is not None else 0.0
+
+    b_grade = _signal_grade(b_r)
+    d_grade = _signal_grade(d_r)
+
+    if ce >= CE_STRONG_THRESH:
+        ce_grade = "strong"
+    elif ce >= CE_MOD_THRESH:
+        ce_grade = "moderate"
+    else:
+        ce_grade = "weak"
+
+    adj = 0.0
+
+    # 1. Triple agreement: BM25 strong + Dense strong + CE strong -> +0.03
+    if b_grade == "strong" and d_grade == "strong" and ce_grade == "strong":
+        adj = 0.03
+
+    # 2. Strong semantic match: Dense strong + CE strong, BM25 absent -> +0.02
+    elif b_grade == "none" and d_grade == "strong" and ce_grade == "strong":
+        adj = 0.02
+
+    # 3. Moderate semantic match: Dense moderate + CE strong, BM25 absent -> +0.01
+    elif b_grade == "none" and d_grade == "moderate" and ce_grade == "strong":
+        adj = 0.01
+
+    # 4. Strong retrieval agreement + moderate CE: BM25 strong + Dense strong + CE moderate -> +0.015
+    elif b_grade == "strong" and d_grade == "strong" and ce_grade == "moderate":
+        adj = 0.015
+
+    # 5. Keyword fluke: BM25 strong + Dense absent + CE weak -> -0.03
+    elif b_grade == "strong" and (d_r is None or d_r > 20) and ce_grade == "weak":
+        adj = -0.03
+
+    # 6. Embedding drift: Dense strong + BM25 absent + CE weak -> -0.02
+    elif (b_r is None or b_r > 20) and d_grade == "strong" and ce_grade == "weak":
+        adj = -0.02
+
+    # 7. Secondary keyword/drift damping:
+    elif b_grade == "moderate" and (d_r is None or d_r > 20) and ce_grade == "weak":
+        adj = -0.02
+    elif (b_r is None or b_r > 20) and d_grade == "moderate" and ce_grade == "weak":
+        adj = -0.015
+
+    # 8. All signals weak or inconclusive -> 0.00
+    else:
+        adj = 0.00
+
+    return float(np.clip(adj, -0.03, 0.03))
 
 
 def consensus_multiplier(
@@ -137,113 +212,8 @@ def consensus_multiplier(
     dense_rank: int = None,
     rerank_score: float = None,
 ) -> float:
-    """
-    Tiered Signal Consensus Multiplier (Change 18, 2026-10-28):
-
-    Rewards precise multi-signal agreement to surface the genuinely best 3-5
-    recommendations while suppressing keyword flukes and embedding drift.
-
-    Ranks are from the top-50 retrieval candidates for each branch:
-      STRONG   = rank 1–5   (top 10% retrieval hit)
-      MODERATE = rank 6–15  (top 30% retrieval hit)
-      WEAK     = rank 16–25 (top 50% retrieval hit)
-      NONE     = rank > 25, or not retrieved in top 50 (None / 999)
-
-    Cross-Encoder probability tiers:
-      STRONG   = probability >= 0.55
-      MODERATE = probability >= 0.35
-      WEAK     = probability < 0.35
-
-    Outcome table (monotonic and mathematically grounded):
-      All 3 STRONG                           → ×1.15   (+15% triple consensus)
-      2 STRONG + 1 MODERATE                  → ×1.10   (+10% high consensus)
-      All 3 at least MODERATE                → ×1.08   (+8% full consensus)
-      BM25 + Dense both MODERATE or better   → ×1.04   (+4% dual retrieval agreement)
-      Dense + CE STRONG (BM25 absent)        → ×1.00   (neutral, genuine semantic match)
-      Topic mismatch (BM25 strong, Dense>20) → ×0.75   (-25% damping e.g. sale vs lawsuit)
-      Keyword fluke (BM25 strong, Dense>20, CE<0.55) → ×0.40 (-60% metaphoric quote e.g. jail)
-      Embedding drift (Dense hit, BM25 none, CE<0.35) → ×0.35 (-65% unrelated crime on comedy)
-      Only 1 signal qualifies at all         → ×0.80   (-20% unconfirmed single source)
-      Otherwise (e.g. 2 moderate, 1 none)    → ×1.00   (neutral)
-    """
-    # Editorial 'Also Read' links are verified human ground-truth: always neutral, no penalty
-    if source_row is not None and str(cand_row.get("id")) in linked_set(source_row):
-        return 1.0
-
-    if bm25_rank is None and dense_rank is None and rerank_score is None:
-        return 1.0
-
-    b_r = bm25_rank if (bm25_rank is not None and bm25_rank < 900) else None
-    d_r = dense_rank if (dense_rank is not None and dense_rank < 900) else None
-    ce = float(rerank_score) if rerank_score is not None else 0.0
-
-    # Compute grade for each signal
-    b_grade = _signal_grade(b_r)
-    d_grade = _signal_grade(d_r)
-    if ce >= CE_STRONG_THRESH:
-        ce_grade = "strong"
-    elif ce >= CE_MOD_THRESH:
-        ce_grade = "moderate"
-    else:
-        ce_grade = "none"
-
-    grades = [b_grade, d_grade, ce_grade]
-    n_strong   = grades.count("strong")
-    n_moderate = grades.count("moderate")
-    n_qualify  = n_strong + n_moderate   # any grade better than "none"
-
-    # --- Tiered multiplier lookup ---
-
-    # 1. Triple consensus: all three signals are STRONG
-    if n_strong == 3:
-        return 1.15
-
-    # 2. High consensus: all three qualify and at least two are STRONG
-    if n_qualify == 3 and n_strong >= 2:
-        return 1.10
-
-    # 3. Full consensus: all three qualify at moderate or better
-    if n_qualify == 3:
-        return 1.08
-
-    # 4. Dual retrieval agreement: both BM25 and Dense agree at moderate or better
-    if b_grade in ("strong", "moderate") and d_grade in ("strong", "moderate"):
-        return 1.04
-
-    # 5. Semantic + Neural match: Dense vector and Cross-Encoder both confirm match,
-    #    even though exact query keywords didn't overlap (BM25 absent)
-    if b_grade == "none" and d_grade in ("strong", "moderate") and ce_grade == "strong":
-        return 1.00
-    if b_grade == "none" and d_grade == "strong" and ce_grade == "moderate":
-        return 0.95
-
-    # 6. Flukes, Topic Mismatches, and Embedding Drifts:
-    # 6a. Keyword fluke: BM25 matched on metaphoric or casual words (e.g. Kapil Sharma 'jail'),
-    #     Dense was absent/far (>20), and Cross-Encoder did NOT strongly corroborate
-    if b_grade == "strong" and (d_r is None or d_r > 20) and ce_grade != "strong":
-        return 0.40
-
-    # 6b. Topic mismatch & Cross-domain fluke:
-    #     BM25 matched words, but Dense vector strongly rejects the topic (d_r is None or > 20)
-    if b_grade == "strong" and (d_r is None or d_r > 20) and ce_grade == "strong":
-        # If candidate is from a different section, it's an unequivocal cross-domain keyword fluke
-        # (e.g. Umesh Pal murder jail story matching Kapil Sharma comedy interview)
-        if source_row is not None and source_row.get("section") and cand_row.get("section") and source_row.get("section") != cand_row.get("section"):
-            return 0.30
-        # Same section topic mismatch (e.g. Flipkart Sale matching Google Lawsuit, both in technology)
-        return 0.75
-
-    # 6c. Embedding drift: Dense retrieved an item, but BM25 is absent and Cross-Encoder
-    #     rejects it (e.g. unrelated murder news appearing under comedy/entertainment)
-    if (b_r is None or b_r > 20) and d_grade in ("strong", "moderate") and ce_grade == "none":
-        return 0.35
-
-    # 7. Unreliable single-signal candidate: only 1 signal qualifies at all
-    if n_qualify <= 1:
-        return 0.80
-
-    # Default: two moderate signals — neutral
-    return 1.00
+    """Legacy backward-compatibility shim: returns 1.0."""
+    return 1.0
 
 
 def boost_parts(
@@ -255,24 +225,41 @@ def boost_parts(
     dense_rank: int = None,
     rerank_score: float = None,
 ) -> dict:
-    """Every domain boost applied to one candidate, plus their product.
+    """Every domain boost applied to one candidate, plus their product and agreement adjustment.
 
-    ``source_row`` is None for a free-text search (there is no article to compare
-    against). Works on dicts and on DataFrame rows: both ``page_views`` (DB) and
-    ``pageViews`` (CSV) are accepted, so one function serves every caller.
+    final_score = (base_relevance * domain_multiplier) + agreement_adjustment
     """
     parts = {"editorial": 1.0, "section": 1.0, "subsection": 1.0,
-             "popularity": 1.0, "recency": 1.0, "agreement": 1.0}
+             "popularity": 1.0, "recency": 1.0}
 
     if source_row is not None:
         if str(cand_row.get("id")) in linked_set(source_row):
             parts["editorial"] = 1.40
-        if source_row.get("section") and source_row.get("section") == cand_row.get("section"):
-            parts["section"] = config.SECTION_BOOST_MULT
-        if source_row.get("subsection") and source_row.get("subsection") == cand_row.get("subsection"):
-            parts["subsection"] = config.SUBSECTION_BOOST_MULT
+        src_sec = str(source_row.get("section") or "").strip().lower()
+        cand_sec = str(cand_row.get("section") or "").strip().lower()
+        if src_sec and src_sec == cand_sec:
+            # Explicit three-way lookup: umbrella → 1.020, focused → 1.100,
+            # unknown future section → conservative umbrella-equivalent (1.020).
+            _umbrella_set = getattr(config, "UMBRELLA_SECTIONS", set())
+            _focused_set  = getattr(config, "FOCUSED_SECTIONS",  set())
+            if src_sec in _umbrella_set:
+                _sec_boost = getattr(config, "SECTION_BOOST_UMBRELLA", 1.020)
+                _sub_boost = getattr(config, "SUBSECTION_BOOST_UMBRELLA", 1.020)
+            elif src_sec in _focused_set:
+                _sec_boost = getattr(config, "SECTION_BOOST_FOCUSED", 1.100)
+                _sub_boost = getattr(config, "SUBSECTION_BOOST_FOCUSED", 1.050)
+            else:
+                # Unknown section: apply umbrella-equivalent dampening so an
+                # unrecognised future feed never receives the full focused boost.
+                _sec_boost = getattr(config, "SECTION_BOOST_UMBRELLA", 1.020)
+                _sub_boost = getattr(config, "SUBSECTION_BOOST_UMBRELLA", 1.020)
+            parts["section"] = _sec_boost
+            src_sub = str(source_row.get("subsection") or "").strip().lower()
+            cand_sub = str(cand_row.get("subsection") or "").strip().lower()
+            if src_sub and src_sub == cand_sub:
+                parts["subsection"] = _sub_boost
 
-    # Popularity: log-scaled, so a viral story gets a nudge and not dominance.
+    # Popularity: log-scaled
     views = cand_row.get("page_views")
     if views is None:
         views = cand_row.get("pageViews") or 0
@@ -280,8 +267,7 @@ def boost_parts(
         parts["popularity"] = 1.0 + (config.POPULARITY_BOOST_MULT - 1.0) * (
             math.log1p(views) / math.log1p(max_views))
 
-    # Recency: relative to the SOURCE article's date (config.BOOST_MODE), not the
-    # newest row in the corpus.
+    # Recency: relative to the SOURCE article's date
     parts["recency"] = config.recency_boost(
         cand_row.get("date"),
         config.recency_ref_date(source_row.get("date") if source_row is not None else None, max_date),
@@ -289,8 +275,11 @@ def boost_parts(
         bool(cand_row.get("is_live", False)),
     )
 
-    # Signal consensus: promote multi-signal winners, demote single-signal outliers
-    parts["agreement"] = consensus_multiplier(
+    domain_mult = 1.0
+    for value in parts.values():
+        domain_mult *= value
+
+    agreement_adj = signal_agreement_adjustment(
         cand_row,
         source_row=source_row,
         bm25_rank=bm25_rank,
@@ -298,10 +287,10 @@ def boost_parts(
         rerank_score=rerank_score,
     )
 
-    total = 1.0
-    for value in parts.values():
-        total *= value
-    parts["total"] = total
+    parts["domain_multiplier"] = domain_mult
+    parts["agreement_adjustment"] = agreement_adj
+    parts["total"] = domain_mult
+    parts["agreement"] = 1.0
     return parts
 
 

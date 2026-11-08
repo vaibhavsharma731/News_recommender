@@ -17,7 +17,7 @@ import pandas as pd
 import config
 from src.reranker import Reranker
 from src.retrieval import (BM25Index, DenseIndex, TfidfIndex,
-                           reciprocal_rank_fusion, tokenize)
+                           reciprocal_rank_fusion, select_quota_candidates, tokenize)
 from src.calibration import ConfidenceCalibrator
 from src.evidence import build_evidence_reason, evaluate_signal_agreement
 from src.scoring import blend, boost_parts, linked_set, mmr, norm
@@ -61,7 +61,7 @@ class Recommender:
         self.notes = []
         self._max_page_views = int(self.articles["pageViews"].max()) if "pageViews" in self.articles.columns else 1
 
-        self.bm25 = BM25Index(self.articles["text_bm25"])
+        self.bm25 = BM25Index(self.articles)
         self.semantic = self._build_semantic(use_neural, vectors, use_disk_cache)
         self.reranker = self._build_reranker(use_neural)
 
@@ -155,6 +155,18 @@ class Recommender:
             candidates = bm25_rank[:config.N_CANDIDATES]
         elif method == "semantic":
             candidates = semantic_rank[:config.N_CANDIDATES]
+        elif query_pos is not None and method in ("hybrid", "hybrid+rerank"):
+            candidates = select_quota_candidates(
+                bm25_rank,
+                semantic_rank,
+                n_cand=config.N_CANDIDATES,
+                k_rrf=config.RRF_K,
+                rrf_quota=12,
+                dense_quota=5,
+                bm25_quota=3,
+                strong_dense_cutoff=5,
+                strong_bm25_cutoff=5,
+            )
         else:
             fused = reciprocal_rank_fusion([bm25_rank, semantic_rank])
             candidates = sorted(fused, key=fused.get, reverse=True)[:config.N_CANDIDATES]
@@ -238,7 +250,10 @@ class Recommender:
                 )
                 for i, pos in enumerate(candidates)
             }
-            final = final * np.array([boost_parts[i]["total"] for i in range(len(candidates))])
+            # final = (relevance * domain_multiplier) + agreement_adjustment
+            domain_mults = np.array([boost_parts[i].get("domain_multiplier", boost_parts[i].get("total", 1.0)) for i in range(len(candidates))])
+            agreement_adjs = np.array([boost_parts[i].get("agreement_adjustment", 0.0) for i in range(len(candidates))])
+            final = (final * domain_mults) + agreement_adjs
 
         # --- 5. diversity ---------------------------------------------------
         raw_order = list(np.argsort(-final))

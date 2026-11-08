@@ -158,6 +158,35 @@ first run rebuilds, later runs load from cache.
 
 <!-- Newest first. Copy the block below for each new change. -->
 
+### 2026-11-06 — Change 20: field-aware BM25F and lightweight inflection normalization adopted
+
+**Motivation & Problem Solved:**
+Previously, article text was indexed by concatenating the headline three times (`title. title. title. desc. body`). This naive duplication inflated document length statistics, prevented field-specific length normalization, and caused generic keyword traps where long article bodies containing incidental words (e.g. "visit", "need", "city") displaced articles whose headlines were genuinely on-topic. Furthermore, exact token matching failed on different grammatical forms (e.g. "parks" vs "park", "visiting" vs "visit").
+
+**BM25F Architecture & Normalization Design:**
+1. **Lightweight Lemmatization & Suffix Normalization (`src/retrieval.py`)**:
+   - Zero external NLP dependencies. Normalizes plurals (`-ies` $\to$ `-y`, `-es`, `-s`) and verb inflections (`-ing`, `-ed`).
+   - Retains `ENGLISH_STOP_WORDS` but explicitly preserves critical sentiment negations (`{"not", "no", "nor", "neither", "never"}`).
+   - Protects proper nouns, Indian entities, and technical acronyms (`delhi`, `paris`, `congress`, `aiims`, `baps`, `tennis`, `bengaluru`, `crisis`, etc.).
+2. **Field-Aware BM25F Scoring**:
+   - Separate field representation: **Title** ($w=3.0, b=0.75$), **Description** ($w=1.5, b=0.75$), **Body** ($w=1.0, b=0.75$).
+   - Effective normalized term frequency:
+     $$\tilde{tf}_{t, d} = \sum_{f} w_f \cdot \frac{tf_{f, t, d}}{1 - b_f + b_f \cdot \frac{len(f, d)}{\text{avg\_len}(f)}}$$
+   - Standard BM25 saturation applied to combined $\tilde{tf}_{t, d}$:
+     $$\text{Score}(d, q) = \sum_{t \in q} \text{weight}_t \cdot \text{IDF}(t) \cdot \frac{\tilde{tf}_{t, d} \cdot (k_1 + 1)}{\tilde{tf}_{t, d} + k_1}$$
+3. **Evidence Calibration Symmetry (`src/evidence.py`)**:
+   - `bm25_term_hits` pulls precomputed $\tilde{tf}_{t, d}$ directly from inverted index postings, ensuring explanation score breakdown matches retrieval scores identically.
+
+**Evaluation & System Compatibility:**
+- Evaluated on **4,177 articles** across **70 diverse test queries** covering Politics, Sports, Tech, Business, Lifestyle, Cities, and Entertainment.
+- **Latency**: Reduced from 2.93 ms to 2.00 ms (31.7% faster) due to precomputed $\tilde{tf}$ in postings.
+- **Signal Compatibility**:
+  - Downstream RRF (Reciprocal Rank Fusion) receives BM25 ranks seamlessly ($1 / (k + rank)$).
+  - Cross-Encoder reranking receives top candidates with fewer generic keyword traps.
+  - Multi-signal consensus and domain metadata boosts continue operating identically on ranks and score cascades.
+
+---
+
 ### 2026-10-27 — Change 19: multi-signal consensus agreement ranking adopted
 
 **Requested by user:** *"Require agreement among signals. Promote items supported by at least two of three signals, and demote single-signal winners, like the BM25-only Flipkart case. Using several signals reduces your dependence on whichever one fails... just apply this in best way possible by replacing old style not leave old one trace which will not gonna use in code"*

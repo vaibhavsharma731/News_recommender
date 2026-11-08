@@ -661,18 +661,23 @@ def save_baseline(result: dict, filepath: str = "baseline_evaluation.json"):
         "precompute_candidates": config.PRECOMPUTE_CANDIDATES,
         "rrf_k": config.RRF_K,
         "top_k": config.TOP_K,
-        # ── Diversity + boosts (the "MEASURED" set) ───────────────────────
+        # ── Diversity + boosts (Strategy E asymmetric set) ───────────────
         "mmr_lambda": config.MMR_LAMBDA,
         "mmr_theta": config.MMR_THETA,
         "section_boost_mult": config.SECTION_BOOST_MULT,
         "subsection_boost_mult": config.SUBSECTION_BOOST_MULT,
+        "section_boost_focused": getattr(config, "SECTION_BOOST_FOCUSED", config.SECTION_BOOST_MULT),
+        "section_boost_umbrella": getattr(config, "SECTION_BOOST_UMBRELLA", config.SECTION_BOOST_MULT),
+        "subsection_boost_focused": getattr(config, "SUBSECTION_BOOST_FOCUSED", config.SUBSECTION_BOOST_MULT),
+        "subsection_boost_umbrella": getattr(config, "SUBSECTION_BOOST_UMBRELLA", config.SUBSECTION_BOOST_MULT),
         "popularity_boost_mult": config.POPULARITY_BOOST_MULT,
         "recency_max_boost_mult": config.RECENCY_MAX_BOOST_MULT,
         "boost_mode": config.BOOST_MODE,
         "section_half_lives": dict(config.SECTION_HALF_LIVES),
         # ── Relevance gates ──────────────────────────────────────────────
         "min_raw_rerank_threshold": config.MIN_RAW_RERANK_THRESHOLD,
-        "article_discard_floor": config.ARTICLE_DISCARD_FLOOR,
+        "min_relevance": getattr(config, "MIN_RELEVANCE", {}),
+        "article_discard_floor": getattr(config, "ARTICLE_DISCARD_FLOOR", None),
         # ── Retired word-based settings (kept so old/new diffs line up) ───
         "body_words_embed": config.BODY_WORDS_EMBED,
         "body_words_rerank": config.BODY_WORDS_RERANK,

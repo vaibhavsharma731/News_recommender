@@ -34,14 +34,120 @@ import difflib
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 
+# Retain English stopwords but preserve essential negations for news sentiment/context
+_NEGATIONS = {"no", "not", "nor", "neither", "never"}
+_EFFECTIVE_STOP_WORDS = ENGLISH_STOP_WORDS - _NEGATIONS
+
+# Common irregular / non-standard news verbs and nouns for fast mapping
+_LEMMA_MAP = {
+    "countries": "country",
+    "cities": "city",
+    "parties": "party",
+    "authorities": "authority",
+    "companies": "company",
+    "travels": "travel",
+    "travelled": "travel",
+    "travelling": "travel",
+    "traveler": "travel",
+    "travelers": "travel",
+    "traveller": "travel",
+    "travellers": "travel",
+    "visited": "visit",
+    "visiting": "visit",
+    "visits": "visit",
+    "written": "write",
+    "writers": "writer",
+    "writing": "write",
+    "writes": "write",
+    "died": "die",
+    "dying": "die",
+    "dies": "die",
+    "elections": "election",
+    "arrested": "arrest",
+    "arrests": "arrest",
+    "killed": "kill",
+    "killing": "kill",
+    "kills": "kill",
+    "accused": "accuse",
+    "accuses": "accuse",
+    "accusing": "accuse",
+    "protested": "protest",
+    "protesting": "protest",
+    "protests": "protest",
+    "attacks": "attack",
+    "attacked": "attack",
+    "attacking": "attack",
+    "polluted": "pollute",
+    "polluting": "pollute",
+    "pollution": "pollute",
+}
+
+# Protected words that end in 's' or 'es' that should NOT be stripped (e.g. proper nouns, terms)
+_PROTECTED_WORDS = {
+    "delhi", "paris", "congress", "aiims", "baps", "press", "address", "process", 
+    "access", "species", "series", "business", "status", "crisis", "campus",
+    "focus", "bonus", "virus", "plus", "tennis", "bengaluru", "bengal"
+}
+
+
+def _lightweight_lemmatize(word: str) -> str:
+    """
+    Fast rule-based English lemmatization and inflection normalization.
+    Preserves named entities, Indian proper nouns, and known technical terms.
+    """
+    if len(word) <= 3 or word in _PROTECTED_WORDS:
+        return word
+
+    if word in _LEMMA_MAP:
+        return _LEMMA_MAP[word]
+
+    # -ies -> -y (countries -> country, bodies -> body)
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+
+    # -ing suffix: visiting -> visit, testing -> test, breathing -> breathe
+    if word.endswith("ing") and len(word) > 5:
+        stem = word[:-3]
+        # double consonant cleanup: running -> run, swimming -> swim
+        if len(stem) > 3 and stem[-1] == stem[-2] and stem[-1] not in "lsz":
+            return stem[:-1]
+        if stem.endswith(("at", "iz", "us", "iv")):
+            return stem + "e"
+        return stem
+
+    # -ed suffix: walked -> walk, launched -> launch
+    if word.endswith("ed") and len(word) > 4:
+        stem = word[:-2]
+        if len(stem) > 3 and stem[-1] == stem[-2] and stem[-1] not in "lsz":
+            return stem[:-1]
+        if stem.endswith(("at", "iz", "us", "iv", "nc", "sc", "rv")):
+            return stem + "e"
+        return stem
+
+    # -es suffix: beaches -> beach, boxes -> box, dishes -> dish
+    if word.endswith("es") and len(word) > 4:
+        if word.endswith(("shes", "ches", "sses", "xes", "zes")):
+            return word[:-2]
+        return word[:-1]
+
+    # standard -s plural: parks -> park, books -> book, authors -> author
+    if word.endswith("s") and not word.endswith("ss") and len(word) > 3:
+        return word[:-1]
+
+    return word
+
 
 def tokenize(text: str) -> list:
-    """lowercase -> words -> drop stop words. Preserves Indian names without naive 's' stripping."""
+    """
+    lowercase -> extract words -> drop stopwords (preserving negations) -> lemmatize inflections.
+    Applied symmetrically to both article indexing and queries.
+    """
     tokens = []
     for word in TOKEN_RE.findall(text.lower()):
-        if len(word) < 2 or word in ENGLISH_STOP_WORDS:
+        if len(word) < 2 or word in _EFFECTIVE_STOP_WORDS:
             continue
-        tokens.append(word)
+        lemma = _lightweight_lemmatize(word)
+        tokens.append(lemma)
     return tokens
 
 
@@ -53,36 +159,89 @@ def _normalize_repeats(w: str) -> str:
 # ----------------------------------------------------------------------------
 class BM25Index:
     """
-    BM25 keyword ranking with built-in Indian entity fuzzy query expansion.
+    BM25F field-aware keyword ranking with built-in Indian entity fuzzy query expansion.
 
-    Handles:
-      - Character typos & dropped letters: 'akhiles'   -> 'akhilesh'
-      - Repeated characters & typing drag: 'akkhhlesh' -> 'akhilesh'
-      - Split tokens & fragmented names:   'akkh lesh' -> 'akhilesh'
-      - Phonetic transliteration variants: 'skhilesh'  -> 'akhilesh'
-      - Partial names:                     'virat koli'-> 'virat kohli'
+    Fields and Weights:
+      - Title: weight 3.0, b=0.75
+      - Description: weight 1.5, b=0.75
+      - Body: weight 1.0, b=0.75
+
+    BM25F calculates effective term frequency:
+      tf_tilde(t, d) = sum_f [ w_f * tf_(f, t, d) / (1 - b_f + b_f * (len_f / avg_len_f)) ]
+    Then applies standard term saturation:
+      score = sum_t [ weight_t * IDF(t) * tf_tilde * (k1 + 1) / (tf_tilde + k1) ]
     """
 
     FUZZY_MIN_RATIO = 0.70       # SequenceMatcher similarity cutoff for corrections
     FUZZY_WEIGHT = 0.85          # Score weight for fuzzy matched terms
 
-    def __init__(self, texts, k1: float = 1.5, b: float = 0.75):
-        self.k1, self.b = k1, b
-        self.docs = [tokenize(t) for t in texts]
-        self.n = len(self.docs)
-        self.lengths = np.array([len(d) for d in self.docs])
-        self.avg_len = self.lengths.mean() if self.n else 1.0
+    # Field-aware configurations
+    FIELD_WEIGHTS = {
+        "title": 3.0,
+        "description": 1.5,
+        "body": 1.0,
+    }
+    FIELD_B = {
+        "title": 0.75,
+        "description": 0.75,
+        "body": 0.75,
+    }
 
-        # inverted index: word -> [(article position, tf), ...]
+    def __init__(self, docs_or_fields, k1: float = 1.5, b: float = 0.75):
+        self.k1 = k1
+        self.b = b
+
+        # Parse inputs into structured fields
+        self.docs_fields = []
+        self._parse_inputs(docs_or_fields)
+        self.n = len(self.docs_fields)
+
+        # Compute field lengths and average field lengths
+        self.field_lens = {
+            f: np.array([len(doc[f]) for doc in self.docs_fields], dtype=np.float32)
+            for f in self.FIELD_WEIGHTS
+        }
+        self.avg_field_lens = {
+            f: float(self.field_lens[f].mean()) if self.n and self.field_lens[f].mean() > 0 else 1.0
+            for f in self.FIELD_WEIGHTS
+        }
+
+        # Keep legacy combined docs representation for length and evidence compatibility
+        self.docs = [
+            doc["title"] + doc["description"] + doc["body"]
+            for doc in self.docs_fields
+        ]
+        self.lengths = np.array([len(d) for d in self.docs], dtype=np.float32)
+        self.avg_len = float(self.lengths.mean()) if self.n else 1.0
+
+        # Build field-aware inverted index:
+        # term -> [(doc_pos, tf_tilde), ...]
         self.postings = defaultdict(list)
-        for pos, doc in enumerate(self.docs):
-            for term, tf in Counter(doc).items():
-                self.postings[term].append((pos, tf))
+        doc_frequency = Counter()
 
-        # rare words get a high IDF weight, common words a low one
+        for pos, doc in enumerate(self.docs_fields):
+            # Calculate term frequencies per field
+            f_counts = {
+                f: Counter(doc[f]) for f in self.FIELD_WEIGHTS
+            }
+            unique_terms = set(f_counts["title"].keys()) | set(f_counts["description"].keys()) | set(f_counts["body"].keys())
+
+            for term in unique_terms:
+                doc_frequency[term] += 1
+                # Calculate normalized effective term frequency tf_tilde
+                tf_tilde = 0.0
+                for f, weight in self.FIELD_WEIGHTS.items():
+                    count = f_counts[f].get(term, 0)
+                    if count > 0:
+                        b_val = self.FIELD_B[f]
+                        len_norm = 1.0 - b_val + b_val * (self.field_lens[f][pos] / self.avg_field_lens[f])
+                        tf_tilde += weight * (count / max(0.01, len_norm))
+                self.postings[term].append((pos, float(tf_tilde)))
+
+        # Rare words get a high IDF weight, common words a low one
         self.idf = {
-            term: math.log(1 + (self.n - len(p) + 0.5) / (len(p) + 0.5))
-            for term, p in self.postings.items()
+            term: math.log(1 + (self.n - df + 0.5) / (df + 0.5))
+            for term, df in doc_frequency.items()
         }
 
         # Fast character 2-gram index over vocabulary for rapid candidate retrieval
@@ -92,6 +251,57 @@ class BM25Index:
             w_pad = f"#{word}#"
             for i in range(len(w_pad) - 1):
                 self._ngram_to_vocab[w_pad[i:i+2]].add(word)
+
+    def _parse_inputs(self, docs_or_fields):
+        """Standardizes input into list of dicts with tokenized title, description, and body."""
+        # Check if pandas DataFrame
+        if hasattr(docs_or_fields, "iterrows"):
+            for _, row in docs_or_fields.iterrows():
+                self.docs_fields.append({
+                    "title": tokenize(str(row.get("title", "") or "")),
+                    "description": tokenize(str(row.get("description", "") or "")),
+                    "body": tokenize(str(row.get("body", "") or "")),
+                })
+            return
+
+        # Check list items
+        for item in docs_or_fields:
+            if isinstance(item, dict):
+                self.docs_fields.append({
+                    "title": tokenize(str(item.get("title", "") or "")),
+                    "description": tokenize(str(item.get("description", "") or "")),
+                    "body": tokenize(str(item.get("body", "") or "")),
+                })
+            elif isinstance(item, (tuple, list)) and len(item) == 3:
+                self.docs_fields.append({
+                    "title": tokenize(str(item[0] or "")),
+                    "description": tokenize(str(item[1] or "")),
+                    "body": tokenize(str(item[2] or "")),
+                })
+            else:
+                # String fallback (legacy text_bm25 or flat string)
+                # Parse title/desc/body if separated by periods, or fallback to body
+                text = str(item or "")
+                parts = [p.strip() for p in text.split(". ") if p.strip()]
+                if len(parts) >= 3:
+                    # heuristic fallback
+                    self.docs_fields.append({
+                        "title": tokenize(parts[0]),
+                        "description": tokenize(parts[1]),
+                        "body": tokenize(" ".join(parts[2:])),
+                    })
+                elif len(parts) == 2:
+                    self.docs_fields.append({
+                        "title": tokenize(parts[0]),
+                        "description": tokenize(parts[1]),
+                        "body": [],
+                    })
+                else:
+                    self.docs_fields.append({
+                        "title": tokenize(text),
+                        "description": [],
+                        "body": [],
+                    })
 
     def find_best_vocab_match(self, token: str, cutoff: float = 0.70) -> tuple[str | None, float]:
         """Find the closest vocabulary term using 2-gram candidate filtering + SequenceMatcher."""
@@ -177,14 +387,16 @@ class BM25Index:
         return clean_query, corrections, expanded_terms
 
     def scores(self, query: str) -> np.ndarray:
-        """BM25 score for every article with fuzzy entity matching."""
+        """BM25F score for every article with fuzzy entity matching."""
         result = np.zeros(self.n)
         _, _, expanded_terms = self.normalize_query(query)
         for term, weight in expanded_terms:
             idf = self.idf.get(term, 0.0)
-            for pos, tf in self.postings.get(term, []):
-                length_norm = 1 - self.b + self.b * self.lengths[pos] / self.avg_len
-                result[pos] += weight * idf * tf * (self.k1 + 1) / (tf + self.k1 * length_norm)
+            if idf <= 0.0:
+                continue
+            for pos, tf_tilde in self.postings.get(term, []):
+                # Standard BM25F term saturation on the field-weighted normalized frequency
+                result[pos] += weight * idf * (tf_tilde * (self.k1 + 1.0)) / (tf_tilde + self.k1)
         return result
 
     def query_expand(self, query: str) -> list[str]:
@@ -378,3 +590,87 @@ def reciprocal_rank_fusion(rankings, k: int = config.RRF_K) -> dict:
         for rank, pos in enumerate(ranking, start=1):
             fused[pos] += 1.0 / (k + rank)
     return dict(fused)
+
+
+def select_quota_candidates(
+    bm25_rank: list,
+    dense_rank: list,
+    n_cand: int = config.N_CANDIDATES,
+    k_rrf: int = config.RRF_K,
+    rrf_quota: int = 12,
+    dense_quota: int = 5,
+    bm25_quota: int = 3,
+    strong_dense_cutoff: int = 5,
+    strong_bm25_cutoff: int = 5,
+) -> list:
+    """
+    Quota-governed candidate selection for article-to-article recommendations.
+
+    Shared symmetrically by both live serving (Recommender) and batch ingestion
+    (_precompute_for_article).
+
+    Guarantees:
+      1. RRF top rankings form the core pool (default 12).
+      2. Up to 5 strong Dense-only candidates (ranks 1..strong_dense_cutoff) that
+         have no BM25 overlap are guaranteed entry to the Cross-Encoder.
+      3. Up to 3 strong BM25-only candidates (ranks 1..strong_bm25_cutoff).
+      4. Any unfilled quota positions are safely backfilled by the next highest RRF candidates.
+      5. Final candidate count never exceeds n_cand and contains zero duplicates.
+    """
+    if n_cand <= 0:
+        return []
+
+    # Proportional scaling if n_cand is configured smaller than 20
+    if n_cand < (rrf_quota + dense_quota + bm25_quota):
+        scale = n_cand / 20.0
+        rrf_quota = max(1, int(round(12 * scale)))
+        dense_quota = max(1, int(round(5 * scale)))
+        bm25_quota = max(1, int(round(3 * scale)))
+
+    fused = reciprocal_rank_fusion([bm25_rank, dense_rank], k=k_rrf)
+    rrf_sorted = sorted(fused, key=fused.get, reverse=True)
+
+    bm25_set = set(bm25_rank)
+    dense_set = set(dense_rank)
+
+    selected = []
+    seen = set()
+
+    # 1. Top RRF quota
+    for pos in rrf_sorted:
+        if len(selected) >= rrf_quota or len(selected) >= n_cand:
+            break
+        if pos not in seen:
+            selected.append(pos)
+            seen.add(pos)
+
+    # 2. Strong Dense-only quota (restricted to strong dense ranks 1..strong_dense_cutoff)
+    dense_added = 0
+    for pos in dense_rank[:strong_dense_cutoff]:
+        if dense_added >= dense_quota or len(selected) >= n_cand:
+            break
+        if pos not in bm25_set and pos not in seen:
+            selected.append(pos)
+            seen.add(pos)
+            dense_added += 1
+
+    # 3. Strong BM25-only quota (restricted to strong BM25 ranks 1..strong_bm25_cutoff)
+    bm25_added = 0
+    for pos in bm25_rank[:strong_bm25_cutoff]:
+        if bm25_added >= bm25_quota or len(selected) >= n_cand:
+            break
+        if pos not in dense_set and pos not in seen:
+            selected.append(pos)
+            seen.add(pos)
+            bm25_added += 1
+
+    # 4. Backfill remaining positions from next best RRF
+    if len(selected) < n_cand:
+        for pos in rrf_sorted:
+            if len(selected) >= n_cand:
+                break
+            if pos not in seen:
+                selected.append(pos)
+                seen.add(pos)
+
+    return selected[:n_cand]
