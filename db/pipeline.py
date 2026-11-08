@@ -56,15 +56,16 @@ def _focused_query(row, bm25) -> str:
 def _load_full_corpus(db):
     """
     Load EVERY stored article (already-existing + just-ingested) into pipeline
-    records plus an aligned 768-d embedding matrix.
+    records plus an aligned 384-d embedding matrix.
 
     Doing this is what lets a newly uploaded article retrieve neighbours from the
     whole database instead of only from the batch it arrived in.
     """
     arts = db.query(Article).order_by(Article.date.desc().nulls_last()).all()
     records = ArticleRepository.corpus_rows(arts)
-    vectors = [a.embedding if a.embedding is not None else [0.0] * 768 for a in arts]
-    emb = np.asarray(vectors, dtype=np.float32) if vectors else np.zeros((0, 768), dtype=np.float32)
+    dim = config.EMBEDDING_DIM
+    vectors = [a.embedding if a.embedding is not None else [0.0] * dim for a in arts]
+    emb = np.asarray(vectors, dtype=np.float32) if vectors else np.zeros((0, dim), dtype=np.float32)
     return records, emb, {r["id"]: pos for pos, r in enumerate(records)}
 
 

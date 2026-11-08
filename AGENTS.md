@@ -63,8 +63,9 @@ Otherwise → live in-memory `Recommender`.
 ### `config.py` — single source of tunables (160 lines)
 | Key | Value | Notes |
 |---|---|---|
-| `EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | 768-d, L2-normalised |
-| `EMBEDDING_REVISION` | pinned SHA `a5beb1e3…` | env `NEWSREC_EMBED_REVISION` |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | 384-d, L2-normalised (Pipeline C) |
+| `EMBEDDING_DIM` | `384` | vector dimension |
+| `EMBEDDING_REVISION` | pinned SHA `5c38ec7c…` | env `NEWSREC_EMBED_REVISION` |
 | `RERANKER_MODEL` | `BAAI/bge-reranker-base` | cross-encoder |
 | `RERANKER_REVISION` | pinned SHA `2cfc18c9…` | env `NEWSREC_RERANK_REVISION` |
 | `EMBED_MAX_SEQ_LEN` | `256` | embedding token cap |
@@ -243,7 +244,7 @@ Pure functions, no DB, no model. Added 2026-10-26 (Change 13) because `db/pipeli
 `subsection`, `date` (TZ), `url`, `image`, `is_live`, `page_views`, `unique_users`,
 `linked_ids` (JSON string), `text_embed`, `text_bm25`, `text_rerank`,
 `embed_token_count`, `rerank_token_count`, `is_truncated`, `recipe_version`,
-`embedding` **vector(768)**, `created_at`, `updated_at`.
+`embedding` **vector(384)**, `created_at`, `updated_at`.
 Indexes: `articles_pkey(id)`, `ix_articles_id`, `ix_articles_section`, `ix_articles_date`.
 
 **`article_recommendations`** — `id` SERIAL PK, `article_id` FK→articles CASCADE,

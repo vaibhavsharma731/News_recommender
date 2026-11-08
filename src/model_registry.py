@@ -65,7 +65,7 @@ class RemoteEmbedderClient:
         is_single = isinstance(texts, str)
         batch = [texts] if is_single else list(texts)
         if not batch:
-            return np.zeros((0, 768), dtype=np.float32)
+            return np.zeros((0, config.EMBEDDING_DIM), dtype=np.float32)
 
         try:
             results = []
@@ -83,6 +83,12 @@ class RemoteEmbedderClient:
                     results.extend(data["vectors"])
 
             arr = np.asarray(results, dtype=np.float32)
+            # Verify dimension to ensure remote worker is not returning incompatible vectors
+            if arr.ndim == 2 and arr.shape[1] != config.EMBEDDING_DIM:
+                raise ValueError(
+                    f"Remote embedder returned dimension {arr.shape[1]}, expected {config.EMBEDDING_DIM} "
+                    f"({self.model_name}). Incompatible remote worker."
+                )
             return arr[0] if is_single else arr
         except Exception as e:
             print(f"[ModelRegistry Warning] Remote embedder call failed ({e}). Falling back to local model.")

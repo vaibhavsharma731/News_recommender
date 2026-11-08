@@ -870,7 +870,7 @@ def run_evaluation_suite(
                             "text_bm25": a.text_bm25 or f"{a.title}. {a.title}. {a.title}. {a.description or ''}. {a.body or ''}",
                             "text_rerank": a.text_rerank or f"{a.title}. {a.description or ''}.",
                         })
-                        vecs.append(a.embedding if a.embedding is not None else [0.0] * 768)
+                        vecs.append(a.embedding if a.embedding is not None else [0.0] * config.EMBEDDING_DIM)
 
                     df = pd.DataFrame(rows)
                     stored_vectors = np.asarray(vecs, dtype=np.float32)

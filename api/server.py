@@ -95,8 +95,9 @@ def reload_engine_from_postgres():
                 # Same fallback the ingestion pipeline uses: an article without a
                 # stored vector contributes nothing to the dense branch (zero cosine)
                 # instead of forcing the whole corpus to be re-embedded.
+                dim = config.EMBEDDING_DIM
                 vectors = np.asarray(
-                    [a.embedding if a.embedding is not None else [0.0] * 768 for a in arts],
+                    [a.embedding if a.embedding is not None else [0.0] * dim for a in arts],
                     dtype=np.float32,
                 )
 

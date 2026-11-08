@@ -356,7 +356,7 @@ window.Evaluator = (() => {
           <div class="eval-detail-row">
             <span class="eval-detail-label">Dense Vector Cosine (Semantic Alignment):</span>
             <div class="eval-detail-val">${cosDisplay}</div>
-            <div class="eval-calib-note">Evaluated using 768-dimensional BGE embeddings against random-pair background distribution. Displayed as alignment band and empirical percentile.</div>
+            <div class="eval-calib-note">Evaluated using 384-dimensional BGE embeddings against random-pair background distribution. Displayed as alignment band and empirical percentile.</div>
           </div>
 
           <!-- BM25 Terms -->

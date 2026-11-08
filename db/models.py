@@ -18,6 +18,7 @@ from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
 
 from .connection import Base
+import config
 
 
 class Article(Base):
@@ -49,8 +50,8 @@ class Article(Base):
     is_truncated = Column(Boolean, default=False)
     recipe_version = Column(String(32), nullable=True)
 
-    # BAAI/bge-base-en-v1.5 produces 768-dimensional dense vector embeddings
-    embedding = Column(Vector(768), nullable=True)
+    # BAAI/bge-small-en-v1.5 produces 384-dimensional dense vector embeddings
+    embedding = Column(Vector(config.EMBEDDING_DIM), nullable=True)
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

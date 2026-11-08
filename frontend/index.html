@@ -91,7 +91,7 @@
         <div class="editor-hero-header">
           <div class="editor-hero-title">
             <h1><span>✍️</span> Editor Neural Pipeline &amp; Database Studio</h1>
-            <p>Upload news CSV datasets, run automated cleaning, generate 768d dense vectors, and precompute top-10 recommendations directly into PostgreSQL.</p>
+            <p>Upload news CSV datasets, run automated cleaning, generate 384d dense vectors, and precompute top-10 recommendations directly into PostgreSQL.</p>
           </div>
           <div style="display:flex;gap:10px;">
             <button class="btn btn-secondary" id="init-db-btn" style="font-size:0.82rem;padding:8px 14px;">
@@ -122,7 +122,7 @@
           </div>
           <div class="editor-stat-card">
             <div class="stat-icon">🧬</div>
-            <div class="stat-label">768d Vector Embeddings</div>
+            <div class="stat-label">384d Vector Embeddings</div>
             <div class="stat-value" id="db-total-vectors">—</div>
           </div>
           <div class="editor-stat-card">
@@ -213,7 +213,7 @@
             <div class="pipeline-connector">➜</div>
             <div class="pipeline-node" id="node-embed">
               <span class="node-icon">🧬</span>
-              <span class="node-title">4. 768d Vectors</span>
+              <span class="node-title">4. 384d Vectors</span>
               <span class="node-sub">pgvector Embeddings</span>
               <span class="node-status">Waiting</span>
             </div>

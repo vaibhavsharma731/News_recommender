@@ -37,8 +37,9 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 # Set the environment variable NEWSREC_NEURAL=0 to skip them and use the light TF-IDF mode.
 USE_NEURAL_MODELS = os.getenv("NEWSREC_NEURAL", "1") == "1"
-EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
-EMBEDDING_REVISION = os.getenv("NEWSREC_EMBED_REVISION", "a5beb1e3e68b9ab74eb54cfd186867f64f240e1a")
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+EMBEDDING_REVISION = os.getenv("NEWSREC_EMBED_REVISION", "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a")
+EMBEDDING_DIM = 384           # Native vector dimensions for BGE-small
 RERANKER_MODEL = os.getenv("NEWSREC_RERANKER", "BAAI/bge-reranker-base")
 RERANKER_REVISION = os.getenv("NEWSREC_RERANK_REVISION", "2cfc18c9415c912f9d8155881c133215df768a70")
 EMBED_MAX_SEQ_LEN = 256   # same for ingestion AND live search, so vectors are consistent
@@ -100,7 +101,7 @@ TOP_K = 10                  # default number of recommendations
 #   to reduce keyword bias on metaphoric headlines (e.g. Kapil Sharma jail quote).
 WEIGHT_RERANK = 0.55        # cross-encoder (bge-reranker-base)
 WEIGHT_BM25 = 0.15          # lexical keyword match
-WEIGHT_DENSE = 0.30         # semantic embedding (bge-base-en-v1.5)
+WEIGHT_DENSE = 0.30         # semantic embedding (bge-small-en-v1.5 384d)
 
 # --- Diversity (MMR): 1.0 = pure relevance, lower = more variety ---
 # Article-to-article: the MEASURED values, shared by BOTH the ingestion pipeline
@@ -340,6 +341,7 @@ def get_pipeline_version() -> str:
     tokens = [
         f"embed_model={EMBEDDING_MODEL}",
         f"embed_rev={EMBEDDING_REVISION}",
+        f"embed_dim={EMBEDDING_DIM}",
         f"rerank_model={RERANKER_MODEL}",
         f"rerank_rev={RERANKER_REVISION}",
         f"embed_len={EMBED_MAX_SEQ_LEN}",

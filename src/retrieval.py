@@ -457,7 +457,7 @@ class DenseIndex:
                     cache_map[str(h)] = v
             except Exception as e:
                 print(f"[DenseIndex] Warning: Failed to read master cache ({e}), rebuilding.")
-        elif legacy_cache_file.exists() and model_name == getattr(config, "EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5"):
+        elif legacy_cache_file.exists() and model_name == "BAAI/bge-base-en-v1.5":
             # Transparent migration: read legacy cache keyed on sha256(text)
             try:
                 data = np.load(legacy_cache_file)

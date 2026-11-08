@@ -71,14 +71,15 @@ def validate_and_import(export_path: str, force_hash: bool = False):
             )
 
         # 3. Vector & Data Integrity Validation
-        print("\nValidating vectors (Dimension=768, No NaNs, Norm ~= 1.0)...")
+        expected_dim = getattr(config, "EMBEDDING_DIM", 384)
+        print(f"\nValidating vectors (Dimension={expected_dim}, No NaNs, Norm ~= 1.0)...")
         validated_payload = []
         for aid, item in articles_data.items():
             emb = np.asarray(item.get("embedding", []), dtype=np.float32)
 
             # Check dimension
-            if len(emb) != 768:
-                raise ValueError(f"Article {aid} has invalid embedding dimension: {len(emb)} (expected 768).")
+            if len(emb) != expected_dim:
+                raise ValueError(f"Article {aid} has invalid embedding dimension: {len(emb)} (expected {expected_dim}).")
 
             # Check NaNs and Infs
             if np.isnan(emb).any() or np.isinf(emb).any():

@@ -288,7 +288,7 @@ const Editor = (() => {
               const refreshText = refreshed > 0
                 ? ` Also refreshed recommendations for ${refreshed} previously uploaded article(s).`
                 : ' No existing articles needed refreshing.';
-              summary.textContent = `Indexed ${job.total_articles} articles in PostgreSQL with 768d vectors and top-10 precomputed recommendations.${refreshText}`;
+              summary.textContent = `Indexed ${job.total_articles} articles in PostgreSQL with 384d vectors and top-10 precomputed recommendations.${refreshText}`;
             }
           }
 
@@ -402,7 +402,7 @@ const Editor = (() => {
       }
       if (vecBadge) {
         vecBadge.className = data.pgvector_ready ? 'stat-badge ready' : 'stat-badge warning';
-        vecBadge.innerHTML = data.pgvector_ready ? '⚡ pgvector Ready (768d)' : '⚠️ Extension Missing';
+        vecBadge.innerHTML = data.pgvector_ready ? '⚡ pgvector Ready (384d)' : '⚠️ Extension Missing';
       }
       if (totalArts) totalArts.textContent = (data.total_articles || 0).toLocaleString();
       if (totalVecs) totalVecs.textContent = (data.embedded_articles || 0).toLocaleString();
