@@ -257,17 +257,53 @@ def _result_json(result, method: str) -> dict:
 # ─── API Routes ──────────────────────────────────────────────────────────────
 
 @app.get("/api/status")
-def status():
+def status(pipeline: str = Query("384d")):
     """Engine health-check + metadata directly from PostgreSQL."""
-    total = int(len(articles)) if not articles.empty else 0
-    secs = sorted(articles["section"].dropna().unique().tolist()) if not articles.empty else []
+    m_ver = pipeline.lower()
+    if m_ver == "768d":
+        with SessionLocal() as db:
+            total = ArticleRepository.count_articles(db, model_version="768d")
+            total_recs = ArticleRepository.count_total_recommendations(db, model_version="768d")
+            secs = ArticleRepository.get_sections(db, model_version="768d")
+        return {
+            "engine": "PostgreSQL Archive (BGE-Base 768D)",
+            "pipeline": "768d",
+            "total_articles": total,
+            "total_recommendations": total_recs,
+            "database_empty": total == 0,
+            "methods": METHODS,
+            "sections": secs,
+            "notes": ["Historical Strategy E (768D) archive loaded (41,770 precomputed recommendations)."],
+            "config": {
+                "top_k":        config.TOP_K,
+                "n_retrieve":   config.N_RETRIEVE,
+                "n_candidates": config.N_CANDIDATES,
+                "mmr_lambda":   config.MMR_LAMBDA,
+                "use_neural":   config.USE_NEURAL_MODELS,
+            },
+            "fallback": {
+                "min_related": config.FALLBACK_MIN_RELATED,
+                "limit":       config.FALLBACK_LIMIT,
+                "requests":    _fallback_stats["requests"],
+                "triggered":   _fallback_stats["triggered"],
+                "items_served": _fallback_stats["items"],
+                "rate":        (round(_fallback_stats["triggered"] / _fallback_stats["requests"], 4)
+                                if _fallback_stats["requests"] else None),
+            },
+        }
+
+    # 384D Active Pipeline (default)
+    with SessionLocal() as db:
+        total = ArticleRepository.count_articles(db, model_version="384d")
+        secs = ArticleRepository.get_sections(db, model_version="384d")
     return {
-        "engine":         rec.engine_summary if rec else "PostgreSQL Storage (Awaiting Dataset Ingestion)",
+        "engine": rec.engine_summary if (rec and total > 0) else "PostgreSQL Engine (Pipeline C - 384D BGE-Small)",
+        "pipeline": "384d",
         "total_articles": total,
         "database_empty": total == 0,
         "methods":        METHODS,
         "sections":       secs,
-        "notes":          rec.notes if rec else ["PostgreSQL is active. Upload a dataset in Editor Studio to index articles."],
+        "notes":          rec.notes if (rec and total > 0) else ["Pipeline C (384D) is active. Currently empty; ready for dataset ingestion in Editor Studio."],
         "config": {
             "top_k":        config.TOP_K,
             "n_retrieve":   config.N_RETRIEVE,
@@ -275,8 +311,6 @@ def status():
             "mmr_lambda":   config.MMR_LAMBDA,
             "use_neural":   config.USE_NEURAL_MODELS,
         },
-        # Live measurement of technique 4: how often the related list came back thin
-        # enough to need a "Trending in <section>" block, since process start.
         "fallback": {
             "min_related": config.FALLBACK_MIN_RELATED,
             "limit":       config.FALLBACK_LIMIT,
@@ -295,59 +329,73 @@ def get_articles(
     per_page: int = Query(20, ge=1, le=100),
     section: str = Query(""),
     sort: str = Query("date"),
+    pipeline: str = Query("384d"),
 ):
     """Return a paginated list of articles from PostgreSQL.
 
-    ``sort`` may be ``"date"`` (default) or ``"confidence"`` — the latter ranks
-    articles by the average score of their precomputed recommendations so the
-    strongest-recommendation stories come first.
+    Supports querying active 384D pipeline or 768D historical archive.
     """
+    m_ver = pipeline.lower()
     try:
         with SessionLocal() as db:
-            total = ArticleRepository.count_articles(db)
+            total = ArticleRepository.count_articles(db, model_version=m_ver, section=section or None)
             if total == 0:
                 return {
                     "total": 0,
                     "page": page,
                     "per_page": per_page,
                     "articles": [],
-                    "database_empty": True
+                    "database_empty": True,
+                    "pipeline": m_ver,
                 }
             start = (page - 1) * per_page
             if sort == "confidence":
                 arts = ArticleRepository.list_articles_ranked_by_confidence(
-                    db, limit=per_page, offset=start, section=section or None
+                    db, limit=per_page, offset=start, section=section or None, model_version=m_ver
                 )
             else:
                 arts = ArticleRepository.list_articles(
-                    db, limit=per_page, offset=start, section=section or None
+                    db, limit=per_page, offset=start, section=section or None, model_version=m_ver
                 )
             return {
                 "total": total,
                 "page": page,
                 "per_page": per_page,
                 "articles": [a.to_dict() for a in arts],
-                "database_empty": False
+                "database_empty": False,
+                "pipeline": m_ver,
             }
     except Exception as e:
         print(f"Error listing articles: {e}")
-        return {"total": 0, "page": page, "per_page": per_page, "articles": [], "error": str(e)}
+        return {"total": 0, "page": page, "per_page": per_page, "articles": [], "error": str(e), "pipeline": m_ver}
 
 
 @app.get("/api/articles/trending")
-def trending(n: int = Query(6, ge=1, le=20)):
+def trending(n: int = Query(6, ge=1, le=20), pipeline: str = Query("384d")):
     """Return top-N most recent articles directly from PostgreSQL."""
+    m_ver = pipeline.lower()
     try:
         with SessionLocal() as db:
-            arts = ArticleRepository.list_articles(db, limit=n)
-            return {"articles": [a.to_dict() for a in arts]}
+            arts = ArticleRepository.list_articles(db, limit=n, model_version=m_ver)
+            return {"articles": [a.to_dict() for a in arts], "pipeline": m_ver}
     except Exception as e:
-        return {"articles": []}
+        return {"articles": [], "pipeline": m_ver}
 
 
 @app.get("/api/articles/{article_id}")
-def get_article(article_id: str):
+def get_article(article_id: str, pipeline: str = Query("384d")):
     """Fetch a single article by ID directly from PostgreSQL."""
+    m_ver = pipeline.lower()
+    try:
+        with SessionLocal() as db:
+            art = ArticleRepository.get_article(db, str(article_id), model_version=m_ver)
+            if not art:
+                raise HTTPException(status_code=404, detail="Article not found")
+            return art.to_dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     try:
         with SessionLocal() as db:
             art = ArticleRepository.get_article(db, str(article_id))
@@ -468,15 +516,16 @@ def recommend(body: RecommendRequest):
 
 
 @app.get("/api/sections")
-def sections():
+def sections(pipeline: str = Query("384d")):
     """Return all distinct section names directly from PostgreSQL."""
+    m_ver = pipeline.lower()
     try:
         with SessionLocal() as db:
-            secs = ArticleRepository.get_sections(db)
-            return {"sections": secs}
+            secs = ArticleRepository.get_sections(db, model_version=m_ver)
+            return {"sections": secs, "pipeline": m_ver}
     except Exception:
         secs = sorted(articles["section"].dropna().unique().tolist()) if not articles.empty and "section" in articles.columns else []
-        return {"sections": secs}
+        return {"sections": secs, "pipeline": m_ver}
 
 
 # ─── Serve Frontend Static Files ────────────────────────────────────────────

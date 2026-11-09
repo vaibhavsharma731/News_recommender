@@ -27,24 +27,28 @@ const Api = (() => {
   }
 
   /** Engine status + config */
-  async function status() {
-    return _fetch('/status');
+  async function status(pipeline = '') {
+    const pl = pipeline || (typeof State !== 'undefined' ? State.get().modelVersion : '384d') || '384d';
+    return _fetch(`/status?pipeline=${encodeURIComponent(pl)}`);
   }
 
   /** Trending / hero articles */
-  async function trending(n = 6) {
-    return _fetch(`/articles/trending?n=${n}`);
+  async function trending(n = 6, pipeline = '') {
+    const pl = pipeline || (typeof State !== 'undefined' ? State.get().modelVersion : '384d') || '384d';
+    return _fetch(`/articles/trending?n=${n}&pipeline=${encodeURIComponent(pl)}`);
   }
 
   /** Paginated article list */
-  async function articles({ page = 1, perPage = 20, section = '', sort = 'date' } = {}) {
-    const params = new URLSearchParams({ page, per_page: perPage, section, sort });
+  async function articles({ page = 1, perPage = 20, section = '', sort = 'date', pipeline = '' } = {}) {
+    const pl = pipeline || (typeof State !== 'undefined' ? State.get().modelVersion : '384d') || '384d';
+    const params = new URLSearchParams({ page, per_page: perPage, section, sort, pipeline: pl });
     return _fetch(`/articles?${params}`);
   }
 
   /** All sections */
-  async function sections() {
-    return _fetch('/sections');
+  async function sections(pipeline = '') {
+    const pl = pipeline || (typeof State !== 'undefined' ? State.get().modelVersion : '384d') || '384d';
+    return _fetch(`/sections?pipeline=${encodeURIComponent(pl)}`);
   }
 
   /**

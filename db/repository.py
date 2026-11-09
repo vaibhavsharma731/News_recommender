@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from .models import Article, ArticleRecommendation, ArticleRecommendation768D, IngestionJob
+from .models import Article, Article768D, ArticleRecommendation, ArticleRecommendation768D, IngestionJob
 from src.scoring import parse_ids
 
 
@@ -19,12 +19,17 @@ class ArticleRepository:
     # Article CRUD
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
-    def get_article(db: Session, article_id: str) -> Optional[Article]:
-        return db.query(Article).filter(Article.id == article_id).first()
+    def get_article(db: Session, article_id: str, model_version: str = "384d") -> Optional[Any]:
+        Model = Article768D if model_version == "768d" else Article
+        return db.query(Model).filter(Model.id == article_id).first()
 
     @staticmethod
-    def count_articles(db: Session) -> int:
-        return db.query(func.count(Article.id)).scalar() or 0
+    def count_articles(db: Session, model_version: str = "384d", section: Optional[str] = None) -> int:
+        Model = Article768D if model_version == "768d" else Article
+        q = db.query(func.count(Model.id))
+        if section:
+            q = q.filter(Model.section.ilike(f"%{section}%"))
+        return q.scalar() or 0
 
     @staticmethod
     def count_embedded_articles(db: Session) -> int:
@@ -36,20 +41,22 @@ class ArticleRepository:
         limit: int = 50,
         offset: int = 0,
         section: Optional[str] = None,
-        search: Optional[str] = None
-    ) -> List[Article]:
-        query = db.query(Article)
+        search: Optional[str] = None,
+        model_version: str = "384d",
+    ) -> List[Any]:
+        Model = Article768D if model_version == "768d" else Article
+        query = db.query(Model)
         if section:
-            query = query.filter(Article.section.ilike(f"%{section}%"))
+            query = query.filter(Model.section.ilike(f"%{section}%"))
         if search:
             search_pattern = f"%{search}%"
             query = query.filter(
                 or_(
-                    Article.title.ilike(search_pattern),
-                    Article.description.ilike(search_pattern)
+                    Model.title.ilike(search_pattern),
+                    Model.description.ilike(search_pattern)
                 )
             )
-        return query.order_by(desc(Article.date).nulls_last()).offset(offset).limit(limit).all()
+        return query.order_by(desc(Model.date).nulls_last()).offset(offset).limit(limit).all()
 
     @staticmethod
     def list_articles_ranked_by_confidence(
@@ -57,35 +64,33 @@ class ArticleRepository:
         limit: int = 50,
         offset: int = 0,
         section: Optional[str] = None,
-    ) -> List[Article]:
+        model_version: str = "384d",
+    ) -> List[Any]:
         """
         List articles ordered by how CONFIDENT their precomputed recommendations are.
-
-        Confidence = the average ``score`` of the article's stored top-10
-        recommendations (the same 0.0-1.0 blend the reader sees as a percentage).
-        Highest first, so stories whose recommendations are strong (70%, 80% …)
-        surface ahead of weak ones (10%, 20% …). Articles with no recommendations
-        sort last; ties fall back to newest-first.
         """
-        confidence = func.coalesce(func.avg(ArticleRecommendation.score), 0.0).label("confidence")
-        rec_count = func.count(ArticleRecommendation.id).label("rec_count")
+        ArtModel = Article768D if model_version == "768d" else Article
+        RecModel = ArticleRecommendation768D if model_version == "768d" else ArticleRecommendation
+        confidence = func.coalesce(func.avg(RecModel.score), 0.0).label("confidence")
+        rec_count = func.count(RecModel.id).label("rec_count")
 
-        query = db.query(Article).outerjoin(
-            ArticleRecommendation, ArticleRecommendation.article_id == Article.id
+        query = db.query(ArtModel).outerjoin(
+            RecModel, RecModel.article_id == ArtModel.id
         )
         if section:
-            query = query.filter(Article.section.ilike(f"%{section}%"))
+            query = query.filter(ArtModel.section.ilike(f"%{section}%"))
         return (
-            query.group_by(Article.id)
-            .order_by(desc(confidence), desc(rec_count), desc(Article.date).nulls_last(), Article.id)
+            query.group_by(ArtModel.id)
+            .order_by(desc(confidence), desc(rec_count), desc(ArtModel.date).nulls_last(), ArtModel.id)
             .offset(offset)
             .limit(limit)
             .all()
         )
 
     @staticmethod
-    def get_sections(db: Session) -> List[str]:
-        results = db.query(Article.section).distinct().filter(Article.section.isnot(None)).all()
+    def get_sections(db: Session, model_version: str = "384d") -> List[str]:
+        Model = Article768D if model_version == "768d" else Article
+        results = db.query(Model.section).distinct().filter(Model.section.isnot(None)).all()
         return sorted([r[0] for r in results if r[0]])
 
     @staticmethod
@@ -96,29 +101,26 @@ class ArticleRepository:
         ref_date=None,
         window_days: float = 7.0,
         limit: int = 5,
-    ) -> List[Article]:
+        model_version: str = "384d",
+    ) -> List[Any]:
         """
         Popular stories from one section, for the graceful-degradation list.
-
-        Deliberately model-free: one indexed query, ordered by real page views.
-        ``window_days`` is measured against the SOURCE article's date, so "recent"
-        means roughly contemporaneous with the story being read rather than newest
-        in the database. Served by ``ix_articles_section_date``.
         """
-        query = db.query(Article).filter(Article.section == section)
+        Model = Article768D if model_version == "768d" else Article
+        query = db.query(Model).filter(Model.section == section)
         ids = [str(i) for i in exclude_ids if i]
         if ids:
-            query = query.filter(Article.id.notin_(ids))
+            query = query.filter(Model.id.notin_(ids))
         if ref_date is not None:
             query = query.filter(
-                Article.date >= ref_date - timedelta(days=window_days),
-                Article.date <= ref_date + timedelta(days=window_days),
+                Model.date >= ref_date - timedelta(days=window_days),
+                Model.date <= ref_date + timedelta(days=window_days),
             )
         return (
             query.order_by(
-                desc(Article.page_views).nulls_last(),
-                desc(Article.date).nulls_last(),
-                Article.id,
+                desc(Model.page_views).nulls_last(),
+                desc(Model.date).nulls_last(),
+                Model.id,
             )
             .limit(limit)
             .all()
@@ -269,10 +271,11 @@ class ArticleRepository:
         If diversify=False, orders by pure relevance (rank_raw / score) without MMR penalty.
         """
         from sqlalchemy import func
+        ArtModel = Article768D if model_version == "768d" else Article
         RecModel = ArticleRecommendation768D if model_version == "768d" else ArticleRecommendation
         order_col = RecModel.rank if diversify else func.coalesce(RecModel.rank_raw, RecModel.rank)
-        recs = db.query(RecModel, Article).join(
-            Article, RecModel.recommended_article_id == Article.id
+        recs = db.query(RecModel, ArtModel).join(
+            ArtModel, RecModel.recommended_article_id == ArtModel.id
         ).filter(
             RecModel.article_id == article_id
         ).order_by(
@@ -294,8 +297,9 @@ class ArticleRepository:
         return results
 
     @staticmethod
-    def count_total_recommendations(db: Session) -> int:
-        return db.query(func.count(ArticleRecommendation.id)).scalar() or 0
+    def count_total_recommendations(db: Session, model_version: str = "384d") -> int:
+        RecModel = ArticleRecommendation768D if model_version == "768d" else ArticleRecommendation
+        return db.query(func.count(RecModel.id)).scalar() or 0
 
     @staticmethod
     def clear_all_data(db: Session) -> Dict[str, int]:

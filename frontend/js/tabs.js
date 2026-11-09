@@ -590,6 +590,16 @@ const Tabs = (() => {
       return;
     }
 
+    const banner = document.getElementById('reader-empty-banner');
+    if (!articles.length) {
+      if (banner) banner.classList.remove('hidden');
+      feed.innerHTML = '';
+      markFeedEnd();
+      return;
+    } else {
+      if (banner) banner.classList.add('hidden');
+    }
+
     const { activeSection } = State.get();
     let list = articles;
     if (activeSection) {
@@ -839,30 +849,43 @@ const Tabs = (() => {
     const btn768 = document.getElementById('btn-model-768d');
     if (!btn384 || !btn768) return;
 
-    function applyModelSwitch(version) {
+    async function applyModelSwitch(version) {
       State.set({ modelVersion: version });
       btn384.classList.toggle('active', version === '384d');
       btn768.classList.toggle('active', version === '768d');
 
       const modelLabel = version === '768d' ? 'BGE-Base (768D Archive)' : 'Pipeline C (384D BGE-Small)';
       if (typeof showToast === 'function') {
-        showToast(`Switched precomputed model to ${modelLabel}`, 'info');
+        showToast(`Switched view to ${modelLabel}`, 'info');
       }
 
-      // Invalidate and reload recommendations for all rendered feed widgets
-      const feed = document.getElementById('article-feed');
-      if (feed) {
-        const widgets = feed.querySelectorAll('.orbit-widget');
-        widgets.forEach(w => {
-          w.dataset.loaded = 'false';
-          const stage = w.querySelector('.orbit-stage');
-          if (stage) {
-            stage.querySelectorAll('.orbit-slot').forEach(s => { s.innerHTML = ''; });
-          }
-          // Reload
-          loadWidgetRecommendations(w);
-        });
+      // 1. Refresh database state & UI banners for selected pipeline
+      if (typeof window.checkReaderDatabaseState === 'function') {
+        await window.checkReaderDatabaseState();
       }
+
+      // 2. Refresh sections and category pills for selected pipeline
+      try {
+        const sectionsData = await Api.sections(version);
+        const sections = sectionsData.sections || [];
+        populateCategoryPills(sections);
+        const secFilter = document.getElementById('section-filter');
+        if (secFilter) {
+          secFilter.innerHTML = '<option value="">All</option>';
+          sections.forEach(sec => {
+            const opt = document.createElement('option');
+            opt.value = sec;
+            opt.textContent = sec.charAt(0).toUpperCase() + sec.slice(1);
+            secFilter.appendChild(opt);
+          });
+        }
+      } catch (e) {
+        console.warn('Failed to refresh sections for switched pipeline:', e);
+      }
+
+      // 3. Clear cache and completely rebuild feed for the selected pipeline
+      allArticlesCache = [];
+      buildFeed();
     }
 
     btn384.addEventListener('click', () => applyModelSwitch('384d'));
@@ -968,7 +991,7 @@ const Tabs = (() => {
 
   return {
     init, switchTab, performSearch, populateArticlePicker, buildFeed, reloadCurrentTab,
-    populateCategoryPills, selectCategory,
+    populateCategoryPills, selectCategory, applyModelSwitch,
     // Exposed so a widget can be rendered directly (the editor preview and the
     // render checks build one halo without booting the whole feed).
     buildFeedWidget, renderWidgetRecs,

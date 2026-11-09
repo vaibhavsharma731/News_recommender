@@ -452,13 +452,35 @@
         <!-- ── MAIN CONTENT ── -->
         <main class="main-content">
 
+          <!-- Global Pipeline Model Switcher Bar: 384D Active vs 768D Archive -->
+          <div class="model-selection-bar" id="model-selection-bar">
+            <span class="model-selection-label">Pipeline Dataset:</span>
+            <div class="model-toggle-group">
+              <button type="button" class="model-toggle-btn active" data-model="384d" id="btn-model-384d" title="Switch to Pipeline C (384D BGE-Small - Active Pipeline)">
+                <span class="btn-icon">⚡</span>
+                <span class="btn-text">Pipeline C (384D BGE-Small)</span>
+                <span class="btn-tag active">Active New</span>
+              </button>
+              <button type="button" class="model-toggle-btn" data-model="768d" id="btn-model-768d" title="Switch to previous BGE-Base 768D precomputed archive">
+                <span class="btn-icon">📦</span>
+                <span class="btn-text">BGE-Base (768D Archive)</span>
+                <span class="btn-tag archive">4,177 stories</span>
+              </button>
+            </div>
+          </div>
+
           <!-- Database Empty Banner in Reader Mode -->
           <div class="reader-empty-banner hidden" id="reader-empty-banner">
-            <h2>PostgreSQL Database is Empty</h2>
-            <p>No articles have been indexed into PostgreSQL yet. Switch to the Editor Studio to upload or ingest your news dataset.</p>
-            <button class="btn btn-primary" id="btn-empty-goto-editor">
-              ✍️ Go to Editor Studio to Ingest Articles
-            </button>
+            <h2>Pipeline C (384D) Database is Empty</h2>
+            <p>No articles have been indexed into the new 384D pipeline yet. You can upload fresh news batches in the Editor Studio, or explore the 4,177 precomputed stories in the 768D historical archive.</p>
+            <div style="display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;justify-content:center;">
+              <button class="btn btn-primary" id="btn-empty-goto-editor">
+                ✍️ Go to Editor Studio to Ingest Articles
+              </button>
+              <button type="button" class="btn btn-secondary" id="btn-empty-switch-768d" style="background:rgba(245,158,11,0.18);color:#fbbf24;border:1px solid rgba(245,158,11,0.4);font-weight:600;">
+                📦 Switch to 768D Archive View (4,177 stories)
+              </button>
+            </div>
           </div>
 
           <!-- Hero Carousel -->
@@ -496,23 +518,6 @@
                   Item-to-Item Recommendations
                 </h2>
                 <p class="panel-sub">Stories are ordered by recommendation confidence — the strongest matches (highest average %) appear first. Scroll for more; the ⚡/🛰️ chip shows whether each block was served precomputed or live.</p>
-              </div>
-            </div>
-
-            <!-- Model Switcher: 384D vs 768D Archive -->
-            <div class="model-selection-bar" id="model-selection-bar">
-              <span class="model-selection-label">Precomputed Model:</span>
-              <div class="model-toggle-group">
-                <button type="button" class="model-toggle-btn active" data-model="384d" id="btn-model-384d" title="Switch to Pipeline C (384D BGE-Small)">
-                  <span class="btn-icon">⚡</span>
-                  <span class="btn-text">Pipeline C (384D BGE-Small)</span>
-                  <span class="btn-tag active">Active</span>
-                </button>
-                <button type="button" class="model-toggle-btn" data-model="768d" id="btn-model-768d" title="Switch to previous BGE-Base 768D precomputed archive">
-                  <span class="btn-icon">📦</span>
-                  <span class="btn-text">BGE-Base (768D Archive)</span>
-                  <span class="btn-tag archive">41k precomputed</span>
-                </button>
               </div>
             </div>
 

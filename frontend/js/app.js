@@ -338,10 +338,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     const readerView = document.getElementById('reader-view');
     const readerEmptyBanner = document.getElementById('reader-empty-banner');
     const btnEmptyGotoEditor = document.getElementById('btn-empty-goto-editor');
+    const btnEmptySwitch768d = document.getElementById('btn-empty-switch-768d');
+
+    if (btnEmptySwitch768d) {
+      btnEmptySwitch768d.addEventListener('click', () => {
+        if (typeof Tabs.applyModelSwitch === 'function') {
+          Tabs.applyModelSwitch('768d');
+        }
+      });
+    }
 
     async function checkReaderDatabaseState() {
       try {
-        statusData = await Api.status();
+        const curPl = (typeof State !== 'undefined' ? State.get().modelVersion : '384d') || '384d';
+        statusData = await Api.status(curPl);
         State.set({ engineInfo: statusData });
         if (engineNameEl) engineNameEl.textContent = statusData.engine || 'RecSys v1.0';
         if (totalArticlesEl) {
@@ -363,6 +373,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (similarPanel) similarPanel.style.display = isDbEmpty ? 'none' : '';
       return !isDbEmpty;
     }
+
+    window.checkReaderDatabaseState = checkReaderDatabaseState;
 
     async function setAppRole(role) {
       const isEditor = role === 'editor';
