@@ -1,168 +1,165 @@
-# 📰 AI News Recommender
+# 📰 Indian Express AI News Recommendation Platform (NewsRec v2.0)
 
-Give it an article (or a few words like "flight crash") and it returns the most related
-articles from the dataset, with a match score and a "why recommended" line.
+> **High-Precision Multi-Modal News Recommendation System**  
+> Powered by **FastAPI + PostgreSQL/pgvector + BGE-Small (384-D) + BGE Cross-Encoder + Okapi BM25**.
 
-## Quick start
+---
+
+## ⚡ Overview
+
+The **NewsRec v2.0** engine delivers real-time, personalized, and editorially grounded news recommendations for the *Indian Express* digital newsroom.
+
+It combines lexical keyword retrieval (**Okapi BM25**), dense semantic vector retrieval (**BAAI/bge-small-en-v1.5, 384-D**), and a deep Transformer Cross-Encoder reranker (**BAAI/bge-reranker-base**) into a unified ranking cascade with editorial boosting, Maximum Marginal Relevance (MMR) diversification, and Platt-scaled calibrated confidence scores.
+
+### Key Architectural Highlights
+
+- **384-Dimensional Dense Embeddings (Pipeline C)**: Migrated from 768-D to 384-D (`BAAI/bge-small-en-v1.5`), yielding a **50% storage reduction**, **2× faster vector scans**, and sharper topical clustering without semantic drift.
+- **Candidate Quota Architecture (12 RRF + 5 Dense + 3 BM25)**: Ensures balanced multi-modal representation across cross-encoder scoring pools, preventing dense or lexical mono-cultures.
+- **Calibrated Tri-Modal Scoring Blend**:
+  $$\text{Relevance} = 0.55 \cdot \text{Reranker}_{\text{prob}} + 0.15 \cdot \text{BM25}_{\text{norm}} + 0.30 \cdot \text{Dense}_{\text{norm}}$$
+- **Strategy E Beat-Aware Domain Multipliers**: Distinguishes **Umbrella beats** (e.g. *cities*, *world*, *india*) from **Focused beats** (e.g. *explained*, *business*, *technology*, *lifestyle*), preventing local municipal drift while reinforcing domain-specific reporting depth.
+- **Signal Corroboration**: Evaluates multi-modal signal consensus (BM25, Dense, Cross-Encoder) to award agreement adjustments (1 to 3 signals corroborated).
+- **Dual Pipeline Reader View**: Seamlessly switch between the **Active 384-D Engine** and the **Historical 768-D Archive** directly from the frontend UI with category-filtered reader exploration.
+- **Reverse-Push Incremental Ingestion**: When new batches are uploaded, old articles are automatically and symmetrically refreshed without requiring a full corpus rebuild.
+
+---
+
+## 🚀 Quick Start
+
+### 1. Environment Setup
 
 ```bash
-cd news_recommender
-python -m venv venv && source venv/bin/activate      # Windows: venv\Scripts\activate
+# Clone the repository
+git clone https://github.com/vaibhavsharma731/News_recommender.git
+cd News_recommender
+
+# Create and activate Python virtual environment
+python -m venv venv
+# On Windows PowerShell:
+venv\Scripts\Activate.ps1
+# On Linux/macOS:
+source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
+```
+
+### 2. Database Configuration
+
+Ensure PostgreSQL (with the `pgvector` extension) is running. Configure your connection in `.env`:
+
+```env
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/news_recommender
+NEWSREC_NEURAL=1
+```
+
+### 3. Launch Server
+
+```bash
 python api/server.py
 ```
 
-Open **http://localhost:5000** in your browser. The frontend is served automatically by FastAPI.
+Open **http://localhost:5000** in your web browser. The modern vanilla JS frontend is served automatically by FastAPI.
 
-The **first run downloads two models (~1.5 GB, needs internet once)** and embeds all articles
-(about a minute on CPU). Embeddings are cached in `data/cache/`, so later starts are instant.
+> **Lightweight Fallback (No GPU / No Neural Downloads)**:  
+> If you wish to run in lightweight mode without downloading PyTorch neural models:
+> ```bash
+> $env:NEWSREC_NEURAL="0"; python api/server.py
+> ```
 
-> **Datasets are not distributed with this repository.** News article corpora are not published
-> here, so a fresh clone has code but no articles. Supply your own CSV and ingest it through the
-> editor upload screen or `POST /api/db/upload-csv` before the reader view has anything to show.
+---
 
-No internet or short on disk? Run in light mode (TF-IDF, no downloads, lower quality):
+## ⚙️ Core Tunables & Configuration (`config.py`)
 
-```bash
-# Linux / Mac
-NEWSREC_NEURAL=0 python api/server.py
+All production hyperparameters are centrally controlled in [`config.py`](file:///d:/indian%20express/Recommendation%20system/news%20recommender%20base/config.py):
 
-# Windows PowerShell
-$env:NEWSREC_NEURAL="0"; python api/server.py
+| Parameter | Current Value | Description |
+|---|:---:|---|
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | 384-d unit-normalized dense embeddings (pinned SHA `5c38ec7c...`) |
+| `EMBEDDING_DIM` | `384` | Dense vector dimension stored in PostgreSQL `vector(384)` |
+| `RERANKER_MODEL` | `BAAI/bge-reranker-base` | Transformer Cross-Encoder for pair scoring (pinned SHA `2cfc18c9...`) |
+| `WEIGHT_RERANK` | `0.55` | Primary weight assigned to Cross-Encoder probability |
+| `WEIGHT_BM25` | `0.15` | Weight for Okapi BM25 keyword score |
+| `WEIGHT_DENSE` | `0.30` | Weight for dense cosine similarity |
+| `N_RETRIEVE` | `50` | Initial retrieval candidate count per branch |
+| `N_CANDIDATES` | `20` | Total candidates fed into the Cross-Encoder |
+| `RRF_K` | `60` | Reciprocal Rank Fusion smoothing constant |
+| `TOP_K` | `10` | Final recommendations surfaced to readers |
+| `MMR_LAMBDA` | `0.91` | Diversity trade-off parameter (relevance vs novelty) |
+| `MMR_THETA` | `0.76` | Cosine similarity threshold for MMR diversity penalty |
+| `SECTION_BOOST_FOCUSED` | `1.10` | Same-section multiplier for focused vertical beats (+10%) |
+| `SECTION_BOOST_UMBRELLA` | `1.02` | Same-section multiplier for umbrella/city beats (+2%) |
+| `SUBSECTION_BOOST_FOCUSED` | `1.05` | Same-subsection multiplier for focused beats (+5%) |
+| `POPULARITY_BOOST_MULT` | `1.015` | Log-scaled page view popularity boost (+1.5% max) |
+| `RECENCY_MAX_BOOST_MULT` | `1.040` | Source-date recency boost with section-tiered half-lives (+4.0% max) |
+
+---
+
+## 🏗️ Project Layout
+
 ```
-
-The app switches to light mode automatically if the models cannot be loaded.
-
-## Project layout
-
-```
-news_recommender/
+News_recommender/
 ├── api/
-│   ├── __init__.py
-│   ├── server.py            FastAPI backend (REST endpoints + serves frontend)
-│   └── editor_routes.py     Ingestion routes (/api/db: upload, jobs, health)
+│   ├── server.py              # FastAPI endpoints (Dual serving path, precomputed + live fallback)
+│   └── editor_routes.py       # Ingestion endpoints (/api/db: CSV upload, jobs, status)
 ├── db/
-│   ├── connection.py        Engine, env config, idempotent schema migrations
-│   ├── models.py            SQLAlchemy tables (articles, recommendations, jobs)
-│   ├── repository.py        All SQL access
-│   └── pipeline.py          Ingestion + precompute pipeline
+│   ├── connection.py          # SQLAlchemy engine, pooled connections, declarative schema migrations
+│   ├── models.py              # Active 384D (articles, article_recommendations) & 768D archive tables
+│   ├── repository.py          # Unified SQL queries, batch inserts, and trending section lookups
+│   └── pipeline.py            # End-to-end ingestion pipeline, reverse-push, precomputation
 ├── frontend/
-│   ├── index.html           Main HTML shell
-│   ├── css/                 14 modular CSS files (variables, base, layout, etc.)
-│   └── js/                  8 JS modules (api, state, ui, evaluator, hero, tabs, editor, app)
-├── config.py                ALL tunable numbers in one place
-├── evaluate.py              Compare methods + demo queries
-├── requirements.txt
-├── .env.example             Template for DB + model worker settings
-├── PROJECT_HANDOVER_FACTS.md Verified technical handover (architecture, numbers, defects)
-├── data/                    Not shipped. Your CSVs and caches live here (git-ignored)
-└── src/
-    ├── data_loader.py       CSV -> clean table (dedupe, remove boilerplate, build texts)
-    ├── retrieval.py         BM25 keyword search, embedding search, TF-IDF fallback, RRF fusion
-    ├── reranker.py          Cross-encoder that re-scores the best candidates
-    ├── scoring.py           The one scoring/boost/MMR implementation (shared by both paths)
-    ├── evidence.py          Deterministic "why recommended" evidence
-    ├── calibration.py       Platt scaling of scores into confidence bands
-    ├── model_registry.py    Model loading, remote GPU worker client
-    └── recommender.py       The full pipeline, boosts, diversity, explanations
+│   ├── index.html             # Single-page UI shell
+│   ├── css/                   # 14 modular CSS files (tabs, theme, cards, modal, typography)
+│   └── js/                    # Vanilla JS client modules (api, state, tabs, editor, evaluator, app)
+├── src/
+│   ├── data_loader.py         # Authoritative text cleaner: NFKC, dedup, sentence token-budgeting
+│   ├── retrieval.py           # Okapi BM25, Indian-entity fuzzy correction, 384-D DenseIndex, RRF
+│   ├── reranker.py            # Budget-safe Cross-Encoder pair inference (512 token budget)
+│   ├── scoring.py             # Canonical scoring cascade: norm, blend, boost_parts, mmr
+│   ├── evidence.py            # Deterministic, zero-LLM editorial evidence and explainability cards
+│   ├── calibration.py         # Platt scaling calibrator fitting probabilities to confidence bands
+│   └── recommender.py         # In-memory Recommender engine for live search and user history
+├── tests/                     # Comprehensive test suites (Pipeline C migration, Strategy E, regression)
+├── config.py                  # Single source of truth for all pipeline tunables and version hash
+├── evaluate.py                # Standalone evaluation & validation script
+└── requirements.txt           # Production Python dependencies
 ```
 
-Read the code in this order: `config.py` -> `data_loader.py` -> `retrieval.py` -> `reranker.py` -> `scoring.py` -> `recommender.py` -> `api/server.py`.
+---
 
-For a detailed, measured description of every stage, see `PROJECT_HANDOVER_FACTS.md`.
+## 🔄 Dual-Path Recommendation Engine
 
-## How it works
+The system operates on an intelligent **dual-serving path**:
 
-1. **Clean:** duplicate articles are collapsed (latest publish date wins) and repeated boilerplate sentences are removed.
-2. **Two searches:** BM25 (exact words, names) and embeddings (meaning).
-3. **Fuse:** Reciprocal Rank Fusion merges both lists into 20 candidates (`config.N_CANDIDATES`).
-4. **Rerank:** a cross-encoder reads input + candidate together and scores the match.
-5. **Boost (article input only):** small bonus for same section and similar publish time.
-6. **Diversify:** MMR avoids near-identical results.
-7. **Explain:** shared keywords, same section, same time.
+1. **Fast Path (< 5ms)**:
+   - When a user views an article without search filters, recommendations are served directly from the precomputed PostgreSQL table `article_recommendations` (or `article_recommendations_768d` if the reader toggles the 768-D model switcher).
+   - Serves pre-calculated Cross-Encoder scores, calibrated Platt confidence, multi-signal evidence cards, and boost breakdowns instantly.
 
-If the best score is below the threshold in `config.MIN_RELEVANCE`, the UI says
-"no close match found" instead of showing weak results confidently
-(this is what happens for "flight crash", because the dataset has no such article).
+2. **Live Dynamic Path**:
+   - Fires during real-time free-text search queries, user browsing history personalization, or custom section filters.
+   - Executes live Okapi BM25 + in-memory Dense vector scan → RRF → Cross-Encoder reranking → MMR diversification.
 
-## Incremental ingestion (adding articles later)
+---
 
-Each upload stores the new articles and precomputes a top-10 for them. But what about the
-articles that were already there? Their precomputed lists would go stale (they could never
-recommend the new arrivals). The pipeline keeps them fresh with a **reverse push**:
+## 📈 Evaluation & Testing
 
-1. **New articles** are searched against the **whole database** (BM25 + semantic → RRF →
-   top-20 → cross-encoder rerank), not just the uploaded batch. So new articles can
-   recommend old ones.
-2. **Reverse push:** for every new article `N`, we look at the existing articles `O` that
-   `N` was close to. For each such `O` we score `rerank(O, N)` **with `O` as the query**
-   (O-centric), merge it into `O`'s current top-10 (reusing the stored `rerank_score` for
-   `O`'s existing entries), re-apply boosts + MMR and keep the top-10. If `N` is not good
-   enough it is simply ignored, and `O` keeps its old list.
-
-Only old articles that are genuinely close to a new article are touched — the rest are
-left completely alone, so the cost scales with the new batch, not the whole archive.
-
-This is controlled by `config.INCREMENTAL_RECOMMENDATIONS` (default `True`). Passing
-`recompute_all_recommendations=True` to `run_ingestion_pipeline` forces a full rebuild of
-every article's list instead (correct but slower).
-
-Every precomputed row now stores two scores:
-
-| Column | Meaning |
-|---|---|
-| `score` | final blended relevance shown in the UI (0–1) |
-| `rerank_score` | raw cross-encoder probability for this exact (source → recommended) pair, computed O-centrically — the comparable value the reverse push uses |
-
-Existing databases are migrated automatically: `db.connection.ensure_schema()` runs
-`ALTER TABLE article_recommendations ADD COLUMN IF NOT EXISTS rerank_score` on startup and
-before every ingestion.
-
-### Editor visibility into uploads
-
-The Editor dashboard has an **Upload History & Status** panel:
-
-* a summary tile row — total uploads, total articles ingested, total old
-  recommendations refreshed, and failed jobs;
-* one row per upload — when it ran, the file/job id, how many articles it contained,
-  how many **existing** articles the reverse push refreshed, and its status.
-
-During an upload the live pipeline log streams the reverse-push step as its own node
-(`6. Reverse Update`): how many existing articles are being re-scored and a sample of the
-affected article titles. The per-job count is stored in `ingestion_jobs.refreshed_articles`
-(auto-migrated with `ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS refreshed_articles
-INTEGER DEFAULT 0`).
-
-Both the rerank and reverse-update steps show a **time-left that covers the whole job**: the
-rerank ETA adds an estimate of the upcoming reverse pass (`ETA … (incl. ~… reverse)`), and the
-reverse step itself streams a live ETA while it walks the progress bar's final 5% (95% → 100%).
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET`  | `/api/status` | Engine health-check + metadata |
-| `GET`  | `/api/articles` | Paginated article list (query: page, per_page, section, sort=`date`&#124;`confidence`) |
-| `GET`  | `/api/articles/trending` | Top N most recent articles |
-| `GET`  | `/api/articles/{id}` | Single article by ID |
-| `POST` | `/api/recommend` | Unified recommendation (query, article_id, or user_history) |
-| `GET`  | `/api/sections` | All distinct section names |
-
-Interactive API docs available at **http://localhost:5000/docs** (Swagger UI).
-
-## Evaluate
+Run the full evaluation suite:
 
 ```bash
+# Run regression tests and migration verification
+python -m unittest discover tests/
+
+# Run interactive evaluation across beats
 python evaluate.py
 ```
 
-- **Part 1** prints top results for demo queries, including ones with no match in the data.
-- **Part 2** compares BM25 / semantic / hybrid / hybrid+rerank using a rough automatic proxy (same-section precision@5).
-- **Part 3** (optional): create `data/eval_labels.json` such as `{"10897396": [10898185, 10896576]}`
-  (article id -> ids you judge relevant) to get real Precision@5 and nDCG@10. Label 20-30 articles; it takes ~15 minutes.
+Comprehensive documentation and product handbooks:
+- [`PRODUCT_OWNER_MASTER_HANDBOOK.md`](file:///d:/indian%20express/Recommendation%20system/news%20recommender%20base/PRODUCT_OWNER_MASTER_HANDBOOK.md): Complete technical architecture, technology explanations, and deep-dive product manual.
+- [`PRODUCT_OWNER_QUICK_REFERENCE.md`](file:///d:/indian%20express/Recommendation%20system/news%20recommender%20base/PRODUCT_OWNER_QUICK_REFERENCE.md): Condensed executive summary and command cheat sheet.
+- [`AGENTS.md`](file:///d:/indian%20express/Recommendation%20system/news%20recommender%20base/AGENTS.md): Authoritative engineering and architectural specification memory.
 
-## Tuning tips
+---
 
-- Wrong "no match" warnings (too many or too few)? Change `MIN_RELEVANCE` in `config.py` after looking at the scores in `evaluate.py` Part 1.
-- Results too similar to each other? Lower `MMR_LAMBDA` (e.g. 0.6).
-- Want same-story articles ranked higher? Raise `RECENCY_BOOST` / `SECTION_BOOST`.
+## 🛡️ License
+
+Proprietary — Developed for Indian Express AI News Recommendation Platform.

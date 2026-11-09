@@ -844,49 +844,55 @@ const Tabs = (() => {
   }
 
   // ─── READER CATEGORY FILTER BAR & MODEL SWITCHER ───────────────────────────
+  // Defined at module scope (not nested inside initModelSwitcher) because it is
+  // also exported on the public Tabs object and called from app.js. Referencing
+  // it from the return block while it was nested caused a ReferenceError that
+  // aborted the whole tabs.js IIFE, leaving `Tabs` undefined.
+  async function applyModelSwitch(version) {
+    State.set({ modelVersion: version });
+    const btn384 = document.getElementById('btn-model-384d');
+    const btn768 = document.getElementById('btn-model-768d');
+    if (btn384) btn384.classList.toggle('active', version === '384d');
+    if (btn768) btn768.classList.toggle('active', version === '768d');
+
+    const modelLabel = version === '768d' ? 'BGE-Base (768D Archive)' : 'Pipeline C (384D BGE-Small)';
+    if (typeof showToast === 'function') {
+      showToast(`Switched view to ${modelLabel}`, 'info');
+    }
+
+    // 1. Refresh database state & UI banners for selected pipeline
+    if (typeof window.checkReaderDatabaseState === 'function') {
+      await window.checkReaderDatabaseState();
+    }
+
+    // 2. Refresh sections and category pills for selected pipeline
+    try {
+      const sectionsData = await Api.sections(version);
+      const sections = sectionsData.sections || [];
+      populateCategoryPills(sections);
+      const secFilter = document.getElementById('section-filter');
+      if (secFilter) {
+        secFilter.innerHTML = '<option value="">All</option>';
+        sections.forEach(sec => {
+          const opt = document.createElement('option');
+          opt.value = sec;
+          opt.textContent = sec.charAt(0).toUpperCase() + sec.slice(1);
+          secFilter.appendChild(opt);
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to refresh sections for switched pipeline:', e);
+    }
+
+    // 3. Clear cache and completely rebuild feed for the selected pipeline
+    allArticlesCache = [];
+    buildFeed();
+  }
+
   function initModelSwitcher() {
     const btn384 = document.getElementById('btn-model-384d');
     const btn768 = document.getElementById('btn-model-768d');
     if (!btn384 || !btn768) return;
-
-    async function applyModelSwitch(version) {
-      State.set({ modelVersion: version });
-      btn384.classList.toggle('active', version === '384d');
-      btn768.classList.toggle('active', version === '768d');
-
-      const modelLabel = version === '768d' ? 'BGE-Base (768D Archive)' : 'Pipeline C (384D BGE-Small)';
-      if (typeof showToast === 'function') {
-        showToast(`Switched view to ${modelLabel}`, 'info');
-      }
-
-      // 1. Refresh database state & UI banners for selected pipeline
-      if (typeof window.checkReaderDatabaseState === 'function') {
-        await window.checkReaderDatabaseState();
-      }
-
-      // 2. Refresh sections and category pills for selected pipeline
-      try {
-        const sectionsData = await Api.sections(version);
-        const sections = sectionsData.sections || [];
-        populateCategoryPills(sections);
-        const secFilter = document.getElementById('section-filter');
-        if (secFilter) {
-          secFilter.innerHTML = '<option value="">All</option>';
-          sections.forEach(sec => {
-            const opt = document.createElement('option');
-            opt.value = sec;
-            opt.textContent = sec.charAt(0).toUpperCase() + sec.slice(1);
-            secFilter.appendChild(opt);
-          });
-        }
-      } catch (e) {
-        console.warn('Failed to refresh sections for switched pipeline:', e);
-      }
-
-      // 3. Clear cache and completely rebuild feed for the selected pipeline
-      allArticlesCache = [];
-      buildFeed();
-    }
 
     btn384.addEventListener('click', () => applyModelSwitch('384d'));
     btn768.addEventListener('click', () => applyModelSwitch('768d'));

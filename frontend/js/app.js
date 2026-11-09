@@ -289,9 +289,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     if (loadingText) loadingText.textContent = 'Connecting to Recommendation Engine...';
 
-    // 1. Fetch Engine Status
+    // 1. Fetch Engine Status with resilient retry
     // 'let' not 'const': checkReaderDatabaseState() below refreshes this in place.
-    let statusData = await Api.status();
+    let statusData = null;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        if (loadingText && attempt > 1) {
+          loadingText.textContent = `Connecting to API backend (attempt ${attempt}/4)...`;
+        }
+        statusData = await Api.status();
+        if (statusData) break;
+      } catch (e) {
+        if (attempt === 4) throw e;
+        await new Promise(r => setTimeout(r, 1200));
+      }
+    }
     State.set({ engineInfo: statusData });
 
     const engineNameEl = document.getElementById('engine-name');
@@ -428,17 +440,37 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   } catch (err) {
     console.error('Failed to initialize app with backend:', err);
+    // Only a genuine network failure means the API server is unreachable. Any
+    // other exception (e.g. a JavaScript ReferenceError in a frontend module)
+    // used to be reported as "Backend offline", which sent debugging in the
+    // wrong direction. Distinguish the two so the real cause is visible.
+    const msg = String(err && err.message ? err.message : err);
+    const isNetworkError = (err instanceof TypeError) &&
+      /fetch|network|load failed|failed to fetch/i.test(msg);
+    const title = isNetworkError ? 'Could not connect to API backend' : 'Frontend failed to initialize';
+    const hint = isNetworkError
+      ? 'Ensure the server is running: <code>python api/server.py</code>'
+      : 'The API responded, but a frontend script threw an error. Open the browser console for details.';
+
     if (loadingText) {
       loadingText.innerHTML = `
-        <span style="color:#ef4444">Could not connect to API backend</span><br/>
-        <small style="color:var(--text-muted);font-size:0.8rem">Ensure the server is running at <code>http://localhost:5000</code></small>
+        <span style="color:#ef4444;font-weight:600">${title}</span><br/>
+        <small style="color:var(--text-muted);font-size:0.8rem">${msg || 'Unknown error'}</small><br/>
+        <small style="color:var(--text-muted);font-size:0.75rem">${hint}</small><br/>
+        <button onclick="location.reload()" style="margin-top:12px;padding:6px 14px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:0.85rem">🔄 Retry Now</button>
       `;
     }
 
     setTimeout(() => {
       if (loadingOverlay) loadingOverlay.classList.add('fade-out');
       if (appContainer) appContainer.classList.remove('hidden');
-      showToast('Backend offline. Please start the API server.', 'warn', 6000);
-    }, 1500);
+      showToast(
+        isNetworkError
+          ? 'Backend offline. Please start the API server with: python api/server.py'
+          : `Frontend initialization error: ${msg}`,
+        'warn',
+        7000
+      );
+    }, 2000);
   }
 });
