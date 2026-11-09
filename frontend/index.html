@@ -498,6 +498,34 @@
                 <p class="panel-sub">Stories are ordered by recommendation confidence — the strongest matches (highest average %) appear first. Scroll for more; the ⚡/🛰️ chip shows whether each block was served precomputed or live.</p>
               </div>
             </div>
+
+            <!-- Model Switcher: 384D vs 768D Archive -->
+            <div class="model-selection-bar" id="model-selection-bar">
+              <span class="model-selection-label">Precomputed Model:</span>
+              <div class="model-toggle-group">
+                <button type="button" class="model-toggle-btn active" data-model="384d" id="btn-model-384d" title="Switch to Pipeline C (384D BGE-Small)">
+                  <span class="btn-icon">⚡</span>
+                  <span class="btn-text">Pipeline C (384D BGE-Small)</span>
+                  <span class="btn-tag active">Active</span>
+                </button>
+                <button type="button" class="model-toggle-btn" data-model="768d" id="btn-model-768d" title="Switch to previous BGE-Base 768D precomputed archive">
+                  <span class="btn-icon">📦</span>
+                  <span class="btn-text">BGE-Base (768D Archive)</span>
+                  <span class="btn-tag archive">41k precomputed</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Reader Category Filter Bar -->
+            <div class="reader-category-bar" id="reader-category-bar">
+              <span class="reader-category-label">Section:</span>
+              <div class="reader-category-pills-wrap">
+                <div class="reader-category-pills" id="reader-category-pills">
+                  <button type="button" class="cat-pill active" data-section="">🌟 All Stories</button>
+                </div>
+              </div>
+            </div>
+
             <!-- Quick Story Finder / Fast Article Selector -->
             <div class="story-finder-box" id="story-finder-box">
               <div class="story-finder-input-wrap">

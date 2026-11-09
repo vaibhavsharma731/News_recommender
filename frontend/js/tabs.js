@@ -456,12 +456,19 @@ const Tabs = (() => {
     widget.dataset.loaded = 'true';
 
     const articleId = widget.dataset.id;
-    const { topK, method, useBoosts, diversify } = State.get();
+    const { topK, method, useBoosts, diversify, modelVersion } = State.get();
     try {
       // No section is sent on purpose: keeping the default similar-article request
       // means method=hybrid+rerank is served from the precomputed table. The source
       // list itself is filtered by category client-side.
-      const data = await Api.recommend({ articleId, topK, method, useBoosts, diversify });
+      const data = await Api.recommend({
+        articleId,
+        topK,
+        method,
+        useBoosts,
+        diversify,
+        modelVersion: modelVersion || '384d',
+      });
       renderWidgetRecs(widget, data);
     } catch (err) {
       const stage = widget.querySelector('.orbit-stage');
@@ -826,6 +833,90 @@ const Tabs = (() => {
     });
   }
 
+  // ─── READER CATEGORY FILTER BAR & MODEL SWITCHER ───────────────────────────
+  function initModelSwitcher() {
+    const btn384 = document.getElementById('btn-model-384d');
+    const btn768 = document.getElementById('btn-model-768d');
+    if (!btn384 || !btn768) return;
+
+    function applyModelSwitch(version) {
+      State.set({ modelVersion: version });
+      btn384.classList.toggle('active', version === '384d');
+      btn768.classList.toggle('active', version === '768d');
+
+      const modelLabel = version === '768d' ? 'BGE-Base (768D Archive)' : 'Pipeline C (384D BGE-Small)';
+      if (typeof showToast === 'function') {
+        showToast(`Switched precomputed model to ${modelLabel}`, 'info');
+      }
+
+      // Invalidate and reload recommendations for all rendered feed widgets
+      const feed = document.getElementById('article-feed');
+      if (feed) {
+        const widgets = feed.querySelectorAll('.orbit-widget');
+        widgets.forEach(w => {
+          w.dataset.loaded = 'false';
+          const stage = w.querySelector('.orbit-stage');
+          if (stage) {
+            stage.querySelectorAll('.orbit-slot').forEach(s => { s.innerHTML = ''; });
+          }
+          // Reload
+          loadWidgetRecommendations(w);
+        });
+      }
+    }
+
+    btn384.addEventListener('click', () => applyModelSwitch('384d'));
+    btn768.addEventListener('click', () => applyModelSwitch('768d'));
+  }
+
+  function selectCategory(sec) {
+    State.set({ activeSection: sec });
+    const pillContainer = document.getElementById('reader-category-pills');
+    if (pillContainer) {
+      pillContainer.querySelectorAll('.cat-pill').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.section === sec);
+      });
+    }
+    const sectionFilter = document.getElementById('section-filter');
+    if (sectionFilter && sectionFilter.value !== sec) {
+      sectionFilter.value = sec;
+    }
+    buildFeed();
+  }
+
+  function populateCategoryPills(sections) {
+    const container = document.getElementById('reader-category-pills');
+    if (!container || !sections || !sections.length) return;
+    container.innerHTML = '';
+
+    // 'All Stories' pill
+    const allBtn = document.createElement('button');
+    allBtn.type = 'button';
+    allBtn.className = 'cat-pill' + (!State.get().activeSection ? ' active' : '');
+    allBtn.dataset.section = '';
+    allBtn.textContent = '🌟 All Stories';
+    allBtn.addEventListener('click', () => selectCategory(''));
+    container.appendChild(allBtn);
+
+    // Primary priority sections first
+    const primary = ['india', 'business', 'entertainment', 'sports', 'technology', 'explained', 'world', 'opinion', 'cities', 'lifestyle'];
+    const sorted = [
+      ...primary.filter(s => sections.includes(s)),
+      ...sections.filter(s => !primary.includes(s))
+    ];
+
+    sorted.forEach(sec => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cat-pill' + (State.get().activeSection === sec ? ' active' : '');
+      btn.dataset.section = sec;
+      const emoji = typeof sectionEmoji === 'function' ? sectionEmoji(sec) : '📁';
+      btn.textContent = `${emoji} ${sec.charAt(0).toUpperCase() + sec.slice(1)}`;
+      btn.addEventListener('click', () => selectCategory(sec));
+      container.appendChild(btn);
+    });
+  }
+
   // ─── INITIALIZATION ─────────────────────────────────────────────────────────
   function init() {
     const nav = document.getElementById('tabs-nav');
@@ -861,6 +952,7 @@ const Tabs = (() => {
     });
 
     initStoryFinder();
+    initModelSwitcher();
     buildFeed();
   }
 
@@ -876,6 +968,7 @@ const Tabs = (() => {
 
   return {
     init, switchTab, performSearch, populateArticlePicker, buildFeed, reloadCurrentTab,
+    populateCategoryPills, selectCategory,
     // Exposed so a widget can be rendered directly (the editor preview and the
     // render checks build one halo without booting the whole feed).
     buildFeedWidget, renderWidgetRecs,

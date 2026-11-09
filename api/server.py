@@ -118,6 +118,7 @@ class RecommendRequest(BaseModel):
     use_boosts: bool = True
     diversify: bool = True
     section: Optional[str] = None
+    model_version: Optional[str] = "384d"
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -378,25 +379,28 @@ def recommend(body: RecommendRequest):
     )
     if use_precomputed:
         try:
+            m_ver = (body.model_version or "384d").lower()
             with SessionLocal() as db:
                 source_art = ArticleRepository.get_article(db, str(body.article_id))
                 source_dict = source_art.to_dict() if source_art else None
                 precomputed = ArticleRepository.get_precomputed_recommendations(
-                    db, str(body.article_id), limit=body.top_k, diversify=body.diversify
+                    db, str(body.article_id), limit=body.top_k, diversify=body.diversify, model_version=m_ver
                 )
             if precomputed and len(precomputed) >= body.top_k:
                 from src.evidence import enrich_recommendation_evidence
                 enrich_recommendation_evidence(source_dict, precomputed)
                 mode_str = "MMR Diversified" if body.diversify else "Pure Relevance (No MMR)"
+                m_label = "BGE-Base 768D Archive" if m_ver == "768d" else "Pipeline C (384D BGE-Small)"
                 payload = {
                     "method": "postgresql_precomputed_rerank",
-                    "engine": "PostgreSQL pgvector + Precomputed Cross-Encoder",
+                    "engine": f"PostgreSQL pgvector + {m_label}",
                     "source": "postgresql",
+                    "model_version": m_ver,
                     "source_article": source_dict,
                     "diversify": body.diversify,
                     "low_confidence": False,
                     "best_relevance": precomputed[0].get("score", 0.0),
-                    "notes": [f"⚡ Served directly from PostgreSQL precomputed table (sub-5ms, {mode_str})"],
+                    "notes": [f"⚡ Served directly from PostgreSQL {m_label} (sub-5ms, {mode_str})"],
                     "recommendations": [{
                         "article": {
                             **_article_dict(r),

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from .models import Article, ArticleRecommendation, IngestionJob
+from .models import Article, ArticleRecommendation, ArticleRecommendation768D, IngestionJob
 from src.scoring import parse_ids
 
 
@@ -256,20 +256,25 @@ class ArticleRepository:
         db: Session,
         article_id: str,
         limit: int = 10,
-        diversify: bool = True
+        diversify: bool = True,
+        model_version: str = "384d"
     ) -> List[Dict[str, Any]]:
         """
         Fast lookup: Retrieves precomputed top recommendations for an article
         in sub-5ms by joining with the articles table.
+        Supports switching between:
+          - '384d': Pipeline C (BGE-small 384D, active table `article_recommendations`)
+          - '768d': Strategy E baseline (BGE-base 768D, archive table `article_recommendations_768d`)
         If diversify=True, orders by MMR-diversified rank.
         If diversify=False, orders by pure relevance (rank_raw / score) without MMR penalty.
         """
         from sqlalchemy import func
-        order_col = ArticleRecommendation.rank if diversify else func.coalesce(ArticleRecommendation.rank_raw, ArticleRecommendation.rank)
-        recs = db.query(ArticleRecommendation, Article).join(
-            Article, ArticleRecommendation.recommended_article_id == Article.id
+        RecModel = ArticleRecommendation768D if model_version == "768d" else ArticleRecommendation
+        order_col = RecModel.rank if diversify else func.coalesce(RecModel.rank_raw, RecModel.rank)
+        recs = db.query(RecModel, Article).join(
+            Article, RecModel.recommended_article_id == Article.id
         ).filter(
-            ArticleRecommendation.article_id == article_id
+            RecModel.article_id == article_id
         ).order_by(
             order_col
         ).limit(limit).all()
@@ -284,6 +289,7 @@ class ArticleRepository:
             art_dict["rerank_score"] = rec.rerank_score
             art_dict["method"] = rec.method
             art_dict["reason"] = rec.reason or "High topic and semantic relevance"
+            art_dict["pipeline_version"] = rec.pipeline_version
             results.append(art_dict)
         return results
 

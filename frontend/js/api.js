@@ -56,19 +56,21 @@ const Api = (() => {
     topK       = 10,
     method     = 'hybrid+rerank',
     useBoosts  = true,
-    diversify  = true,
-    section    = null,
+    diversify    = true,
+    section      = null,
+    modelVersion = '384d',
   } = {}) {
     return _fetch('/recommend', {
       method: 'POST',
       body: JSON.stringify({
         query,
-        article_id:   articleId,
-        top_k:        topK,
+        article_id:    articleId,
+        top_k:         topK,
         method,
-        use_boosts:   useBoosts,
+        use_boosts:    useBoosts,
         diversify,
         section,
+        model_version: modelVersion,
       }),
     });
   }

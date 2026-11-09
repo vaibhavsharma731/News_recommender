@@ -67,7 +67,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (sectionFilter) {
     sectionFilter.addEventListener('change', (e) => {
-      State.set({ activeSection: e.target.value });
+      const sec = e.target.value;
+      State.set({ activeSection: sec });
+      const pillContainer = document.getElementById('reader-category-pills');
+      if (pillContainer) {
+        pillContainer.querySelectorAll('.cat-pill').forEach(btn => {
+          btn.classList.toggle('active', btn.dataset.section === sec);
+        });
+      }
       triggerActiveTabReload();
     });
   }
@@ -317,6 +324,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 4. Initialize Tabs
     Tabs.init();
+    if (typeof Tabs.populateCategoryPills === 'function') {
+      Tabs.populateCategoryPills(sections);
+    }
 
     // 5. Initialize Editor & PostgreSQL Pipeline Hub (Editor is a const, always available)
     await Editor.init();
