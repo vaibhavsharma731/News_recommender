@@ -101,15 +101,17 @@ All production hyperparameters are centrally controlled in [`config.py`](file://
 News_recommender/
 ├── api/
 │   ├── server.py              # FastAPI endpoints (Dual serving path, precomputed + live fallback)
-│   └── editor_routes.py       # Ingestion endpoints (/api/db: CSV upload, jobs, status)
+│   ├── editor_routes.py       # Ingestion endpoints (CSV upload, jobs, status)
+│   └── dataset_routes.py      # Dataset/schema management endpoints
 ├── db/
 │   ├── connection.py          # SQLAlchemy engine, pooled connections, declarative schema migrations
-│   ├── models.py              # Active 384D (articles, article_recommendations) & 768D archive tables
+│   ├── models.py              # Articles, recommendations, ingestion jobs, datasets ORM models
 │   ├── repository.py          # Unified SQL queries, batch inserts, and trending section lookups
+│   ├── dataset_repository.py  # Multi-dataset schema isolation CRUD
 │   └── pipeline.py            # End-to-end ingestion pipeline, reverse-push, precomputation
 ├── frontend/
 │   ├── index.html             # Single-page UI shell
-│   ├── css/                   # 14 modular CSS files (tabs, theme, cards, modal, typography)
+│   ├── css/                   # Modular CSS files (tabs, theme, cards, modal, typography)
 │   └── js/                    # Vanilla JS client modules (api, state, tabs, editor, evaluator, app)
 ├── src/
 │   ├── data_loader.py         # Authoritative text cleaner: NFKC, dedup, sentence token-budgeting
@@ -118,8 +120,10 @@ News_recommender/
 │   ├── scoring.py             # Canonical scoring cascade: norm, blend, boost_parts, mmr
 │   ├── evidence.py            # Deterministic, zero-LLM editorial evidence and explainability cards
 │   ├── calibration.py         # Platt scaling calibrator fitting probabilities to confidence bands
-│   └── recommender.py         # In-memory Recommender engine for live search and user history
-├── tests/                     # Comprehensive test suites (Pipeline C migration, Strategy E, regression)
+│   ├── recommender.py         # In-memory Recommender engine for live search and user history
+│   └── model_registry.py      # Thread-safe singleton model cache (local/remote fallback)
+├── monitoring/                # Resource monitor and stage timer utilities
+├── tests/                     # Comprehensive test suites (Pipeline C, Strategy E, isolation, regression)
 ├── config.py                  # Single source of truth for all pipeline tunables and version hash
 ├── evaluate.py                # Standalone evaluation & validation script
 └── requirements.txt           # Production Python dependencies
@@ -146,16 +150,14 @@ The system operates on an intelligent **dual-serving path**:
 Run the full evaluation suite:
 
 ```bash
-# Run regression tests and migration verification
-python -m unittest discover tests/
+# Run the full test suite
+python -m pytest tests/ -v --ignore=tests/test_stage2_regression.py
 
 # Run interactive evaluation across beats
 python evaluate.py
 ```
 
-Comprehensive documentation and product handbooks:
-- [`PRODUCT_OWNER_MASTER_HANDBOOK.md`](file:///d:/indian%20express/Recommendation%20system/news%20recommender%20base/PRODUCT_OWNER_MASTER_HANDBOOK.md): Complete technical architecture, technology explanations, and deep-dive product manual.
-- [`PRODUCT_OWNER_QUICK_REFERENCE.md`](file:///d:/indian%20express/Recommendation%20system/news%20recommender%20base/PRODUCT_OWNER_QUICK_REFERENCE.md): Condensed executive summary and command cheat sheet.
+Architecture reference:
 - [`AGENTS.md`](file:///d:/indian%20express/Recommendation%20system/news%20recommender%20base/AGENTS.md): Authoritative engineering and architectural specification memory.
 
 ---
