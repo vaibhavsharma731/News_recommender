@@ -876,7 +876,23 @@ const Editor = (() => {
             dom.completion.classList.remove('hidden');
             const summary = document.getElementById('completion-summary-text');
             if (summary) {
-              summary.textContent = `Indexed ${job.total_articles} articles in PostgreSQL with 384d vectors and top-10 precomputed recommendations. Refreshed ${refreshed} older stories.`;
+              const durStr = formatDuration(job.duration_seconds);
+              const whenStr = formatWhen(job.created_at);
+              const fileName = job.filename || selectedPrecompFile?.name || 'CSV Batch Upload';
+              summary.innerHTML = `
+                <div style="margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                  <span><strong>📄 File:</strong> ${escHtml(fileName)}</span>
+                  <span>&middot;</span>
+                  <span><strong>📅 Uploaded:</strong> ${whenStr}</span>
+                  <span>&middot;</span>
+                  <span class="badge" style="background:rgba(99,102,241,0.15);color:#818cf8;border:1px solid rgba(99,102,241,0.3);padding:3px 8px;font-weight:700;">
+                    ⏱️ Time Taken: ${durStr}
+                  </span>
+                </div>
+                <div style="font-size:0.83rem;color:var(--text-secondary);">
+                  Indexed ${job.total_articles} articles in PostgreSQL with 384d vectors and top-10 precomputed recommendations. Refreshed ${refreshed} archive stories.
+                </div>
+              `;
             }
           }
 
@@ -914,7 +930,18 @@ const Editor = (() => {
           livePollInterval = null;
           if (dom.livePrepProgressFill) dom.livePrepProgressFill.style.width = '100%';
           if (dom.livePrepProgressPct) dom.livePrepProgressPct.textContent = '100%';
-          showToast('Live processing completed successfully!', 'success');
+          const durStr = formatDuration(job.duration_seconds);
+          const whenStr = formatWhen(job.created_at);
+          const fileName = job.filename || selectedLiveFile?.name || 'Live Fast Batch Upload';
+          if (dom.livePrepStatusText) {
+            dom.livePrepStatusText.innerHTML = `
+              🎉 <strong>Completed!</strong> 📄 ${escHtml(fileName)} &middot; 📅 ${whenStr} &middot;
+              <span class="badge" style="background:rgba(13,148,136,0.15);color:#2dd4bf;border:1px solid rgba(13,148,136,0.3);padding:2px 7px;font-weight:700;">
+                ⏱️ Time Taken: ${durStr}
+              </span>
+            `;
+          }
+          showToast(`Live upload completed in ${durStr}!`, 'success');
           if (dom.startLivePrepBtn) {
             dom.startLivePrepBtn.disabled = false;
             dom.startLivePrepBtn.textContent = '⚡ Run Live Preprocessing';
@@ -1008,7 +1035,26 @@ const Editor = (() => {
     if (!iso) return '—';
     const d = new Date(iso);
     if (isNaN(d.getTime())) return '—';
-    return d.toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  }
+
+  function formatDuration(sec) {
+    if (sec == null || isNaN(sec)) return '—';
+    sec = Math.round(Number(sec) * 10) / 10;
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    const remS = Math.round(sec % 60);
+    if (m < 60) return `${m}m ${remS.toString().padStart(2, '0')}s`;
+    const h = Math.floor(m / 60);
+    const remM = m % 60;
+    return `${h}h ${remM}m ${remS.toString().padStart(2, '0')}s`;
   }
 
   // ─── Recent Jobs Loaders ──────────────────────────────────────────────────
@@ -1040,17 +1086,27 @@ const Editor = (() => {
         const badgeClass = job.status === 'completed' ? 'ready' : (job.status === 'failed' ? 'error' : 'warning');
         const refreshed = job.refreshed_articles || 0;
         const articlesCell = job.status === 'completed' ? `${job.total_articles}` : `${job.processed_articles}/${job.total_articles || '?'}`;
-        const durationStr = job.duration_seconds != null ? `${job.duration_seconds}s` : '—';
+        const durationStr = formatDuration(job.duration_seconds);
+        const uploadDate = formatWhen(job.created_at);
+        const fileName = job.filename || 'Direct Batch Upload';
 
         return `
           <tr>
-            <td style="font-size:0.78rem;color:var(--text-secondary);">${formatWhen(job.created_at)}</td>
             <td>
-              <div class="job-file">${escHtml(job.filename || '—')}</div>
-              <div class="job-id">${escHtml(job.id)}</div>
+              <div style="font-weight:600;font-size:0.79rem;color:var(--text-primary);white-space:nowrap;">${uploadDate}</div>
             </td>
-            <td>${articlesCell}</td>
-            <td><strong style="color:var(--text-primary);">${durationStr}</strong></td>
+            <td>
+              <div class="job-file" style="font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:6px;">
+                <span>📄</span> ${escHtml(fileName)}
+              </div>
+              <div class="job-id" style="font-size:0.7rem;color:var(--text-muted);font-family:var(--font-mono);">${escHtml(job.id)}</div>
+            </td>
+            <td><strong>${articlesCell}</strong></td>
+            <td>
+              <span class="badge" style="background:rgba(99,102,241,0.12);color:#818cf8;border:1px solid rgba(99,102,241,0.25);font-weight:700;font-size:0.78rem;padding:3px 8px;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;">
+                <span>⏱️</span> ${durationStr}
+              </span>
+            </td>
             <td><span class="job-refresh-count ${refreshed > 0 ? '' : 'zero'}">${refreshed > 0 ? refreshed : '—'}</span></td>
             <td><span class="stat-badge ${badgeClass}">${job.status}</span></td>
             <td>
@@ -1097,21 +1153,31 @@ const Editor = (() => {
 
       dom.liveJobsBody.innerHTML = jobs.map(job => {
         const badgeClass = job.status === 'completed' ? 'ready' : (job.status === 'failed' ? 'error' : 'warning');
-        const durationStr = job.duration_seconds != null ? `${job.duration_seconds}s` : '—';
+        const durationStr = formatDuration(job.duration_seconds);
+        const uploadDate = formatWhen(job.created_at);
+        const fileName = job.filename || 'Live Fast Batch Upload';
         const throughput = (job.total_articles && job.duration_seconds)
           ? `${(job.total_articles / Math.max(job.duration_seconds, 0.01)).toFixed(1)} art/s`
           : '—';
 
         return `
           <tr>
-            <td style="font-size:0.78rem;color:var(--text-secondary);">${formatWhen(job.created_at)}</td>
             <td>
-              <div class="job-file">${escHtml(job.filename || '—')}</div>
-              <div class="job-id">${escHtml(job.id)}</div>
+              <div style="font-weight:600;font-size:0.79rem;color:var(--text-primary);white-space:nowrap;">${uploadDate}</div>
             </td>
-            <td>${job.processed_articles || job.total_articles || 0}</td>
-            <td><strong style="color:var(--text-primary);">${durationStr}</strong></td>
-            <td><span style="color:#818cf8;font-weight:700;">${throughput}</span></td>
+            <td>
+              <div class="job-file" style="font-weight:700;color:#2dd4bf;display:flex;align-items:center;gap:6px;">
+                <span>🚀</span> ${escHtml(fileName)}
+              </div>
+              <div class="job-id" style="font-size:0.7rem;color:var(--text-muted);font-family:var(--font-mono);">${escHtml(job.id)}</div>
+            </td>
+            <td><strong>${job.processed_articles || job.total_articles || 0}</strong></td>
+            <td>
+              <span class="badge" style="background:rgba(13,148,136,0.12);color:#2dd4bf;border:1px solid rgba(13,148,136,0.25);font-weight:700;font-size:0.78rem;padding:3px 8px;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;">
+                <span>⏱️</span> ${durationStr}
+              </span>
+            </td>
+            <td><span style="color:#34d399;font-weight:700;font-size:0.78rem;">${throughput}</span></td>
             <td><span class="stat-badge ${badgeClass}">${job.status}</span></td>
             <td>
               <button type="button" class="btn btn-secondary btn-inspect-live-mon" data-id="${job.id}" style="font-size:0.72rem;padding:3px 8px;">
