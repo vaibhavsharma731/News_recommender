@@ -54,7 +54,8 @@ def test_create_and_isolate_dataset(db):
         db.add(art)
         db.commit()
 
-        # Check count in experimental schema
+        # Check count in experimental schema (re-apply search_path after commit releases connection)
+        set_search_path(db, schema_name)
         assert db.query(Article).count() == 1
         assert db.query(Article).filter_by(id="art_iso_test_001").first() is not None
 
