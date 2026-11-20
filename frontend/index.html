@@ -846,14 +846,28 @@
                 <span>RecSys Controls</span>
               </div>
 
-              <div class="control-group">
+              <!-- ⚡ Precomputation Pipeline Database Selector -->
+              <div class="control-group" style="border-left: 3px solid #6366f1; padding-left: 10px; margin-bottom: 14px;">
                 <label class="control-label" style="display:flex;justify-content:space-between;align-items:center;">
-                  <span>Active Dataset</span>
-                  <span class="badge" id="reader-dataset-badge" style="font-size:0.68rem;padding:2px 6px;">Production</span>
+                  <span style="font-weight:700;color:#818cf8;">⚡ Precomputed DB</span>
+                  <span class="badge" id="reader-precomp-dataset-badge" style="font-size:0.68rem;padding:2px 6px;">Production</span>
                 </label>
-                <select id="reader-dataset-filter" class="select-input">
-                  <option value="default">Default (Production)</option>
+                <select id="reader-precomp-dataset-select" class="select-input" style="font-size:0.82rem;">
+                  <option value="default">Default (Production Precomputed)</option>
                 </select>
+                <div style="font-size:0.68rem;color:var(--text-muted);margin-top:4px;">Applies to <strong>Similar Articles</strong> tab</div>
+              </div>
+
+              <!-- 🛰️ Live Pipeline Database Selector -->
+              <div class="control-group" style="border-left: 3px solid #0d9488; padding-left: 10px; margin-bottom: 14px;">
+                <label class="control-label" style="display:flex;justify-content:space-between;align-items:center;">
+                  <span style="font-weight:700;color:#2dd4bf;">🛰️ Live Pipeline DB</span>
+                  <span class="badge" id="reader-live-dataset-badge" style="font-size:0.68rem;padding:2px 6px;background:rgba(13,148,136,0.2);color:#2dd4bf;">Live</span>
+                </label>
+                <select id="reader-live-dataset-select" class="select-input" style="font-size:0.82rem;">
+                  <option value="default">Default (Production Database)</option>
+                </select>
+                <div style="font-size:0.68rem;color:var(--text-muted);margin-top:4px;">Applies to <strong>Live Hybrid Lab</strong> tab</div>
               </div>
 
               <div class="control-group">
@@ -985,6 +999,24 @@
 
           <!-- Tab: Similar Articles -->
           <section class="tab-panel active" id="tab-similar">
+            <!-- Precomputed Database Selector Toolbar -->
+            <div class="active-dataset-toolbar" style="margin-bottom: 16px; background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 10px; padding: 10px 16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+              <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                <span style="font-weight:700; font-size:0.86rem; color:#818cf8; display:flex; align-items:center; gap:6px;">
+                  <span>⚡</span> Precomputed Pipeline Database:
+                </span>
+                <select id="similar-precomp-dataset-select" class="select-input" style="font-size:0.84rem; padding:5px 12px; font-weight:700; min-width:260px; border-color:rgba(99,102,241,0.4);">
+                  <option value="default">Default (Production Precomputed)</option>
+                </select>
+                <span id="similar-precomp-stats-badge" class="badge" style="background:rgba(99,102,241,0.15); color:#818cf8; border:1px solid rgba(99,102,241,0.3); font-size:0.75rem; padding:4px 10px;">
+                  Loading stats...
+                </span>
+              </div>
+              <button type="button" class="btn btn-secondary" style="font-size:0.78rem; padding:5px 12px; border-color:rgba(99,102,241,0.35); color:#818cf8;" onclick="if (window.setAppRole) { setAppRole('editor'); if (window.Editor) Editor.switchStudio('precomputed'); }">
+                ⚙️ Manage Precomputed Runs in Editor Studio
+              </button>
+            </div>
+
             <div class="panel-header">
               <div>
                 <h2 class="panel-title">
@@ -1140,6 +1172,24 @@
 
           <!-- Tab: Live Hybrid Lab (No Cross-Encoder) -->
           <section class="tab-panel" id="tab-hybrid-lab">
+            <!-- Live Database Selector Toolbar -->
+            <div class="active-dataset-toolbar" style="margin-bottom: 16px; background: rgba(13, 148, 136, 0.08); border: 1px solid rgba(13, 148, 136, 0.25); border-radius: 10px; padding: 10px 16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+              <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                <span style="font-weight:700; font-size:0.86rem; color:#2dd4bf; display:flex; align-items:center; gap:6px;">
+                  <span>🛰️</span> Live Pipeline Database:
+                </span>
+                <select id="hybrid-lab-dataset-select" class="select-input" style="font-size:0.84rem; padding:5px 12px; font-weight:700; min-width:260px; border-color:rgba(13,148,136,0.4);">
+                  <option value="default">Default (Production Database)</option>
+                </select>
+                <span id="hybrid-lab-stats-badge" class="badge" style="background:rgba(13,148,136,0.15); color:#2dd4bf; border:1px solid rgba(13,148,136,0.3); font-size:0.75rem; padding:4px 10px;">
+                  Loading stats...
+                </span>
+              </div>
+              <button type="button" class="btn btn-secondary" style="font-size:0.78rem; padding:5px 12px; border-color:rgba(13,148,136,0.35); color:#2dd4bf;" onclick="if (window.setAppRole) { setAppRole('editor'); if (window.Editor) Editor.switchStudio('live'); }">
+                ⚙️ Manage Live Datasets in Editor Studio
+              </button>
+            </div>
+
             <div class="panel-header">
               <div>
                 <h2 class="panel-title" style="display:flex;align-items:center;gap:10px;">

@@ -46,34 +46,76 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // ─── 3. RECSYS CONTROLS BINDING ─────────────────────────────────────────────
-  const readerDatasetFilter = document.getElementById('reader-dataset-filter');
-  const readerDatasetBadge = document.getElementById('reader-dataset-badge');
-  const topKSlider = document.getElementById('top-k-slider');
-  const topKValue = document.getElementById('top-k-value');
-  const sectionFilter = document.getElementById('section-filter');
-  const methodSelect = document.getElementById('method-select');
-  const useBoostsToggle = document.getElementById('use-boosts');
-  const useDiversityToggle = document.getElementById('use-diversity');
+  // ─── 3. RECSYS CONTROLS BINDING: DUAL-PIPELINE DATABASE SELECTORS ─────────
+  const precompSelectSidebar = document.getElementById('reader-precomp-dataset-select');
+  const precompSelectTab = document.getElementById('similar-precomp-dataset-select');
+  const precompBadgeSidebar = document.getElementById('reader-precomp-dataset-badge');
+  const precompStatsTab = document.getElementById('similar-precomp-stats-badge');
 
-  if (readerDatasetFilter) {
-    readerDatasetFilter.addEventListener('change', async (e) => {
-      const ds = e.target.value;
-      State.set({ activeDataset: ds });
-      if (readerDatasetBadge) {
-        readerDatasetBadge.textContent = ds === 'default' ? 'Production' : ds;
-      }
-      if (window.Tabs && typeof window.Tabs.clearArticlesCache === 'function') {
-        window.Tabs.clearArticlesCache();
-        window.Tabs.reloadCurrentTab();
-      }
-      if (window.shuffleRandomizer) {
-        window.shuffleRandomizer();
-      }
-      if (typeof HybridLab !== 'undefined' && typeof HybridLab.init === 'function') {
-        try { await HybridLab.init(); } catch (_) {}
-      }
-    });
+  const liveSelectSidebar = document.getElementById('reader-live-dataset-select');
+  const liveSelectTab = document.getElementById('hybrid-lab-dataset-select');
+  const liveBadgeSidebar = document.getElementById('reader-live-dataset-badge');
+  const liveStatsTab = document.getElementById('hybrid-lab-stats-badge');
+
+  async function updatePrecompStatsBadge(dsId) {
+    try {
+      const data = await Api.dbHealth(dsId || 'default');
+      const text = `${(data.total_articles || 0).toLocaleString()} arts | ${(data.total_recommendations || 0).toLocaleString()} recs`;
+      if (precompStatsTab) precompStatsTab.textContent = text;
+      if (precompBadgeSidebar) precompBadgeSidebar.textContent = dsId === 'default' ? 'Production' : (data.schema || dsId);
+    } catch (_) {}
+  }
+
+  async function updateLiveStatsBadge(dsId) {
+    try {
+      const data = await Api.dbHealth(dsId || 'default');
+      const text = `${(data.total_articles || 0).toLocaleString()} arts | ${(data.embedded_articles || 0).toLocaleString()} embedded`;
+      if (liveStatsTab) liveStatsTab.textContent = text;
+      if (liveBadgeSidebar) liveBadgeSidebar.textContent = dsId === 'default' ? 'Production' : (data.schema || dsId);
+    } catch (_) {}
+  }
+
+  window.updatePrecompStatsBadge = updatePrecompStatsBadge;
+  window.updateLiveStatsBadge = updateLiveStatsBadge;
+
+  async function handlePrecompDatasetChange(dsId) {
+    if (precompSelectSidebar) precompSelectSidebar.value = dsId;
+    if (precompSelectTab) precompSelectTab.value = dsId;
+    State.set({ activePrecompDataset: dsId, activeDataset: dsId });
+    await updatePrecompStatsBadge(dsId);
+
+    if (window.Tabs && typeof window.Tabs.clearArticlesCache === 'function') {
+      window.Tabs.clearArticlesCache();
+      window.Tabs.reloadCurrentTab();
+    }
+    if (window.shuffleRandomizer) {
+      window.shuffleRandomizer();
+    }
+  }
+
+  async function handleLiveDatasetChange(dsId) {
+    if (liveSelectSidebar) liveSelectSidebar.value = dsId;
+    if (liveSelectTab) liveSelectTab.value = dsId;
+    State.set({ activeLiveDataset: dsId });
+    await updateLiveStatsBadge(dsId);
+
+    if (typeof HybridLab !== 'undefined' && typeof HybridLab.init === 'function') {
+      try { await HybridLab.init(); } catch (_) {}
+    }
+  }
+
+  if (precompSelectSidebar) {
+    precompSelectSidebar.addEventListener('change', (e) => handlePrecompDatasetChange(e.target.value));
+  }
+  if (precompSelectTab) {
+    precompSelectTab.addEventListener('change', (e) => handlePrecompDatasetChange(e.target.value));
+  }
+
+  if (liveSelectSidebar) {
+    liveSelectSidebar.addEventListener('change', (e) => handleLiveDatasetChange(e.target.value));
+  }
+  if (liveSelectTab) {
+    liveSelectTab.addEventListener('change', (e) => handleLiveDatasetChange(e.target.value));
   }
 
   if (topKSlider && topKValue) {
@@ -356,6 +398,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 5. Initialize Editor & PostgreSQL Pipeline Hub (Editor is a const, always available)
     await Editor.init();
+    updatePrecompStatsBadge('default');
+    updateLiveStatsBadge('default');
 
     // 5B. Initialize Monitoring & Performance Hub
     if (typeof Monitoring !== 'undefined' && typeof Monitoring.init === 'function') {

@@ -358,13 +358,21 @@ const Editor = (() => {
         `).join('');
       }
 
-      // Also sync reader and comparison dropdowns
-      const readerFilter = document.getElementById('reader-dataset-filter');
-      if (readerFilter) {
-        readerFilter.innerHTML = datasets.map(d => `
-          <option value="${escHtml(d.id)}">${escHtml(d.name)}</option>
-        `).join('');
-      }
+      // Also sync reader precomputed selectors and comparison dropdowns
+      const precompSelectors = [
+        document.getElementById('reader-precomp-dataset-select'),
+        document.getElementById('similar-precomp-dataset-select'),
+      ];
+      const precompOpts = datasets.map(d => `
+        <option value="${escHtml(d.id)}" ${d.id === currentVal ? 'selected' : ''}>
+          ${escHtml(d.name)}${d.is_protected ? ' [Protected]' : ''}
+        </option>
+      `).join('');
+      precompSelectors.forEach(sel => {
+        if (sel) sel.innerHTML = precompOpts;
+      });
+      if (window.updatePrecompStatsBadge) window.updatePrecompStatsBadge(currentVal);
+
       if (window.Compare && typeof window.Compare.populateDatasets === 'function') {
         window.Compare.populateDatasets();
       }
@@ -390,6 +398,28 @@ const Editor = (() => {
           `).join('');
         }
       }
+
+      // Also sync reader live selectors (allow picking default production OR any live dataset)
+      const liveSelectors = [
+        document.getElementById('reader-live-dataset-select'),
+        document.getElementById('hybrid-lab-dataset-select'),
+      ];
+      const defaultLiveOpt = `<option value="default">Default (Production Database - 4,193 articles)</option>`;
+      const customLiveOpts = datasets.map(d => `
+        <option value="${escHtml(d.id)}">
+          ${escHtml(d.name)} (${escHtml(d.schema_name)})
+        </option>
+      `).join('');
+      const liveOpts = defaultLiveOpt + customLiveOpts;
+      liveSelectors.forEach(sel => {
+        if (sel) {
+          const prev = sel.value;
+          sel.innerHTML = liveOpts;
+          if (prev && sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
+        }
+      });
+      if (window.updateLiveStatsBadge) window.updateLiveStatsBadge(liveSelectors[0]?.value || 'default');
+
       if (window.Compare && typeof window.Compare.populateDatasets === 'function') {
         window.Compare.populateDatasets();
       }

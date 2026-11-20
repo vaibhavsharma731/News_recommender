@@ -37,7 +37,8 @@ const HybridLab = (() => {
   /** Load a diverse pool of articles for quick selection pills */
   async function loadInitialArticles() {
     try {
-      const data = await Api.articles({ perPage: 40 });
+      const activeDs = (typeof State !== 'undefined' ? State.get().activeLiveDataset : 'default') || 'default';
+      const data = await Api.articles({ perPage: 40, dataset: activeDs });
       allArticles = data.articles || [];
       renderSamplePills();
       
@@ -128,7 +129,8 @@ const HybridLab = (() => {
         dropdown.classList.remove('hidden');
 
         try {
-          const data = await Api.articles({ search: q, perPage: 15 });
+          const activeDs = (typeof State !== 'undefined' ? State.get().activeLiveDataset : 'default') || 'default';
+          const data = await Api.articles({ search: q, perPage: 15, dataset: activeDs });
           currentSearchResults = data.articles || [];
 
           if (!currentSearchResults.length) {
@@ -381,7 +383,7 @@ const HybridLab = (() => {
       const data = await Api.recommend({
         articleId: articleId ? String(articleId) : null,
         query: queryText ? String(queryText) : null,
-        dataset: (typeof State !== 'undefined' ? State.get().activeDataset : 'default') || 'default',
+        dataset: (typeof State !== 'undefined' ? (State.get().activeLiveDataset || State.get().activeDataset) : 'default') || 'default',
         method: 'hybrid', // PURE HYBRID (No Cross-Encoder)
         useBoosts,
         diversify,

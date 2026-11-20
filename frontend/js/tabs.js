@@ -46,8 +46,12 @@ const Tabs = (() => {
     State.set({ activeTab: tabName });
 
     if (tabName === 'similar') {
+      const targetDs = State.get().activePrecompDataset || 'default';
+      State.set({ activeDataset: targetDs });
       buildFeed();
     } else if (tabName === 'hybrid-lab') {
+      const targetDs = State.get().activeLiveDataset || 'default';
+      State.set({ activeDataset: targetDs });
       if (typeof HybridLab !== 'undefined' && typeof HybridLab.onTabActivated === 'function') {
         HybridLab.onTabActivated();
       }
@@ -470,10 +474,12 @@ const Tabs = (() => {
       // No section is sent on purpose: keeping the default similar-article request
       // means method=hybrid+rerank is served from the precomputed table. The source
       // list itself is filtered by category client-side.
+      const precompDs = State.get().activePrecompDataset || State.get().activeDataset || 'default';
       const data = await Api.recommend({
         articleId,
         topK,
         method,
+        dataset: precompDs,
         useBoosts,
         diversify,
         modelVersion: modelVersion || '384d',
