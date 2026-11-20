@@ -56,6 +56,12 @@ async def lifespan(_app: FastAPI):
 
     # Initial loading is heavy; don't block the event loop.
     await run_in_threadpool(reload_engine_from_postgres)
+    try:
+        from src.data_loader import get_reranker_tokenizer
+        await run_in_threadpool(get_reranker_tokenizer)
+        print("[Startup] Reranker tokenizer pre-warmed for instant sub-second live queries.")
+    except Exception as e:
+        print(f"[Startup] Tokenizer warm-up skipped: {e}")
     yield
 
 
