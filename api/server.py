@@ -5,12 +5,13 @@ Run:  python api/server.py
 """
 import sys
 import os
+import time
 import math
 import threading
 import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,9 +27,12 @@ from pydantic import BaseModel
 import config
 from src.recommender import METHODS, Recommender
 from api.editor_routes import router as editor_router
+from api.monitoring_routes import router as monitoring_router, record_live_query
+from api.dataset_routes import router as dataset_router
 
-from db.connection import SessionLocal, ensure_schema
+from db.connection import SessionLocal, ensure_schema, resolve_schema, set_search_path
 from db.repository import ArticleRepository
+from db.dataset_repository import DatasetRepository
 from db.models import Article
 
 # ─── App lifecycle and setup ──────────────────────────────────────────────────
@@ -62,63 +66,101 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Allowed origins configuration: read from ALLOWED_ORIGINS env or default to localhost
+_env_origins = os.getenv("ALLOWED_ORIGINS", "").strip()
+allowed_origins = [o.strip() for o in _env_origins.split(",") if o.strip()] if _env_origins else [
+    "http://localhost:5000",
+    "http://127.0.0.1:5000",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=allowed_origins if allowed_origins != ["*"] else ["*"],
+    allow_credentials=True if allowed_origins != ["*"] else False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include Database and Editor Router
+# Include Database, Editor, Monitoring, and Dataset Routers
 app.include_router(editor_router)
+app.include_router(monitoring_router)
+app.include_router(dataset_router)
 
 # ─── Globals & PostgreSQL Sync ────────────────────────────────────────────────
 rec: Optional[Recommender] = None
 articles: pd.DataFrame = pd.DataFrame()
+_recommenders: Dict[str, Recommender] = {}
 
 
-def reload_engine_from_postgres():
-    """Build the live search engine from PostgreSQL, reusing stored texts and vectors."""
-    global rec, articles
-    with _reload_lock:
-        try:
-            with SessionLocal() as db:
-                if ArticleRepository.count_articles(db) == 0:
-                    print("[INFO] PostgreSQL articles table is empty. Ready for Editor upload.")
-                    articles, rec = pd.DataFrame(), None
-                    return
+def get_recommender(dataset_id: Optional[str] = "default") -> Optional[Recommender]:
+    """Retrieves or lazily loads the Recommender instance for a specific dataset."""
+    ds_key = (dataset_id or "default").strip()
+    if ds_key in _recommenders:
+        return _recommenders[ds_key]
+    if ds_key == "default" and rec is not None:
+        return rec
+    reload_engine_from_postgres(dataset_id=ds_key)
+    return _recommenders.get(ds_key) or rec
 
-                arts = db.query(Article).order_by(Article.date.desc().nulls_last()).all()
-                df_db = pd.DataFrame(ArticleRepository.corpus_rows(arts, camel_keys=True))
-                df_db["date"] = pd.to_datetime(df_db["date"], utc=True, errors="coerce")
-                # Same fallback the ingestion pipeline uses: an article without a
-                # stored vector contributes nothing to the dense branch (zero cosine)
-                # instead of forcing the whole corpus to be re-embedded.
-                dim = config.EMBEDDING_DIM
-                vectors = np.asarray(
-                    [a.embedding if a.embedding is not None else [0.0] * dim for a in arts],
-                    dtype=np.float32,
-                )
 
-                new_rec = Recommender(df_db, vectors=vectors, use_disk_cache=False)
-                rec, articles = new_rec, new_rec.articles  # swap only after the new engine builds
-                print(f"[READY] Engine initialized from PostgreSQL: {len(articles)} articles.")
-        except Exception as e:
-            print(f"[DB Warning] Could not load from PostgreSQL: {e}")
-            articles, rec = pd.DataFrame(), None
+def reload_engine_from_postgres(dataset_id: str = "default"):
+    """Build the live search engine from PostgreSQL for a specific dataset, reusing stored texts and vectors.
+    Uses stale-while-rebuild: builds in local memory without holding _reload_lock,
+    acquiring lock only for the instantaneous reference swap so active traffic is never blocked.
+    """
+    global rec, articles, _recommenders
+    ds_key = (dataset_id or "default").strip()
+    try:
+        with SessionLocal() as db:
+            schema = resolve_schema(db, ds_key)
+            set_search_path(db, schema)
+            if ArticleRepository.count_articles(db) == 0:
+                print(f"[INFO] Dataset '{ds_key}' ({schema}) articles table is empty.")
+                with _reload_lock:
+                    if ds_key in ("default", "public"):
+                        articles, rec = pd.DataFrame(), None
+                    _recommenders.pop(ds_key, None)
+                return
+
+            arts = db.query(Article).order_by(Article.date.desc().nulls_last()).all()
+            df_db = pd.DataFrame(ArticleRepository.corpus_rows(arts, camel_keys=True))
+            df_db["date"] = pd.to_datetime(df_db["date"], utc=True, errors="coerce")
+            dim = config.EMBEDDING_DIM
+            vectors = np.asarray(
+                [a.embedding if a.embedding is not None else [0.0] * dim for a in arts],
+                dtype=np.float32,
+            )
+
+            # Heavy index & semantic builds happen completely outside the global lock
+            new_rec = Recommender(df_db, vectors=vectors, use_disk_cache=False)
+            
+            with _reload_lock:
+                _recommenders[ds_key] = new_rec
+                if ds_key in ("default", "public"):
+                    rec, articles = new_rec, new_rec.articles  # instant reference swap
+            print(f"[READY] Engine initialized for dataset '{ds_key}' ({schema}): {len(articles)} articles.")
+    except Exception as e:
+        print(f"[DB Warning] Could not load dataset '{ds_key}' from PostgreSQL: {e}")
+        with _reload_lock:
+            if ds_key in ("default", "public") and rec is None:
+                articles, rec = pd.DataFrame(), None
 
 
 # ─── Pydantic request/response models ──────────────────────────────────────
 class RecommendRequest(BaseModel):
     query: Optional[str] = None
     article_id: Optional[str] = None
+    dataset: Optional[str] = "default"
     top_k: int = config.TOP_K
     method: str = "hybrid+rerank"
     use_boosts: bool = True
     diversify: bool = True
+    calibrate: bool = True
     section: Optional[str] = None
     model_version: Optional[str] = "384d"
+    candidate_strategy: Optional[str] = "quota"
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -225,14 +267,29 @@ def _attach_fallback(payload: dict, source_art, shown_ids) -> dict:
 
 
 def _result_json(result, method: str) -> dict:
+    is_gpu = False
+    if rec and getattr(rec, "reranker", None):
+        is_gpu = bool(getattr(rec.reranker, "last_used_remote", False))
+    else:
+        from src.model_registry import get_cross_encoder
+        cross_enc = get_cross_encoder()
+        is_remote_client = getattr(cross_enc, "__class__", None).__name__ == "RemoteCrossEncoderClient"
+        is_gpu = is_remote_client and getattr(cross_enc, "last_used_remote", False)
+
+    engine_desc = rec.engine_summary if rec else "PostgreSQL Engine"
+    
     return {
         "method":         method,
-        "engine":         rec.engine_summary if rec else "PostgreSQL Engine",
+        "engine":         engine_desc,
+        "device":         "Remote Cloud GPU" if is_gpu else "Local CPU",
+        "is_gpu":         is_gpu,
         # "postgresql" recommendations are served from the precomputed table (see
         # /api/recommend); anything that reaches here was computed live in memory.
         "source":         "live",
+        "candidate_strategy": getattr(result, "candidate_strategy", "quota"),
         "low_confidence": bool(result.low_confidence),
         "best_relevance": _clean_float(result.best_relevance),
+        "timings":        getattr(result, "timings", {}),
         "notes":          list(result.notes) if result.notes else [],
         "recommendations": [
             {
@@ -257,53 +314,25 @@ def _result_json(result, method: str) -> dict:
 # ─── API Routes ──────────────────────────────────────────────────────────────
 
 @app.get("/api/status")
-def status(pipeline: str = Query("384d")):
+def status(pipeline: str = Query("384d"), dataset: str = Query("default")):
     """Engine health-check + metadata directly from PostgreSQL."""
-    m_ver = pipeline.lower()
-    if m_ver == "768d":
-        with SessionLocal() as db:
-            total = ArticleRepository.count_articles(db, model_version="768d")
-            total_recs = ArticleRepository.count_total_recommendations(db, model_version="768d")
-            secs = ArticleRepository.get_sections(db, model_version="768d")
-        return {
-            "engine": "PostgreSQL Archive (BGE-Base 768D)",
-            "pipeline": "768d",
-            "total_articles": total,
-            "total_recommendations": total_recs,
-            "database_empty": total == 0,
-            "methods": METHODS,
-            "sections": secs,
-            "notes": ["Historical Strategy E (768D) archive loaded (41,770 precomputed recommendations)."],
-            "config": {
-                "top_k":        config.TOP_K,
-                "n_retrieve":   config.N_RETRIEVE,
-                "n_candidates": config.N_CANDIDATES,
-                "mmr_lambda":   config.MMR_LAMBDA,
-                "use_neural":   config.USE_NEURAL_MODELS,
-            },
-            "fallback": {
-                "min_related": config.FALLBACK_MIN_RELATED,
-                "limit":       config.FALLBACK_LIMIT,
-                "requests":    _fallback_stats["requests"],
-                "triggered":   _fallback_stats["triggered"],
-                "items_served": _fallback_stats["items"],
-                "rate":        (round(_fallback_stats["triggered"] / _fallback_stats["requests"], 4)
-                                if _fallback_stats["requests"] else None),
-            },
-        }
-
-    # 384D Active Pipeline (default)
     with SessionLocal() as db:
-        total = ArticleRepository.count_articles(db, model_version="384d")
-        secs = ArticleRepository.get_sections(db, model_version="384d")
+        schema = resolve_schema(db, dataset)
+        set_search_path(db, schema)
+        total = ArticleRepository.count_articles(db)
+        secs = ArticleRepository.get_sections(db)
+        ds_info = DatasetRepository.get_dataset(db, dataset)
+    active_rec = get_recommender(dataset)
     return {
-        "engine": rec.engine_summary if (rec and total > 0) else "PostgreSQL Engine (Pipeline C - 384D BGE-Small)",
+        "engine": active_rec.engine_summary if (active_rec and total > 0) else "PostgreSQL Engine (384D BGE-Small)",
         "pipeline": "384d",
+        "dataset": dataset,
+        "dataset_info": ds_info,
         "total_articles": total,
         "database_empty": total == 0,
         "methods":        METHODS,
         "sections":       secs,
-        "notes":          rec.notes if (rec and total > 0) else ["Pipeline C (384D) is active. Currently empty; ready for dataset ingestion in Editor Studio."],
+        "notes":          active_rec.notes if (active_rec and total > 0) else ["Database is active; ready for dataset ingestion in Editor Studio."],
         "config": {
             "top_k":        config.TOP_K,
             "n_retrieve":   config.N_RETRIEVE,
@@ -330,15 +359,19 @@ def get_articles(
     section: str = Query(""),
     sort: str = Query("date"),
     pipeline: str = Query("384d"),
+    search: str = Query(""),
+    dataset: str = Query("default"),
 ):
-    """Return a paginated list of articles from PostgreSQL.
-
-    Supports querying active 384D pipeline or 768D historical archive.
-    """
+    """Return a paginated list of articles from PostgreSQL."""
     m_ver = pipeline.lower()
+    search_term = search.strip() if search else None
     try:
         with SessionLocal() as db:
-            total = ArticleRepository.count_articles(db, model_version=m_ver, section=section or None)
+            schema = resolve_schema(db, dataset)
+            set_search_path(db, schema)
+            total = ArticleRepository.count_articles(
+                db, model_version=m_ver, section=section or None, search=search_term
+            )
             if total == 0:
                 return {
                     "total": 0,
@@ -347,6 +380,7 @@ def get_articles(
                     "articles": [],
                     "database_empty": True,
                     "pipeline": m_ver,
+                    "dataset": dataset,
                 }
             start = (page - 1) * per_page
             if sort == "confidence":
@@ -355,7 +389,7 @@ def get_articles(
                 )
             else:
                 arts = ArticleRepository.list_articles(
-                    db, limit=per_page, offset=start, section=section or None, model_version=m_ver
+                    db, limit=per_page, offset=start, section=section or None, search=search_term, model_version=m_ver
                 )
             return {
                 "total": total,
@@ -364,40 +398,34 @@ def get_articles(
                 "articles": [a.to_dict() for a in arts],
                 "database_empty": False,
                 "pipeline": m_ver,
+                "dataset": dataset,
             }
     except Exception as e:
         print(f"Error listing articles: {e}")
-        return {"total": 0, "page": page, "per_page": per_page, "articles": [], "error": str(e), "pipeline": m_ver}
+        return {"total": 0, "page": page, "per_page": per_page, "articles": [], "error": str(e), "pipeline": m_ver, "dataset": dataset}
 
 
 @app.get("/api/articles/trending")
-def trending(n: int = Query(6, ge=1, le=20), pipeline: str = Query("384d")):
+def trending(n: int = Query(6, ge=1, le=20), pipeline: str = Query("384d"), dataset: str = Query("default")):
     """Return top-N most recent articles directly from PostgreSQL."""
     m_ver = pipeline.lower()
     try:
         with SessionLocal() as db:
+            schema = resolve_schema(db, dataset)
+            set_search_path(db, schema)
             arts = ArticleRepository.list_articles(db, limit=n, model_version=m_ver)
-            return {"articles": [a.to_dict() for a in arts], "pipeline": m_ver}
+            return {"articles": [a.to_dict() for a in arts], "pipeline": m_ver, "dataset": dataset}
     except Exception as e:
-        return {"articles": [], "pipeline": m_ver}
+        return {"articles": [], "pipeline": m_ver, "dataset": dataset}
 
 
 @app.get("/api/articles/{article_id}")
-def get_article(article_id: str, pipeline: str = Query("384d")):
+def get_article(article_id: str, pipeline: str = Query("384d"), dataset: str = Query("default")):
     """Fetch a single article by ID directly from PostgreSQL."""
-    m_ver = pipeline.lower()
     try:
         with SessionLocal() as db:
-            art = ArticleRepository.get_article(db, str(article_id), model_version=m_ver)
-            if not art:
-                raise HTTPException(status_code=404, detail="Article not found")
-            return art.to_dict()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    try:
-        with SessionLocal() as db:
+            schema = resolve_schema(db, dataset)
+            set_search_path(db, schema)
             art = ArticleRepository.get_article(db, str(article_id))
             if not art:
                 raise HTTPException(status_code=404, detail="Article not found")
@@ -426,29 +454,39 @@ def recommend(body: RecommendRequest):
         and body.top_k <= config.TOP_K
     )
     if use_precomputed:
+        t_pre_start = time.perf_counter()
         try:
             m_ver = (body.model_version or "384d").lower()
             with SessionLocal() as db:
+                schema = resolve_schema(db, body.dataset)
+                set_search_path(db, schema)
                 source_art = ArticleRepository.get_article(db, str(body.article_id))
                 source_dict = source_art.to_dict() if source_art else None
                 precomputed = ArticleRepository.get_precomputed_recommendations(
                     db, str(body.article_id), limit=body.top_k, diversify=body.diversify, model_version=m_ver
                 )
             if precomputed and len(precomputed) >= body.top_k:
+                pre_ms = round((time.perf_counter() - t_pre_start) * 1000, 2)
                 from src.evidence import enrich_recommendation_evidence
                 enrich_recommendation_evidence(source_dict, precomputed)
                 mode_str = "MMR Diversified" if body.diversify else "Pure Relevance (No MMR)"
-                m_label = "BGE-Base 768D Archive" if m_ver == "768d" else "Pipeline C (384D BGE-Small)"
                 payload = {
                     "method": "postgresql_precomputed_rerank",
-                    "engine": f"PostgreSQL pgvector + {m_label}",
+                    "engine": "PostgreSQL pgvector (384D BGE-Small)",
                     "source": "postgresql",
-                    "model_version": m_ver,
+                    "dataset": body.dataset or "default",
+                    "model_version": "384d",
                     "source_article": source_dict,
                     "diversify": body.diversify,
                     "low_confidence": False,
                     "best_relevance": precomputed[0].get("score", 0.0),
-                    "notes": [f"⚡ Served directly from PostgreSQL {m_label} (sub-5ms, {mode_str})"],
+                    "timings": {
+                        "total_ms": pre_ms,
+                        "db_lookup_ms": pre_ms,
+                        "throughput_rps": round(1000.0 / max(pre_ms, 0.1), 1),
+                        "source": "postgresql_precomputed",
+                    },
+                    "notes": [f"⚡ Served directly from PostgreSQL ({pre_ms}ms, {mode_str})"],
                     "recommendations": [{
                         "article": {
                             **_article_dict(r),
@@ -467,6 +505,13 @@ def recommend(body: RecommendRequest):
                     } for r in precomputed],
 
                 }
+                record_live_query(
+                    method="postgresql_precomputed_rerank",
+                    query_type="similar",
+                    timings=payload["timings"],
+                    article_id=str(body.article_id),
+                    source="postgresql",
+                )
                 return _attach_fallback(
                     payload,
                     source_art,
@@ -476,32 +521,47 @@ def recommend(body: RecommendRequest):
         except Exception as e:
             print(f"Error checking precomputed recommendations: {e}")
 
-    if rec is None:
+    active_rec = get_recommender(body.dataset)
+    if active_rec is None:
         raise HTTPException(
             status_code=400,
-            detail="Database has no articles indexed yet. Please upload a dataset in the Editor Studio.",
+            detail=f"Dataset '{body.dataset}' has no articles indexed yet. Please upload a dataset in the Editor Studio.",
         )
 
     try:
-        result = rec.recommend(
+        result = active_rec.recommend(
             query=body.query,
             article_id=str(body.article_id) if body.article_id else None,
             top_k=body.top_k,
             method=body.method,
             use_boosts=body.use_boosts,
             diversify=body.diversify,
+            calibrate=body.calibrate,
             section=body.section,
+            candidate_strategy=body.candidate_strategy or "quota",
         )
         payload = _result_json(result, body.method)
+        payload["dataset"] = body.dataset or "default"
+        record_live_query(
+            method=body.method,
+            query_type="search" if body.query else "similar",
+            timings=getattr(result, "timings", {}),
+            query_str=body.query,
+            article_id=str(body.article_id) if body.article_id else None,
+            source="live",
+        )
         # Only article-to-article requests have a section to scope "trending" to.
         if body.article_id:
             try:
                 with SessionLocal() as db:
+                    schema = resolve_schema(db, body.dataset)
+                    set_search_path(db, schema)
                     source_art = ArticleRepository.get_article(db, str(body.article_id))
             except Exception as e:
                 print(f"[Fallback] source lookup failed: {e}")
                 source_art = None
             if source_art is not None:
+                payload["source_article"] = source_art.to_dict()
                 payload = _attach_fallback(
                     payload,
                     source_art,
@@ -582,4 +642,35 @@ async def _revalidate_static(request, call_next):
 # ─── Entry point ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api.server:app", host="0.0.0.0", port=5000, reload=False)
+    import socket
+    import sys
+
+    port = int(os.environ.get("PORT", 5000))
+    if len(sys.argv) > 1 and sys.argv[1].isdigit():
+        port = int(sys.argv[1])
+
+    # Pre-flight check: is port already occupied?
+    def _is_port_in_use(port_num: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(("127.0.0.1", port_num)) == 0
+
+    if _is_port_in_use(port):
+        print("\n" + "=" * 70, flush=True)
+        print(f" [PORT ALREADY IN USE] Port {port} is ALREADY running the backend server!", flush=True)
+        print(f" You do not need to start it again. Open your browser:", flush=True)
+        print(f"   👉 http://localhost:{port}", flush=True)
+        print(f"", flush=True)
+        print(" If you want to restart it fresh, stop the running instance first:", flush=True)
+        print("   Get-Process python | Stop-Process -Force", flush=True)
+        print(" Then run: python api/server.py", flush=True)
+        print("=" * 70 + "\n", flush=True)
+        sys.exit(0)
+
+    print("\n" + "=" * 70, flush=True)
+    print("  Indian Express AI News Recommendation Platform (NewsRec v2.0)", flush=True)
+    print(f"  Backend server running on: http://localhost:{port}", flush=True)
+    print(f"  Open in your web browser:  http://localhost:{port}", flush=True)
+    print("  Press CTRL+C to stop the server.", flush=True)
+    print("=" * 70 + "\n", flush=True)
+
+    uvicorn.run("api.server:app", host="0.0.0.0", port=port, reload=False)

@@ -516,3 +516,201 @@
   color: var(--text-muted);
   font-weight: 500;
 }
+
+
+/* ─── Editor Sub-Navigation & Dataset Management Styles ──────────────────── */
+
+.editor-subnav {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 20px;
+}
+
+.editor-subnav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  border-radius: 8px;
+  background: var(--surface-raised, rgba(255,255,255,0.04));
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.editor-subnav-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.08);
+}
+
+.editor-subnav-btn.active {
+  color: #fff;
+  background: var(--brand-primary, #6366f1);
+  border-color: var(--brand-primary, #6366f1);
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.35);
+}
+
+.editor-sub-section {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.editor-sub-section.hidden {
+  display: none !important;
+}
+
+/* Active Dataset Banner / Toolbar */
+.active-dataset-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 18px;
+  background: var(--surface-raised, rgba(255,255,255,0.03));
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+
+.dataset-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 6px;
+}
+
+.dataset-badge-protected {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.dataset-badge-isolated {
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+/* Dataset Management Table */
+.dataset-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.83rem;
+}
+
+.dataset-table th {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-sunken, rgba(0,0,0,0.15));
+}
+
+.dataset-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.05));
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+
+.dataset-table tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.dataset-table tr.active-dataset-row {
+  background: rgba(99, 102, 241, 0.06);
+}
+
+/* ─── Two-Pipeline Studio Panels ─────────────────────────────────────────── */
+.pipeline-studio-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.pipeline-studio-panel.hidden {
+  display: none !important;
+}
+
+/* Pipeline Tab Buttons */
+.pipeline-tab-bar {
+  display: flex;
+  gap: 8px;
+  padding: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  width: fit-content;
+  margin-bottom: 4px;
+}
+
+.pipeline-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 20px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.pipeline-tab-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.pipeline-tab-btn.active {
+  color: #fff;
+  background: var(--brand-gradient);
+  box-shadow: 0 0 14px rgba(168, 85, 247, 0.35);
+}
+
+/* Live pipeline accent color — teal instead of purple */
+.pipeline-tab-btn[data-studio="live"].active {
+  background: linear-gradient(135deg, #0d9488 0%, #0891b2 100%);
+  box-shadow: 0 0 14px rgba(13, 148, 136, 0.35);
+}
+
+/* Live Studio Cards get a teal accent border */
+#editor-panel-live .card-header {
+  border-left: 3px solid #0d9488;
+}
+
+/* Throughput column in jobs table */
+.jobs-table .col-throughput {
+  color: #34d399;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Omitted recs badge */
+.badge-omitted {
+  font-size: 0.72rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  margin-left: 6px;
+}

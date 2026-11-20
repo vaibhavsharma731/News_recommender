@@ -10,7 +10,9 @@ const State = (() => {
     diversify:     true,
     activeSection: '',   // '' = All
     activeTab:     'similar',
-    modelVersion:  '384d', // '384d' (Pipeline C) | '768d' (Strategy E Archive)
+    activeDataset: 'default',
+    allDatasets:   [],
+    modelVersion:  '384d',
     engineInfo:    null,
     allSections:   [],
     theme:         localStorage.getItem('theme') || 'dark',

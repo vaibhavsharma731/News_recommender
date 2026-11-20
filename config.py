@@ -92,6 +92,18 @@ N_CANDIDATES = 20           # candidates kept after fusion, sent to the reranker
 RRF_K = 60                  # standard Reciprocal Rank Fusion constant
 TOP_K = 10                  # default number of recommendations
 
+# --- Quota-based candidate selection (FIX #13) ---------------------------------
+# These values were previously hardcoded at two call sites (recommender.py and
+# pipeline.py) and would drift apart silently — the same pattern that caused the
+# double-sigmoid bug. They are now a single source of truth here.
+# They are included in get_pipeline_version() so tuning any of them automatically
+# invalidates precomputed recommendations.
+CANDIDATE_RRF_QUOTA        = 12   # top RRF-fused slots (always filled first)
+CANDIDATE_DENSE_QUOTA      = 5    # strong Dense-only slots (rank 1..STRONG_DENSE_CUTOFF)
+CANDIDATE_BM25_QUOTA       = 3    # strong BM25-only slots  (rank 1..STRONG_BM25_CUTOFF)
+CANDIDATE_STRONG_DENSE_CUTOFF = 5 # a "strong" dense hit must be in top-N dense ranks
+CANDIDATE_STRONG_BM25_CUTOFF  = 5 # a "strong" BM25 hit must be in top-N BM25 ranks
+
 # --- Relevance blend weights (must sum to 1.0) ---
 # Single source of truth for the reranker/BM25/dense mix used by BOTH the
 # ingestion pipeline (db/pipeline.py) and the live path (src/recommender.py).
@@ -102,6 +114,17 @@ TOP_K = 10                  # default number of recommendations
 WEIGHT_RERANK = 0.55        # cross-encoder (bge-reranker-base)
 WEIGHT_BM25 = 0.15          # lexical keyword match
 WEIGHT_DENSE = 0.30         # semantic embedding (bge-small-en-v1.5 384d)
+
+# Live hybrid pipeline weights (pure in-memory retrieval without cross-encoder).
+# Kept independent of precomputation weights so they do not invalidate pipeline_version.
+LIVE_WEIGHT_DENSE = 0.60    # semantic dense vector percentile (60%)
+LIVE_WEIGHT_BM25 = 0.40     # lexical BM25 self-normalized score (40%)
+
+# Live-only recency injection: when method="hybrid", articles published within this
+# many days of the source article (and in the same section) are added to the candidate
+# pool even if BM25 and Dense did not retrieve them. This guarantees recency boost
+# can actually surface them. Never used by the precomputed pipeline.
+RECENCY_INJECT_DAYS = 7
 
 # --- Diversity (MMR): 1.0 = pure relevance, lower = more variety ---
 # Article-to-article: the MEASURED values, shared by BOTH the ingestion pipeline
@@ -388,6 +411,12 @@ def get_pipeline_version() -> str:
         f"consensus_tier3=1.08",
         f"consensus_dual_retrieval=1.04",
         f"consensus_single_signal=0.80",
+        # FIX #13: candidate quota constants
+        f"cand_rrf_quota={CANDIDATE_RRF_QUOTA}",
+        f"cand_dense_quota={CANDIDATE_DENSE_QUOTA}",
+        f"cand_bm25_quota={CANDIDATE_BM25_QUOTA}",
+        f"cand_strong_dense_cutoff={CANDIDATE_STRONG_DENSE_CUTOFF}",
+        f"cand_strong_bm25_cutoff={CANDIDATE_STRONG_BM25_CUTOFF}",
     ]
     return hashlib.sha256("|".join(tokens).encode("utf-8")).hexdigest()[:16]
 

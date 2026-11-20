@@ -20,6 +20,7 @@ const Tabs = (() => {
   let scrollObserver = null; // loads the NEXT batch when the bottom sentinel shows
   let feedQueue = [];        // source articles still waiting to be rendered
   let feedRendered = 0;      // how many halo widgets are currently in the DOM
+  let pinnedArticleForFeed = null; // article pinned to the top of feed (e.g. from Discover Random or Story Finder)
 
   const FEED_CHUNK = 15;     // widgets appended per batch as you scroll
   const FEED_PAGE  = 100;    // API page size when pulling the full article list
@@ -46,6 +47,13 @@ const Tabs = (() => {
 
     if (tabName === 'similar') {
       buildFeed();
+    } else if (tabName === 'hybrid-lab') {
+      if (typeof HybridLab !== 'undefined' && typeof HybridLab.onTabActivated === 'function') {
+        HybridLab.onTabActivated();
+      }
+    } else if (tabName === 'compare') {
+      // Compare tab is self-contained; no extra activation needed beyond switching the panel.
+      // Compare.init() already ran at startup.
     } else if (tabName === 'editor') {
       if (window.Editor) {
         Editor.refreshDbHealth();
@@ -255,7 +263,8 @@ const Tabs = (() => {
 
       // 5. Signal agreement (Fix b: top-5 rule, "X of 3")
       const agreeCount = ev.agreement_count ?? 1;
-      const agreeLabel = ev.agreement_label || `${agreeCount}/3`;
+      const maxSig = ev.max_signals || 3;
+      const agreeLabel = ev.agreement_label || `${agreeCount}/${maxSig}`;
       if (agreeCount >= 2) {
         tags.push(`<span class="orbit-badge" title="Signals agreed in top-5">⚡ ${agreeLabel} Agreed</span>`);
       }
@@ -607,7 +616,7 @@ const Tabs = (() => {
     }
     // No cap — every matching story is queued and rendered as the reader scrolls.
 
-    if (!list.length) {
+    if (!list.length && !pinnedArticleForFeed) {
       feed.innerHTML = `
         <div class="empty-state">
           <div class="empty-icon">📰</div>
@@ -618,10 +627,26 @@ const Tabs = (() => {
       return;
     }
 
+    if (pinnedArticleForFeed) {
+      // Ensure the pinned story is positioned as the very first item in the feed
+      list = [pinnedArticleForFeed, ...list.filter(a => String(a.id) !== String(pinnedArticleForFeed.id))];
+    }
+
     feed.innerHTML = '';
     feedQueue = list.slice();
     appendFeedChunk();
     observeSentinel();
+
+    if (pinnedArticleForFeed) {
+      const pinnedWidget = feed.querySelector(`.feed-widget[data-id="${pinnedArticleForFeed.id}"]`);
+      if (pinnedWidget) {
+        loadWidgetRecommendations(pinnedWidget);
+        pinnedWidget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        pinnedWidget.classList.add('widget-highlighted');
+        setTimeout(() => pinnedWidget.classList.remove('widget-highlighted'), 2600);
+      }
+      pinnedArticleForFeed = null;
+    }
   }
 
   // Kept for backward compatibility: app.js calls this after ingestion / role switch.
@@ -655,6 +680,7 @@ const Tabs = (() => {
 
     const { topK, method, useBoosts, diversify, activeSection } = State.get();
 
+    const startTime = performance.now();
     try {
       const data = await Api.recommend({
         query,
@@ -664,6 +690,9 @@ const Tabs = (() => {
         diversify,
         section: activeSection || null,
       });
+
+      const elapsedMs = Math.round(performance.now() - startTime);
+      data.latency_ms = elapsedMs;
 
       if (resultMeta) renderResultMeta(resultMeta, data);
       if (resultsGrid) {
@@ -687,6 +716,44 @@ const Tabs = (() => {
             <p>${err.message}</p>
           </div>`;
       }
+    }
+  }
+
+  function selectArticle(article) {
+    if (!article) return;
+    const { activeTab } = State.get();
+    if (activeTab !== 'similar') {
+      pinnedArticleForFeed = article;
+      switchTab('similar');
+      return;
+    }
+
+    const input = document.getElementById('story-finder-input');
+    const clearBtn = document.getElementById('story-finder-clear');
+    const dropdown = document.getElementById('story-finder-dropdown');
+    if (input) input.value = article.title || '';
+    if (clearBtn) clearBtn.classList.remove('hidden');
+    if (dropdown) dropdown.classList.add('hidden');
+
+    const feed = document.getElementById('article-feed');
+    if (!feed) return;
+
+    // Check if widget is already in DOM
+    let existingWidget = feed.querySelector(`.feed-widget[data-id="${article.id}"]`);
+    if (existingWidget) {
+      feed.prepend(existingWidget);
+      loadWidgetRecommendations(existingWidget);
+      existingWidget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      existingWidget.classList.add('widget-highlighted');
+      setTimeout(() => existingWidget.classList.remove('widget-highlighted'), 2600);
+    } else {
+      // Prepend directly to top of feed so user sees it immediately
+      const newWidget = buildFeedWidget(article);
+      feed.prepend(newWidget);
+      loadWidgetRecommendations(newWidget);
+      newWidget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      newWidget.classList.add('widget-highlighted');
+      setTimeout(() => newWidget.classList.remove('widget-highlighted'), 2600);
     }
   }
 
@@ -745,33 +812,6 @@ const Tabs = (() => {
       }).slice(0, 15);
 
       renderMatches(matches);
-    }
-
-    function selectArticle(article) {
-      if (!article) return;
-      input.value = article.title;
-      if (clearBtn) clearBtn.classList.remove('hidden');
-      dropdown.classList.add('hidden');
-
-      const feed = document.getElementById('article-feed');
-      if (!feed) return;
-
-      // Check if widget is already in DOM
-      let existingWidget = feed.querySelector(`.feed-widget[data-id="${article.id}"]`);
-      if (existingWidget) {
-        loadWidgetRecommendations(existingWidget);
-        existingWidget.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        existingWidget.classList.add('widget-highlighted');
-        setTimeout(() => existingWidget.classList.remove('widget-highlighted'), 2600);
-      } else {
-        // Prepend directly to top of feed so user sees it immediately
-        const newWidget = buildFeedWidget(article);
-        feed.prepend(newWidget);
-        loadWidgetRecommendations(newWidget);
-        newWidget.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        newWidget.classList.add('widget-highlighted');
-        setTimeout(() => newWidget.classList.remove('widget-highlighted'), 2600);
-      }
     }
 
     input.addEventListener('focus', () => {
@@ -848,54 +888,17 @@ const Tabs = (() => {
   // also exported on the public Tabs object and called from app.js. Referencing
   // it from the return block while it was nested caused a ReferenceError that
   // aborted the whole tabs.js IIFE, leaving `Tabs` undefined.
-  async function applyModelSwitch(version) {
-    State.set({ modelVersion: version });
-    const btn384 = document.getElementById('btn-model-384d');
-    const btn768 = document.getElementById('btn-model-768d');
-    if (btn384) btn384.classList.toggle('active', version === '384d');
-    if (btn768) btn768.classList.toggle('active', version === '768d');
-
-    const modelLabel = version === '768d' ? 'BGE-Base (768D Archive)' : 'Pipeline C (384D BGE-Small)';
-    if (typeof showToast === 'function') {
-      showToast(`Switched view to ${modelLabel}`, 'info');
-    }
-
-    // 1. Refresh database state & UI banners for selected pipeline
+  async function applyModelSwitch(version = '384d') {
+    State.set({ modelVersion: '384d' });
     if (typeof window.checkReaderDatabaseState === 'function') {
       await window.checkReaderDatabaseState();
     }
-
-    // 2. Refresh sections and category pills for selected pipeline
-    try {
-      const sectionsData = await Api.sections(version);
-      const sections = sectionsData.sections || [];
-      populateCategoryPills(sections);
-      const secFilter = document.getElementById('section-filter');
-      if (secFilter) {
-        secFilter.innerHTML = '<option value="">All</option>';
-        sections.forEach(sec => {
-          const opt = document.createElement('option');
-          opt.value = sec;
-          opt.textContent = sec.charAt(0).toUpperCase() + sec.slice(1);
-          secFilter.appendChild(opt);
-        });
-      }
-    } catch (e) {
-      console.warn('Failed to refresh sections for switched pipeline:', e);
-    }
-
-    // 3. Clear cache and completely rebuild feed for the selected pipeline
     allArticlesCache = [];
     buildFeed();
   }
 
   function initModelSwitcher() {
-    const btn384 = document.getElementById('btn-model-384d');
-    const btn768 = document.getElementById('btn-model-768d');
-    if (!btn384 || !btn768) return;
-
-    btn384.addEventListener('click', () => applyModelSwitch('384d'));
-    btn768.addEventListener('click', () => applyModelSwitch('768d'));
+    // Model switcher retired — single standard 384D pipeline active
   }
 
   function selectCategory(sec) {
@@ -995,9 +998,13 @@ const Tabs = (() => {
     }
   }
 
+  function clearArticlesCache() {
+    allArticlesCache = [];
+  }
+
   return {
     init, switchTab, performSearch, populateArticlePicker, buildFeed, reloadCurrentTab,
-    populateCategoryPills, selectCategory, applyModelSwitch,
+    populateCategoryPills, selectCategory, applyModelSwitch, selectArticle, clearArticlesCache,
     // Exposed so a widget can be rendered directly (the editor preview and the
     // render checks build one halo without booting the whole feed).
     buildFeedWidget, renderWidgetRecs,

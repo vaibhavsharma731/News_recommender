@@ -242,9 +242,19 @@ function renderNotes(container, notes = [], lowConfidence = false) {
 function renderResultMeta(container, result) {
   const pre = result.source === 'postgresql';
   const sourceChip = `<span class="source-chip source-chip-${pre ? 'pre' : 'live'}">${pre ? '⚡ Precomputed' : '🛰️ Live'}</span>`;
+  const isGpu = result.is_gpu || result.device === 'Remote Cloud GPU';
+  const deviceBadge = pre 
+    ? '' 
+    : `<span class="badge" style="background:${isGpu ? '#10b981' : '#f59e0b'}; color:#fff; font-weight:700;">${isGpu ? '🚀 Remote GPU' : '💻 Local CPU'}</span>`;
+  const latencyBadge = result.latency_ms !== undefined 
+    ? `<span class="badge badge-latency" style="background:#3b82f6; color:#fff; font-weight:700;">⏱️ ${result.latency_ms} ms</span>` 
+    : '';
+
   container.innerHTML = `
     <span>🔢 <strong>${result.recommendations.length}</strong> results</span>
     <span>🧠 Engine: <strong>${result.engine || ''}</strong></span>
+    ${deviceBadge}
+    ${latencyBadge}
     <span class="badge badge-method">${result.method}</span>
     ${sourceChip}
     ${result.best_relevance ? `<span>Best match: <strong>${Math.round(result.best_relevance*100)}%</strong></span>` : ''}

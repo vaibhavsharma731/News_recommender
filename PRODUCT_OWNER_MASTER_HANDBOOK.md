@@ -413,11 +413,10 @@ Below is the complete specification for each core subsystem in the NewsRec v2.0 
 - **Output:** Diversified, ordered ranking of candidates.
 - **Next Component:** Passed to the Relevance Admission Cut and Calibration Engine.
 
-#### 10. Relevance Cut & Calibration Engine (`config.py` & `src/calibration.py`)
-- **What it does:** Enforces quality floors and calibrates raw mathematical scores into human-interpretable confidence percentages.
-- **Why it exists:** If an article is unique or obscure, the 10th candidate might have near-zero relevance. The admission cut trims low-quality recommendations. Calibration ensures that a "90% Confidence" score corresponds to real editorial relevance.
+#### 10. Calibration Engine (`src/calibration.py`)
+- **What it does:** Calibrates raw mathematical scores into human-interpretable confidence percentages.
+- **Why it exists:** Calibration ensures that a "90% Confidence" score corresponds to real editorial relevance. Candidates are pre-filtered upstream by `MIN_RAW_RERANK_THRESHOLD` (0.12) and candidate quotas, so there is no separate admission-cut step.
 - **Processing Performed:**
-  - **Admission Cut:** Discards candidates below a hard floor of $0.40$ or past an elbow ratio drop of $0.45$, while guaranteeing a minimum retention of 4 candidates (unless relevance is negligible).
   - **Platt Scaling:** Calibrates scores using a logistic sigmoid:
     $$P(	ext{Relevant}) = rac{1}{1 + e^{-(4.85 \cdot 	ext{Score} - 2.60)}}$$
   - Assigns confidence bands: **HIGH** ($\ge 0.65$), **MEDIUM** ($0.35 - 0.64$), **LOW** ($< 0.35$).
@@ -983,8 +982,8 @@ Candidate Pool Quota Budget (Target: Exactly 20 Candidates):
 
 ---
 
-### 6.6 Pre-Rerank Admission Gate
-Before spending valuable CPU cycles running the heavy Cross-Encoder on all 20 candidates, the candidates pass through a fast lexical/entity gate (`config.admission_cut()`):
+### 6.6 Pre-Rerank Lexical / Entity Gate
+Before spending valuable CPU cycles running the heavy Cross-Encoder on all 20 candidates, the candidates pass through a fast lexical/entity gate (`config.LEXICAL_GATE` / `config.ENTITY_GATE`):
 - **Rule:** A candidate must share at least ONE high-IDF BM25 term OR at least ONE capitalized named entity with the source article.
 - **Exception:** Editorial ground truth pairs ("Also Read" links) bypass the gate unconditionally.
 - **Benefit:** Instantly terminates irrelevant semantic drift before neural inference.
@@ -1108,11 +1107,8 @@ $$	ext{ArgMax}_{d \in 	ext{Remaining}} \left[ \lambda \cdot 	ext{Score}(d) - (1 
 
 ---
 
-### 6.11 Relevance Admission Cut
-Before presenting the final list:
-1. **Hard Floor:** Any candidate with a score $< 0.40$ is cut.
-2. **Elbow Drop:** If a candidate's score drops by more than $45\%$ relative to the preceding candidate, the list is truncated.
-3. **Guaranteed Retention:** The engine guarantees keeping at least 4 candidates unless overall relevance is negligible.
+### 6.11 Post-Rerank Quality Control & Candidate Quotas
+Rather than arbitrary drop-off heuristics, candidates are screened upfront using `MIN_RAW_RERANK_THRESHOLD` (0.12) to detect low-confidence pairings, alongside the candidate quota distribution (12 RRF + 5 Dense + 3 BM25). Any items falling below confidence thresholds are flagged accordingly.
 
 ---
 
@@ -1881,8 +1877,8 @@ This section compiles 55 comprehensive, technical, and architectural questions d
 #### Q31: What is Platt Scaling and how is it used in NewsRec v2.0?
 **Answer:** Platt scaling is a post-processing technique that maps raw unbounded scores to calibrated posterior probabilities via a logistic sigmoid: $P = rac{1}{1 + \exp(-(4.85 \cdot 	ext{Score} - 2.60))}$. It translates mathematical ranking scores into intuitive confidence percentages (e.g., "94% Match").
 
-#### Q32: What are the admission cut criteria?
-**Answer:** An article must exceed a hard relevance floor of $0.40$ and must not drop by more than $45\%$ relative to the preceding candidate (elbow ratio), with a minimum retention guarantee of 4 candidates unless relevance is negligible.
+#### Q32: What are the quality gating criteria?
+**Answer:** The pipeline uses candidate quotas (12 RRF + 5 Dense + 3 BM25) and pre-rerank lexical/entity gates, along with `MIN_RAW_RERANK_THRESHOLD = 0.12` to identify low-confidence candidates, replacing deprecated heuristic elbow and floor cuts.
 
 ---
 
@@ -1980,7 +1976,7 @@ This section compiles 55 comprehensive, technical, and architectural questions d
 This glossary defines 40 core technical and domain terms used throughout NewsRec v2.0.
 
 1. **Active Pipeline:** The primary production recommendation pipeline running BGE-Small 384D dense vectors on `articles` and `article_recommendations`.
-2. **Admission Cut:** A quality control filter (`config.admission_cut()`) enforcing a 0.40 score floor and a 0.45 elbow drop ratio to discard irrelevant candidates.
+2. **Quality Gate:** Pre-rerank lexical/entity gates and `MIN_RAW_RERANK_THRESHOLD` to detect and filter low-confidence pairs, replacing legacy elbow/floor cuts.
 3. **Bi-Encoder:** A neural architecture (like BGE-Small) that encodes queries and documents into independent vector embeddings, enabling fast dot-product search.
 4. **BLAS (Basic Linear Algebra Subprograms):** Low-level hardware-optimized routines used by NumPy to execute vector dot products in CPU cache.
 5. **BM25 (Best Matching 25):** A probabilistic ranking function used in information retrieval that scores documents based on query term frequency and inverse document frequency.
@@ -1992,7 +1988,7 @@ This glossary defines 40 core technical and domain terms used throughout NewsRec
 11. **Deterministic Evidence:** Explainability metadata derived strictly from verified lexical overlaps and mathematical boost values, with zero generative AI hallucination.
 12. **Double-Sigmoid Bug:** A scoring defect where applying a sigmoid function to an output that is already bounded in $[0, 1]$ compresses scores into $[0.50, 0.731]$.
 13. **Dual-Track Serving:** The architecture routing standard article queries to a sub-5ms PostgreSQL cache while routing ad-hoc searches to an in-memory engine.
-14. **Elbow Drop Ratio:** A heuristic terminating the recommendation list when a candidate's score drops by more than 45% compared to the candidate ranked above it.
+14. **Dynamic Score Scaling:** Normalizing cross-encoder probabilities and signal contributions to properly balance multi-stage ranking.
 15. **Embedding:** A mapping of discrete categorical text into a continuous high-dimensional vector space.
 16. **Empirical Quantile Normalization:** Mapping raw cosine similarities to a uniform $[0, 1]$ scale using a 101-point reference distribution calibrated against 50,000 random document pairs.
 17. **Fast-Path:** Sub-5ms database query serving precomputed top-10 recommendations directly from PostgreSQL without model inference.
@@ -2080,7 +2076,7 @@ ews recommender base│
 
 #### `config.py` (Single Source of Truth)
 - **Primary Responsibility:** Holds all system-wide hyperparameters, model names, revision pins, token budgets, boost multipliers, and tiered section half-lives.
-- **Key Symbols:** `EMBEDDING_MODEL`, `EMBEDDING_DIM = 384`, `EMBEDDING_REVISION`, `RERANKER_MODEL`, `EMBED_TOKEN_BUDGET = 254`, `RERANK_TOKEN_BUDGET = 254`, `SECTION_HALF_LIVES`, `get_pipeline_version()`, `recency_boost()`, `admission_cut()`.
+- **Key Symbols:** `EMBEDDING_MODEL`, `EMBEDDING_DIM = 384`, `EMBEDDING_REVISION`, `RERANKER_MODEL`, `EMBED_TOKEN_BUDGET = 254`, `RERANK_TOKEN_BUDGET = 254`, `SECTION_HALF_LIVES`, `get_pipeline_version()`, `recency_boost()`, `MIN_RAW_RERANK_THRESHOLD`.
 - **Called by:** Virtually every module in the repository.
 
 #### `src/data_loader.py` (Authoritative Data Cleaner)

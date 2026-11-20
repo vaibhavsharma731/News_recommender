@@ -90,6 +90,7 @@ def bm25_term_hits(bm25_index, query: str, cand_pos: int, limit: int = 8) -> Lis
     k1 = getattr(bm25_index, "k1", 1.5)
     # Check if field-aware postings (BM25F)
     postings = getattr(bm25_index, "postings", {})
+    postings_by_pos = getattr(bm25_index, "postings_by_pos", None)
 
     hits = []
     for term, weight in expanded:
@@ -97,12 +98,15 @@ def bm25_term_hits(bm25_index, query: str, cand_pos: int, limit: int = 8) -> Lis
         if idf <= 0.0:
             continue
         
-        # Look up precomputed tf_tilde for cand_pos if available in postings
+        # Look up precomputed tf_tilde for cand_pos: O(1) via postings_by_pos, fallback to O(postings) scan
         tf_tilde = None
-        for pos, val in postings.get(term, []):
-            if pos == cand_pos:
-                tf_tilde = val
-                break
+        if postings_by_pos is not None:
+            tf_tilde = postings_by_pos.get(term, {}).get(cand_pos)
+        else:
+            for pos, val in postings.get(term, []):
+                if pos == cand_pos:
+                    tf_tilde = val
+                    break
         
         if tf_tilde is None or tf_tilde <= 0:
             continue
@@ -362,16 +366,19 @@ def evaluate_signal_agreement(
     else:
         signals.append("Dense Vector (not in top-50 semantic results)")
 
-    if rerank_score is not None:
-        prob_pct = f"{rerank_score * 100:.1f}%"
-        rank_part = f"Rank #{rerank_rank}, " if (rerank_rank is not None and rerank_rank < 900) else ""
-        signals.append(f"Cross-Encoder ({rank_part}{prob_pct} — {_grade_label(ce_grade)})")
-    elif rerank_rank is not None and rerank_rank < 900:
-        signals.append(f"Cross-Encoder (Rank #{rerank_rank} — {_grade_label(ce_grade)})")
+    has_ce = (rerank_score is not None) or (rerank_rank is not None and rerank_rank < 900)
+    if has_ce:
+        if rerank_score is not None:
+            prob_pct = f"{rerank_score * 100:.1f}%"
+            rank_part = f"Rank #{rerank_rank}, " if (rerank_rank is not None and rerank_rank < 900) else ""
+            signals.append(f"Cross-Encoder ({rank_part}{prob_pct} — {_grade_label(ce_grade)})")
+        elif rerank_rank is not None and rerank_rank < 900:
+            signals.append(f"Cross-Encoder (Rank #{rerank_rank} — {_grade_label(ce_grade)})")
+        count = sum(g in ("strong", "moderate") for g in [b_grade, d_grade, ce_grade])
     else:
-        signals.append("Cross-Encoder (not available)")
+        signals.append("Cross-Encoder (Not used: 2-signal live pipeline)")
+        count = sum(g in ("strong", "moderate") for g in [b_grade, d_grade])
 
-    count = sum(g in ("strong", "moderate") for g in [b_grade, d_grade, ce_grade])
     return count, signals
 
 
@@ -546,11 +553,11 @@ def build_evidence_reason(
         return rounded(weight * value) if value is not None else None
 
     boost_items = []
-    for name, value in boost_map.items():
-        if name == "total":
-            continue
-        mult = rounded(value)
-        boost_items.append({"name": name, "mult": mult, "amount": f"{(mult - 1) * 100:+.1f}%"})
+    _DOMAIN_BOOST_KEYS = ("editorial", "section", "subsection", "popularity", "recency")
+    for name in _DOMAIN_BOOST_KEYS:
+        if name in boost_map:
+            mult = rounded(boost_map[name])
+            boost_items.append({"name": name, "mult": mult, "amount": f"{(mult - 1) * 100:+.1f}%"})
 
     boosts = [
         f"{b['name'].title()} boost ({b['amount']})"
@@ -607,26 +614,39 @@ def build_evidence_reason(
 
     # Template-generated one-line "why" sentence (deterministic, no LLM)
     cand_sec = cand_row.get("section") or "General"
+    has_ce = (rerank_score is not None) or (rerank_rank is not None and rerank_rank < 900)
+    max_signals = 3 if has_ce else 2
+
     if entities:
-        template_why = f"Shares key entities ({', '.join(entities[:2])}) with {agreement_count} of 3 signals corroborated ({cand_sec})."
+        template_why = f"Shares key entities ({', '.join(entities[:2])}) with {agreement_count} of {max_signals} signals corroborated ({cand_sec})."
     elif terms:
-        template_why = f"Lexical topic overlap on '{', '.join(terms[:2])}' corroborated by {agreement_count} of 3 signals ({cand_sec})."
+        template_why = f"Lexical topic overlap on '{', '.join(terms[:2])}' corroborated by {agreement_count} of {max_signals} signals ({cand_sec})."
     elif cosine_val is not None and cosine_val >= 0.72:
-        template_why = f"{cosine_band} ({cand_sec}) with Cross-Encoder lead."
+        template_why = f"{cosine_band} ({cand_sec})" + (" with Cross-Encoder lead." if has_ce else " (Dense semantic lead).")
     elif editorial_link:
         template_why = f"Curated editorial 'Also Read' link with verified contextual alignment ({cand_sec})."
     else:
         template_why = f"Contextual thematic alignment in {cand_sec}."
 
     # Spec Verification & Provenance (Fix g)
-    live_w = {"rerank": config.WEIGHT_RERANK, "bm25": config.WEIGHT_BM25, "dense": config.WEIGHT_DENSE}
-    spec_w = {"rerank": 0.70, "bm25": 0.20, "dense": 0.10}
-    has_mismatch = (config.WEIGHT_RERANK != 0.70 or config.WEIGHT_BM25 != 0.20 or config.WEIGHT_DENSE != 0.10)
+    if has_ce:
+        live_w = {"rerank": config.WEIGHT_RERANK, "bm25": config.WEIGHT_BM25, "dense": config.WEIGHT_DENSE}
+        spec_w = {"rerank": 0.70, "bm25": 0.20, "dense": 0.10}
+        has_mismatch = (config.WEIGHT_RERANK != 0.70 or config.WEIGHT_BM25 != 0.20 or config.WEIGHT_DENSE != 0.10)
+        mismatch_msg = f"Live weights ({config.WEIGHT_RERANK}/{config.WEIGHT_BM25}/{config.WEIGHT_DENSE}) from empirical tuning vs 0.70/0.20/0.10 initial spec."
+    else:
+        w_bm25_live = getattr(config, "LIVE_WEIGHT_BM25", 0.40)
+        w_dense_live = getattr(config, "LIVE_WEIGHT_DENSE", 0.60)
+        live_w = {"rerank": 0.0, "bm25": w_bm25_live, "dense": w_dense_live}
+        spec_w = {"rerank": 0.0, "bm25": 0.40, "dense": 0.60}
+        has_mismatch = False
+        mismatch_msg = f"Live 2-signal retrieval weights (BM25 {w_bm25_live} / Dense {w_dense_live}) without Cross-Encoder."
+
     provenance = {
         "live_weights": live_w,
         "spec_weights": spec_w,
         "has_weight_mismatch": has_mismatch,
-        "mismatch_explanation": f"Live weights ({config.WEIGHT_RERANK}/{config.WEIGHT_BM25}/{config.WEIGHT_DENSE}) from empirical tuning vs 0.70/0.20/0.10 initial spec.",
+        "mismatch_explanation": mismatch_msg,
         "boost_caps": {
             "editorial": 1.40,
             "section_focused": getattr(config, "SECTION_BOOST_FOCUSED", 1.100),
@@ -655,7 +675,8 @@ def build_evidence_reason(
         "best_sentence": best_sentence,
         "signals": signals,
         "agreement_count": agreement_count,
-        "agreement_label": f"{agreement_count} of 3",
+        "agreement_label": f"{agreement_count} of {max_signals}",
+        "max_signals": max_signals,
         "boosts": boosts,
         "context_facts": context_facts,
         "bm25_terms": bm25_term_hits(bm25_index, bm25_query, cand_pos) if bm25_query else [],
@@ -676,8 +697,13 @@ def build_evidence_reason(
         from src.scoring import _signal_grade, CE_STRONG_THRESH, CE_MOD_THRESH
         b_grade = _signal_grade(bm25_rank)
         d_grade = _signal_grade(dense_rank)
-        ce_val = float(rerank_score) if rerank_score is not None else 0.0
-        ce_grade = "strong" if ce_val >= CE_STRONG_THRESH else ("moderate" if ce_val >= CE_MOD_THRESH else "weak")
+        if has_ce and rerank_score is not None:
+            ce_val = float(rerank_score)
+            ce_grade = "strong" if ce_val >= CE_STRONG_THRESH else ("moderate" if ce_val >= CE_MOD_THRESH else "weak")
+        elif has_ce:
+            ce_grade = "moderate"
+        else:
+            ce_grade = "none"
         domain_mult = boost_map.get("domain_multiplier", boost_map.get("total", 1.0))
         agreement_adj = boost_map.get("agreement_adjustment", 0.0)
 
@@ -688,15 +714,16 @@ def build_evidence_reason(
             "dense_rank": dense_rank if (dense_rank is not None and dense_rank < 900) else None,
             "dense_grade": d_grade,
             "cross_encoder_grade": ce_grade,
+            "max_signals": max_signals,
             "agreement_adjustment": rounded(agreement_adj, 4),
             "domain_multiplier": rounded(domain_mult, 4),
             "blend": rounded(s.get("blend")),
             "components": {
-                "rerank_term": weighted(config.WEIGHT_RERANK, rerank_score),
+                "rerank_term": weighted(live_w["rerank"], rerank_score) if has_ce else None,
                 "bm25_norm": rounded(s.get("bm25_norm")),
-                "bm25_term": weighted(config.WEIGHT_BM25, s.get("bm25_norm")),
+                "bm25_term": weighted(live_w["bm25"], s.get("bm25_norm")),
                 "dense_norm": rounded(s.get("dense_norm")),
-                "dense_term": weighted(config.WEIGHT_DENSE, s.get("dense_norm")),
+                "dense_term": weighted(live_w["dense"], s.get("dense_norm")),
                 "weights": live_w,
             },
             "unboosted_confidence": rounded(s.get("unboosted_confidence")),
@@ -730,8 +757,8 @@ def build_evidence_reason(
             "reranker": rounded(rerank_score, 4),
             "reranker_rank": rerank_rank if (rerank_rank is not None and rerank_rank < 900) else None,
             "agreement_count": agreement_count,
-            "agreement_label": f"{agreement_count} of 3",
-            "status": f"{agreement_count} of 3 signals corroborated",
+            "agreement_label": f"{agreement_count} of {max_signals}",
+            "status": f"{agreement_count} of {max_signals} signals corroborated",
         }
 
     if (confidence_info or {}).get("margin") is not None:
@@ -965,13 +992,24 @@ def enrich_recommendation_evidence(source_dict: Optional[dict], recs: list):
 
         # 11. Provenance (Fix g)
         if "provenance" not in ev:
-            live_w = {"rerank": config.WEIGHT_RERANK, "bm25": config.WEIGHT_BM25, "dense": config.WEIGHT_DENSE}
-            spec_w = {"rerank": 0.70, "bm25": 0.20, "dense": 0.10}
+            has_ce_record = ev.get("score_breakdown", {}).get("cross_encoder_grade") not in ("none", None)
+            if has_ce_record:
+                live_w = {"rerank": config.WEIGHT_RERANK, "bm25": config.WEIGHT_BM25, "dense": config.WEIGHT_DENSE}
+                spec_w = {"rerank": 0.70, "bm25": 0.20, "dense": 0.10}
+                mismatch = (config.WEIGHT_RERANK != 0.70 or config.WEIGHT_BM25 != 0.20 or config.WEIGHT_DENSE != 0.10)
+                mismatch_msg = f"Live weights ({config.WEIGHT_RERANK}/{config.WEIGHT_BM25}/{config.WEIGHT_DENSE}) from empirical tuning vs 0.70/0.20/0.10 initial spec."
+            else:
+                w_b = getattr(config, "LIVE_WEIGHT_BM25", 0.40)
+                w_d = getattr(config, "LIVE_WEIGHT_DENSE", 0.60)
+                live_w = {"rerank": 0.0, "bm25": w_b, "dense": w_d}
+                spec_w = {"rerank": 0.0, "bm25": 0.40, "dense": 0.60}
+                mismatch = False
+                mismatch_msg = f"Live 2-signal retrieval weights (BM25 {w_b} / Dense {w_d}) without Cross-Encoder."
             ev["provenance"] = {
                 "live_weights": live_w,
                 "spec_weights": spec_w,
-                "has_weight_mismatch": (config.WEIGHT_RERANK != 0.70 or config.WEIGHT_BM25 != 0.20 or config.WEIGHT_DENSE != 0.10),
-                "mismatch_explanation": f"Live weights ({config.WEIGHT_RERANK}/{config.WEIGHT_BM25}/{config.WEIGHT_DENSE}) from empirical tuning vs 0.70/0.20/0.10 initial spec.",
+                "has_weight_mismatch": mismatch,
+                "mismatch_explanation": mismatch_msg,
                 "boost_caps": {
                     "editorial": 1.40,
                     "section_focused": getattr(config, "SECTION_BOOST_FOCUSED", 1.100),

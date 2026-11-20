@@ -87,7 +87,7 @@ Otherwise → live in-memory `Recommender`.
 | `BOOST_MODE` | `source_date_recency` | recency vs source article, not corpus max |
 | `MIN_RAW_RERANK_THRESHOLD` | `0.12` | raw CE prob gate → `low_confidence` |
 | ~~`ARTICLE_DISCARD_FLOOR`~~ | **deleted** | was inert while the double-sigmoid bug pinned scores to 0.5–0.731 |
-| `RELEVANCE_FLOOR` / `ELBOW_RATIO` / `ELBOW_MIN_KEEP` | `0.40` / `0.45` / `4` | `config.admission_cut()` — the post-rerank relevance gate |
+| ~~`RELEVANCE_FLOOR`~~ / ~~`ELBOW_RATIO`~~ / ~~`ELBOW_MIN_KEEP`~~ | **deleted** | old post-rerank elbow/floor gate — removed; replaced by `MIN_RAW_RERANK_THRESHOLD` and candidate quotas |
 | `LEXICAL_GATE` / `ENTITY_GATE` | `True` / `True` | pre-rerank gate: no shared BM25 term AND no shared entity → blocked |
 | `WEIGHT_RERANK` / `WEIGHT_BM25` / `WEIGHT_DENSE` | `0.70` / `0.20` / `0.10` | user-set; the measured search chose `0.5/0.3/0.2` |
 | `SECTION_HALF_LIVES` | Tiered IE decay: live_blog 0.25d, trending 1d, sports 1.5d, cities/india 2.5d, world/ent 3d, business/tech 4d, legal 5d, explained/opinion/upsc 7d, books 10d, default 3d | read via `section_half_life()` (hyphen/underscore/case tolerant) |
@@ -168,8 +168,7 @@ Pure functions, no DB, no model. Added 2026-10-26 (Change 13) because `db/pipeli
   - Article-to-article: `WEIGHT_RERANK*rerank + WEIGHT_BM25*bm25_norm + WEIGHT_DENSE*dense_norm`
   - Text search: `0.70*rerank + 0.20*bm25_norm` (no dense term)
 - `low_confidence` gate uses **raw** CE probability vs `MIN_RAW_RERANK_THRESHOLD` (0.12).
-- Relevance gate: `config.admission_cut()` (hard floor + elbow + entity veto; editorial links bypass).
-  Replaced the deleted `ARTICLE_DISCARD_FLOOR`, which could never fire.
+- Post-retrieval quality gate uses `MIN_RAW_RERANK_THRESHOLD` (0.12) for `low_confidence` flagging and candidate quotas (12 RRF + 5 Dense + 3 BM25); no elbow/floor gate.
 - `_boost_parts()` — thin wrapper over `src.scoring.boost_parts()`; `total` is the product, so
   `_boost_mult` is gone (one formula, not two).
 - `_mmr()` — thin wrapper over `src.scoring.mmr()`; λ `MMR_LAMBDA` (article) / `MMR_LAMBDA_SEARCH`
@@ -300,7 +299,7 @@ pgvector sequential scan at this corpus size (Change 3 deleted the Postgres retr
 `_rank_and_build(source_row, cand_positions, rerank_vec, records, emb, bm25, bm25_all, dense_all,
 bm25_query, bm25_pos_of, dense_pos_of, max_views, max_date, current_ver)` is the **single** ranking
 path for forward and reverse rows: blend (`src.scoring.blend`) → boosts (`boost_parts`) → MMR
-(`scoring.mmr`, or plain relevance order when the pool is ≤ `TOP_K`) → `config.admission_cut()` →
+(`scoring.mmr`, or plain relevance order when the pool is ≤ `TOP_K`) →
 calibration → `build_evidence_reason()`. Change 13 deleted `_calculate_boosts`, `_apply_mmr` and
 `_generate_reason` (167 lines) so the reverse pass can no longer record less evidence than the
 forward pass for identical work. `_titles_summary()` replaced two copies of the
@@ -525,6 +524,75 @@ and parts of `editor.css` still hard-code light-on-dark colours and do **not** f
     without a vector contributes a zero vector (zero cosine), exactly like the pipeline.
 29. ~~`db/pipeline.py` booted with an unused `from sqlalchemy.orm import Session` and `api/server.py`
     imported `load_articles` it never called.~~ **fixed** — 13 unused imports removed across 9 files.
+
+### Change 17 — Live Hybrid Pipeline & Dual-Signal Agreement (No Cross-Encoder)
+
+30. **Dual-Signal Agreement Branch (`src/scoring.py`)**: When `rerank_score is None`, the live hybrid
+    pipeline runs a dedicated 2-signal agreement path (BM25 lexical + BGE dense semantic) instead
+    of falling through to CE logic with `ce=0.0` (which previously assigned negative penalties).
+    Graduated additive bonuses: `strong+strong` (+0.02), `strong+moderate` (+0.015), `moderate+moderate` (+0.01),
+    `strong+weak/none` (+0.01), `moderate+weak/none` (+0.005), `weak+weak` (-0.005), bounded within [-0.03, +0.03].
+31. **Live Pure Hybrid Weights (`config.py`)**: Added `LIVE_WEIGHT_DENSE = 0.60` and `LIVE_WEIGHT_BM25 = 0.40`.
+    Kept outside `get_pipeline_version()` so precomputed database tables are 100% untouched.
+32. **Calibration Adaptation (`src/calibration.py`)**: `calibrate(..., max_signals=2)` adjusts confidence
+    bands so `agree >= 2` properly achieves HIGH confidence on pure live retrieval consensus.
+33. **Evidence & Evaluator Accuracy (`src/evidence.py`, `evaluator.js`)**: Signal counts show "X of 2",
+    cross-encoder row explicitly indicates "Not used (2-signal live pipeline)", and `score_breakdown.components.weights`
+    records `{'rerank': 0.0, 'bm25': 0.40, 'dense': 0.60}`.
+34. **Discovery Randomizer & Tabs Integration (`frontend/js/tabs.js`, `hybrid_lab.js`, `app.js`)**:
+    - `window.HybridLab = HybridLab;` properly exported on `window`.
+    - Clicking any card in the Discovery Random slide immediately selects and highlights the story:
+      in the Live Hybrid Lab when on `tab-hybrid-lab` (with instant evaluation), or at the very top of
+      the Similar Articles feed via `pinnedArticleForFeed` when on `tab-similar` without being wiped by async feed reloads.
+
+### Change 18 — Live Hybrid UI & Quality Overhaul (2026-11-18)
+
+35. **Rich Recommendation Cards (`frontend/js/hybrid_lab.js`, `frontend/css/cards.css`)**:
+    - Replaced the full-width raw technical accordion in the Live Hybrid grid with clean, modern article cards.
+    - Each card displays: high-resolution article photo with hover zoom (and section emoji fallback), headline linked to article URL, formatted publication date (`📅 Published: DD Mon YYYY`), section & subsection badges, snippet lead, dual-signal agreement tags (`⚡ 2 of 2 Agreed`), shared entities, top BM25 keywords, and semantic alignment band.
+    - Added dedicated **`🔬 Eval`** button on each card that opens the grounded evaluation card in a full modal (`Evaluator.showModal(rec, sourceArt, art)`).
+    - Preserved the real-time latency HUD, timeline bar, and source story controls completely untouched.
+36. **Rank-Adjusted Dense Normalization (`src/scoring.py`, `src/recommender.py`)**:
+    - Added `rank_adjusted_dense_norm()`: blends empirical cosine percentile with log-rank discount (`log(2)/log(rank+1)`) to overcome candidate bunching (0.96–0.99) among top-50 results.
+    - Live hybrid now differentiates rank #1 (0.98) from rank #5 (0.67) and rank #31 (0.52).
+37. **Live Recency Injection (`src/recommender.py`, `config.py`)**:
+    - Added `_inject_recency_candidates()` with `RECENCY_INJECT_DAYS = 7`.
+    - Guarantees recently published same-section articles can enter the live candidate pool so recency boosts can surface them. Precomputation remains 100% untouched.
+38. **Evidence Label Bug Fix (`src/evidence.py`)**:
+    - Fixed `method_ranks.agreement_label` which was hardcoding `"X of 3"` instead of using dynamic `max_signals` (now `"2 of 2"` for live hybrid).
+
+### Change 19 — Interactive Candidate Pool Strategy Switcher (2026-11-18)
+
+39. **Dual Candidate Retrieval Strategies (`src/recommender.py`, `api/server.py`)**:
+    - Added `candidate_strategy: str = "quota" | "pure_rrf"` support to `Recommender.recommend()` and `RecommendRequest`.
+    - `"quota"`: Runs `select_quota_candidates(bm25_rank, semantic_rank, rrf_quota=12, dense_quota=5, bm25_quota=3)` + live recency candidate injection.
+    - `"pure_rrf"`: Runs standard reciprocal rank fusion (`reciprocal_rank_fusion([bm25_rank, semantic_rank])` taking the top 20 slots).
+    - Added `candidate_strategy` field to `Result` and JSON API response payload. Precomputation database pipeline version remains strictly `9bbf5a9ae461a14e`.
+40. **Tactile Strategy Switcher UI (`frontend/index.html`, `frontend/js/hybrid_lab.js`, `frontend/js/api.js`)**:
+    - Embedded a segmented pill switcher in `.hybrid-controls-bar` allowing seamless switching between:
+      - `🎯 Quota Plan (12 / 5 / 3)`
+      - `🔀 Pure 20 RRF Slots`
+    - Displays live candidate strategy status badge in the Latency HUD header and recommendations summary banner.
+    - Instantly re-evaluates the active story upon toggling.
+
+### Change 20 — Recency Injection Hot-Loop Optimization & Latency HUD Polish (2026-11-18)
+
+41. **Recency Injection Performance Optimization (`src/recommender.py`)**:
+    - In `Recommender.__init__`: pre-extracted `self._sections_lower` (numpy object array) and `self._date_ns` (int64 nanosecond epoch timestamps) alongside the pre-sorted `self._date_sorted_positions`.
+    - In `_inject_recency_candidates`: eliminated per-candidate pandas `.iloc` calls and `pd.to_datetime()` overhead inside the candidate loop. Replaced with direct array index lookups and nanosecond arithmetic (`abs(src_ns - cand_ns) <= window_ns`).
+    - Recency injection latency dropped ~100x from **10.06 ms** to **0.11 ms**.
+    - Pure RRF live end-to-end latency: **~24 ms** (server total ~22 ms).
+    - Quota (12/5/3) live end-to-end latency: **~33 ms** (server total ~24 ms).
+42. **Engineering-Grade Latency HUD Redesign (`frontend/index.html`, `frontend/js/hybrid_lab.js`, `frontend/css/tabs.css`)**:
+    - High-visibility ms unit styling: formatted each stage timing as `<span class="ms-num">XX.XX</span><span class="ms-unit">ms</span>` with contrast badge and clean monospace numbers.
+    - Added senior-engineer / mentor capacity stats strip:
+      - `⚡ Est. Throughput`: real-time queries per second (~42–45 req/s single CPU thread)
+      - `📚 Corpus Scanned`: total documents evaluated in memory (4,177 docs)
+      - `🎯 Candidate Pool`: pool count and injection status (20 items or 22 with recency)
+      - `🌐 Client RTT`: full network round-trip from browser
+      - `🔌 Net Overhead`: browser/network transport latency
+    - Retrieval card displays individual Dense Dot-Product scan ms vs BM25 Okapi scan ms with sub-ms unit badges.
+    - Added `candidate_count`, `n_retrieve`, `recency_injected`, `corpus_size`, and `throughput_rps` to backend `timings` payload in `src/recommender.py`. Pipeline version remains locked at `9bbf5a9ae461a14e`.
 
 ### P2 — dead code
 `State.subscribe`, `State.theme/engineInfo/allSections` (write-only), `State.addToHistory`/`saveHistory`

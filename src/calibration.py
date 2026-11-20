@@ -54,10 +54,12 @@ class ConfidenceCalibrator:
         prob = 1.0 / (1.0 + math.exp(-logit))
         return float(np.clip(prob, 0.01, 0.99))
 
-    def evaluate_band(self, prob: float, agreement_count: int = 1) -> Tuple[str, str, str]:
+    def evaluate_band(self, prob: float, agreement_count: int = 1, max_signals: int = 3) -> Tuple[str, str, str]:
         """Returns (band_code, band_label, band_color) incorporating multi-signal consensus."""
         agree = int(agreement_count or 1)
-        if prob >= HIGH_CONF_THRESHOLD or (agree >= 3 and prob >= 0.40):
+        # Full consensus: 3/3 in 3-signal pipeline, or 2/2 in dual-signal live pipeline
+        is_full_consensus = (agree >= 3) if max_signals >= 3 else (agree >= 2)
+        if prob >= HIGH_CONF_THRESHOLD or (is_full_consensus and prob >= 0.40):
             return "HIGH", "High Confidence", "#10b981"   # Emerald Green
         elif prob >= MED_CONF_THRESHOLD or (agree >= 2 and prob >= 0.25):
             return "MEDIUM", "Medium Confidence", "#f59e0b" # Amber
@@ -68,7 +70,8 @@ class ConfidenceCalibrator:
         self,
         unboosted_score: float,
         next_score: Optional[float] = None,
-        agreement_count: int = 1
+        agreement_count: int = 1,
+        max_signals: int = 3
     ) -> Dict:
         """
         Produces a rich, calibrated confidence report:
@@ -76,10 +79,11 @@ class ConfidenceCalibrator:
           - unboosted_score: raw relevance
           - band: HIGH / MEDIUM / LOW
           - margin: difference over next candidate
-          - agreement: signal agreement count (1 to 3)
+          - agreement_count: signal agreement count (1 to max_signals)
+          - max_signals: total available signals (2 or 3)
         """
         prob = self.predict_probability(unboosted_score, agreement_count=agreement_count)
-        band_code, band_label, band_color = self.evaluate_band(prob, agreement_count=agreement_count)
+        band_code, band_label, band_color = self.evaluate_band(prob, agreement_count=agreement_count, max_signals=max_signals)
 
         margin = 0.0
         if next_score is not None:
@@ -94,6 +98,7 @@ class ConfidenceCalibrator:
             "band_color": band_color,
             "margin": round(margin, 4),
             "agreement_count": agreement_count,
+            "max_signals": max_signals,
         }
 
 

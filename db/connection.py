@@ -1,8 +1,9 @@
 """
 Database connection, session management, and extension initialization.
 """
+import re
 import os
-from typing import Dict, Any, Generator
+from typing import Dict, Any, Generator, Optional, Union
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError
@@ -45,6 +46,35 @@ except Exception as e:
         SessionLocal = None
         print(f"[DB Warning] Could not initialize engine: {e2}")
 
+
+
+def set_search_path(session_or_conn, schema: str = "public") -> str:
+    """Sets PostgreSQL search_path on the session or connection."""
+    safe_schema = re.sub(r"[^a-zA-Z0-9_]", "", str(schema or "public").strip()) or "public"
+    session_or_conn.execute(text(f"SET search_path TO {safe_schema}, public"))
+    return safe_schema
+
+
+def resolve_schema(session_or_conn, dataset_id_or_schema: Optional[str] = None) -> str:
+    """
+    Resolves a dataset ID or schema name to a concrete PostgreSQL schema name.
+    If None or 'default' or 'public' -> returns 'public'.
+    Otherwise looks up public.datasets by id or schema_name.
+    """
+    if not dataset_id_or_schema or dataset_id_or_schema in ("default", "public"):
+        return "public"
+    target = dataset_id_or_schema.strip()
+    try:
+        row = session_or_conn.execute(
+            text("SELECT schema_name FROM public.datasets WHERE id = :id OR schema_name = :id LIMIT 1"),
+            {"id": target}
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except Exception:
+        pass
+    # Sanitize and fallback to clean identifier
+    return re.sub(r"[^a-zA-Z0-9_]", "", target) or "public"
 
 
 def get_db() -> Generator:
@@ -142,12 +172,25 @@ _ADDED_COLUMNS = [
      "the text was cut at the token budget"),
     ("articles", "recipe_version", "VARCHAR(32)",
      "text-composition recipe used for this row"),
+    ("execution_records", "dataset_id", "VARCHAR(64) DEFAULT 'default'",
+     "dataset this execution ran against"),
+    ("datasets", "pipeline_type", "VARCHAR(32) DEFAULT 'precomputed'",
+     "specifies whether dataset is precomputed (full) or live (embedding only)"),
+    ("ingestion_jobs", "pipeline_type", "VARCHAR(32) DEFAULT 'precomputed'",
+     "specifies whether ingestion was precomputed or live embedding"),
 ]
 
 _ADDED_INDEXES = [
     # "popular in <section>, within N days" filters on both columns, so a composite
     # index beats the section-only one that came with the first release.
     ("ix_articles_section_date", "ON articles (section, date)"),
+    # Monitoring queries filter heavily on job_type, status, and created_at.
+    ("ix_exec_records_job_type", "ON execution_records (job_type)"),
+    ("ix_exec_records_status", "ON execution_records (status)"),
+    ("ix_exec_records_created_at", "ON execution_records (created_at DESC)"),
+    ("ix_exec_stages_record_id", "ON execution_stages (record_id)"),
+    ("ix_exec_records_dataset_id", "ON execution_records (dataset_id)"),
+    ("ix_datasets_pipeline_type", "ON datasets (pipeline_type)"),
 ]
 
 
@@ -155,6 +198,12 @@ def ensure_schema() -> bool:
     """Idempotent, lightweight migrations (safe on every startup and ingestion)."""
     if not engine:
         return False
+    try:
+        from . import models  # noqa: register models with Base
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        print(f"[DB Schema] Table verification notice: {e}")
+
     statements = [f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}"
                   for table, column, sql_type, _why in _ADDED_COLUMNS]
     statements += [f"CREATE INDEX IF NOT EXISTS {name} {target}"
@@ -163,6 +212,12 @@ def ensure_schema() -> bool:
         with engine.connect() as conn:
             for statement in statements:
                 conn.execute(text(statement))
+            # Seed default dataset record if not already present
+            conn.execute(text("""
+                INSERT INTO datasets (id, name, schema_name, pipeline_type, description, is_protected)
+                VALUES ('default', 'Default (Production)', 'public', 'precomputed', 'Original production dataset in public schema', TRUE)
+                ON CONFLICT (id) DO UPDATE SET is_protected = TRUE, pipeline_type = COALESCE(datasets.pipeline_type, 'precomputed');
+            """))
             conn.commit()
         return True
     except Exception as e:

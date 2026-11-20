@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 import config
-from .connection import SessionLocal, init_db
+from .connection import SessionLocal, init_db, resolve_schema, set_search_path
 from .models import Article, ArticleRecommendation, IngestionJob
 from .repository import ArticleRepository
 from src.retrieval import BM25Index, tokenize, reciprocal_rank_fusion, select_quota_candidates
@@ -23,6 +23,14 @@ from src.calibration import ConfidenceCalibrator
 from src.evidence import build_evidence_reason, evaluate_signal_agreement, extract_shared_entities
 from src.scoring import blend, boost_parts, json_ids, linked_set, mmr
 
+# Monitoring — imported lazily; never breaks the pipeline if unavailable
+try:
+    from monitoring.resource_monitor import BackgroundResourceMonitor, take_snapshot
+    from db.monitoring_repository import MonitoringRepository
+    _MONITORING_OK = True
+except Exception:
+    _MONITORING_OK = False
+
 
 def _fmt_eta(seconds: float) -> str:
     seconds = int(max(0, seconds))
@@ -32,12 +40,12 @@ def _fmt_eta(seconds: float) -> str:
 
 
 def _titles_summary(items, limit: int = 4) -> str:
-    """'“Title A”, “Title B” (+3 more)' for a list of {"id","title"} dicts."""
+    """'"Title A", "Title B" (+3 more)' for a list of {"id","title"} dicts."""
     titles = [a["title"] for a in items[:limit] if a.get("title")]
     if not titles:
         return ""
     more = f" (+{len(items) - len(titles)} more)" if len(items) > len(titles) else ""
-    return ", ".join(f"“{t[:45]}”" for t in titles) + more
+    return ", ".join(f"\u201c{t[:45]}\u201d" for t in titles) + more
 
 
 def _focused_query(row, bm25) -> str:
@@ -185,18 +193,18 @@ def _precompute_for_article(
     dense_scores[idx] = -np.inf
     dense_rank = [int(p) for p in np.argsort(-dense_scores)[:n_retrieve] if p != idx]
 
-    # C. Quota-based candidate generation → top-N candidates for the cross-encoder.
-    # Uses 12 RRF, up to 5 strong Dense-only, up to 3 BM25-only, backfilling with RRF.
+    # C. Quota-based candidate generation -> top-N candidates for the cross-encoder.
+    # Uses configurable RRF, Dense-only, and BM25-only quotas from config.py.
     cands = select_quota_candidates(
         bm25_rank,
         dense_rank,
         n_cand=n_cand,
         k_rrf=config.RRF_K,
-        rrf_quota=12,
-        dense_quota=5,
-        bm25_quota=3,
-        strong_dense_cutoff=5,
-        strong_bm25_cutoff=5,
+        rrf_quota=config.CANDIDATE_RRF_QUOTA,
+        dense_quota=config.CANDIDATE_DENSE_QUOTA,
+        bm25_quota=config.CANDIDATE_BM25_QUOTA,
+        strong_dense_cutoff=config.CANDIDATE_STRONG_DENSE_CUTOFF,
+        strong_bm25_cutoff=config.CANDIDATE_STRONG_BM25_CUTOFF,
     )
     if not cands:
         return [], []
@@ -338,13 +346,46 @@ def _reverse_push_for_old(
     return refreshed
 
 
+# ─── Monitoring helper ───────────────────────────────────────────────────────
 
+def _finish_monitoring(
+    db, record_id: str, resource_monitor, status: str,
+    t_job_start: float, articles_success: int, articles_failed: int,
+    stage_ms: dict, error_message: str = None,
+) -> None:
+    """Write final monitoring record. Silently swallows errors to never break the pipeline."""
+    if not _MONITORING_OK or not record_id:
+        return
+    try:
+        if resource_monitor:
+            resource_monitor.stop()
+            rs = resource_monitor.get_summary()
+        else:
+            rs = {}
+        duration_ms = (time.time() - t_job_start) * 1000
+        MonitoringRepository.finish_record(
+            db,
+            record_id=record_id,
+            status=status,
+            duration_ms=duration_ms,
+            articles_success=articles_success,
+            articles_failed=articles_failed,
+            resource_summary=rs,
+            stage_timings=stage_ms,
+            error_message=error_message,
+        )
+    except Exception as e:
+        print(f"[Monitoring] Could not close record: {e}")
+
+
+# ─── Main pipeline ───────────────────────────────────────────────────────────
 
 def run_ingestion_pipeline(
     csv_source: Union[str, Path, io.BytesIO],
     job_id: str,
     limit: Optional[int] = None,
     recompute_all_recommendations: bool = False,
+    dataset_id: str = "default",
 ):
     """
     CSV -> clean -> PostgreSQL -> embeddings -> full-corpus BM25+dense -> RRF -> rerank
@@ -358,7 +399,16 @@ def run_ingestion_pipeline(
     from scratch (correct but slower — the "Option A" full rebuild).
     """
     db = SessionLocal()
+    schema_name = resolve_schema(db, dataset_id)
+    set_search_path(db, schema_name)
+
     t_job = time.time()
+    _stage_ms: Dict[str, float] = {}
+    exec_record_id = None
+    resource_monitor = None
+    n = 0
+    failed = 0
+
     try:
         # Idempotent: ensures the pgvector extension, tables and the rerank_score
         # column all exist before we start writing (safe on a fresh database).
@@ -366,6 +416,29 @@ def run_ingestion_pipeline(
         upd = lambda **kw: ArticleRepository.update_job(db, job_id, **kw)
         current_version = config.get_pipeline_version()
         upd(pipeline_version=current_version)
+
+        # ── Open monitoring record ────────────────────────────────────────────
+        if _MONITORING_OK:
+            try:
+                resource_monitor = BackgroundResourceMonitor(interval_s=0.5)
+                resource_monitor.start()
+                exec_rec = MonitoringRepository.create_record(
+                    db,
+                    job_type="ingestion",
+                    pipeline_version=current_version,
+                    job_id=job_id,
+                    dataset_id=dataset_id,
+                    metadata={
+                        "dataset_id": dataset_id,
+                        "schema_name": schema_name,
+                        "recompute_all": recompute_all_recommendations,
+                        "limit": limit,
+                    },
+                )
+                exec_record_id = exec_rec.id
+                print(f"[Monitoring] Record opened: {exec_record_id}")
+            except Exception as mon_err:
+                print(f"[Monitoring] Could not open record: {mon_err}")
 
         # Compare with previous completed ingestion job
         last_job = db.query(IngestionJob).filter(
@@ -383,16 +456,20 @@ def run_ingestion_pipeline(
 
         # 1. Parse CSV
         upd(status="processing", message="STAGE:PARSE|Parsing and validating CSV records...")
+        _t0 = time.time()
         raw_df = pd.read_csv(csv_source)
         if limit and limit > 0:
             raw_df = raw_df.head(limit)
+        _stage_ms["parse_ms"] = round((time.time() - _t0) * 1000, 1)
         upd(
             total_articles=len(raw_df),
             message=f"STAGE:CLEAN|Cleaning and normalizing {len(raw_df)} articles...",
         )
 
         # 2. Clean records
+        _t0 = time.time()
         df = clean_dataframe(raw_df)
+        _stage_ms["clean_ms"] = round((time.time() - _t0) * 1000, 1)
         n = len(df)
         if n == 0:
             raise ValueError("CSV contained no usable articles.")
@@ -418,7 +495,7 @@ def run_ingestion_pipeline(
             if r["id"] in existing_map and existing_map[r["id"]][0] != r["text_embed"]
         }
         needs_emb_ids = new_ids | changed_ids | {
-            aid for aid, (txt, emb) in existing_map.items() if emb is None
+            aid for aid, (txt, emb_) in existing_map.items() if emb_ is None
         }
 
         dup_count = len(raw_df) - len(df)
@@ -431,6 +508,7 @@ def run_ingestion_pipeline(
         upd(total_articles=n, message=f"STAGE:STORAGE|Validation: {val_summary}. Saving to DB...")
 
         # 3. Persist articles with batched INSERT ... ON CONFLICT
+        _t0 = time.time()
         ArticleRepository.bulk_upsert_articles_fast(db, [{
             "id": str(r["id"]),
             "title": str(r["title"]),
@@ -453,8 +531,10 @@ def run_ingestion_pipeline(
             "is_truncated": bool(r.get("is_truncated", False)),
             "recipe_version": str(r.get("recipe_version", config.TEXT_RECIPE_VERSION)),
         } for r in records])
+        _stage_ms["storage_ms"] = round((time.time() - _t0) * 1000, 1)
 
         # 4. Build and persist embeddings (only for new, modified, or missing-vector articles)
+        _t0 = time.time()
         if needs_emb_ids:
             upd(message=f"STAGE:EMBEDDING|Embedding {len(needs_emb_ids)} articles (skipping {len(ids) - len(needs_emb_ids)} unchanged)...")
             embedder = get_embedder()
@@ -470,11 +550,11 @@ def run_ingestion_pipeline(
                     normalize_embeddings=True,
                     show_progress_bar=False,
                 ))
-                done = min(i + chunk_size, len(emb_texts))
-                eta = (time.time() - t0) / done * (len(emb_texts) - done)
+                done_emb = min(i + chunk_size, len(emb_texts))
+                eta = (time.time() - t0) / done_emb * (len(emb_texts) - done_emb)
                 upd(
-                    processed_articles=int(0.40 * done),
-                    message=f"STAGE:EMBEDDING|Embedded {done}/{len(emb_texts)} articles (ETA {_fmt_eta(eta)})...",
+                    processed_articles=int(0.40 * done_emb),
+                    message=f"STAGE:EMBEDDING|Embedded {done_emb}/{len(emb_texts)} articles (ETA {_fmt_eta(eta)})...",
                 )
             emb = np.vstack(chunks).astype(np.float32)
             ArticleRepository.bulk_set_embeddings(db, emb_ids, emb)
@@ -482,13 +562,23 @@ def run_ingestion_pipeline(
             print(f"[Pipeline] All {len(ids)} articles have up-to-date embeddings. Skipping embedding stage.")
             upd(message="STAGE:EMBEDDING|All embeddings up-to-date. Skipped embedding step.")
 
+        _stage_ms["embedding_ms"] = round((time.time() - _t0) * 1000, 1)
+        _stage_ms["embedding_articles"] = len(needs_emb_ids)
+        if needs_emb_ids and _stage_ms["embedding_ms"] > 0:
+            _stage_ms["embed_ms_per_article"] = round(
+                _stage_ms["embedding_ms"] / max(len(needs_emb_ids), 1), 2
+            )
+
         # 5. Build a FULL-corpus index (already-stored articles + the new ones).
         upd(message="STAGE:INDEX|Building full-corpus BM25 index...")
+        _t0 = time.time()
         full_records, full_emb, id_to_pos = _load_full_corpus(db)
         n_total = len(full_records)
         if n_total == 1:
             print("[Pipeline] Only one article in the corpus; no neighbours to precompute.")
         bm25 = BM25Index(full_records)
+        _stage_ms["index_ms"] = round((time.time() - _t0) * 1000, 1)
+        _stage_ms["corpus_size"] = n_total
 
         # 6. Determine articles needing recommendations
         new_id_set = set(ids)
@@ -511,6 +601,9 @@ def run_ingestion_pipeline(
                 message=f"STAGE:COMPLETE|All {n} articles and recommendations already up-to-date ({val_summary}).",
             )
             print(f"[Pipeline] Idempotent upload: no articles needed embedding or recommendation recalculation.")
+            if exec_record_id:
+                _finish_monitoring(db, exec_record_id, resource_monitor, "completed",
+                                   t_job, n, 0, _stage_ms)
             return job_id
 
         # 6a. Rerank candidates and save recommendations in batches
@@ -578,6 +671,13 @@ def run_ingestion_pipeline(
                     ),
                 )
         db.commit()
+        _stage_ms["rerank_ms"] = round((time.time() - t0) * 1000, 1)
+        _stage_ms["rerank_articles"] = total_targets
+        _stage_ms["rerank_failed"] = failed
+        if total_targets > 0 and _stage_ms["rerank_ms"] > 0:
+            _stage_ms["rerank_ms_per_article"] = round(
+                _stage_ms["rerank_ms"] / max(total_targets, 1), 2
+            )
 
         # 6b. Reverse pass: let the new articles flow into the lists of the EXISTING
         #     articles they are close to (skipped during a full rebuild).
@@ -591,17 +691,17 @@ def run_ingestion_pipeline(
 
             t_rev = time.time()
 
-            def _rev_progress(done, total, title):
-                snippet = (title[:48] + "…") if len(title) > 48 else title
-                per_rev = (time.time() - t_rev) / max(done, 1)
-                eta_rev = per_rev * (total - done)
+            def _rev_progress(done_rev, total_rev, title):
+                snippet = (title[:48] + "\u2026") if len(title) > 48 else title
+                per_rev = (time.time() - t_rev) / max(done_rev, 1)
+                eta_rev = per_rev * (total_rev - done_rev)
                 # Walk the bar through its reserved final 5% (95% -> 100%) and show
                 # a live time-left for this, the last, step of the job.
                 upd(
-                    processed_articles=int(0.95 * n + 0.05 * n * done / max(total, 1)),
+                    processed_articles=int(0.95 * n + 0.05 * n * done_rev / max(total_rev, 1)),
                     message=(
-                        f"STAGE:REVERSE|Re-scoring existing articles ({done}/{total}, "
-                        f"ETA {_fmt_eta(eta_rev)}) — checking “{snippet}”..."
+                        f"STAGE:REVERSE|Re-scoring existing articles ({done_rev}/{total_rev}, "
+                        f"ETA {_fmt_eta(eta_rev)}) \u2014 checking \u201c{snippet}\u201d..."
                     ),
                 )
 
@@ -611,6 +711,8 @@ def run_ingestion_pipeline(
                 progress_cb=_rev_progress,
             )
             db.commit()
+            _stage_ms["reverse_ms"] = round((time.time() - t_rev) * 1000, 1)
+            _stage_ms["reverse_articles"] = len(refreshed_infos)
 
             count = len(refreshed_infos)
             upd(refreshed_articles=count)
@@ -632,16 +734,21 @@ def run_ingestion_pipeline(
             print(f"[Pipeline] Engine reload skipped: {reload_err}")
 
         note = f" ({failed} skipped)" if failed else ""
-        extra = ""
+        extra_msg = ""
         if refreshed_infos:
-            extra = (f" Reverse-updated {len(refreshed_infos)} existing article(s): "
-                     f"{_titles_summary(refreshed_infos)}.")
+            extra_msg = (f" Reverse-updated {len(refreshed_infos)} existing article(s): "
+                         f"{_titles_summary(refreshed_infos)}.")
         upd(
             status="completed",
             processed_articles=n,
             refreshed_articles=len(refreshed_infos),
-            message=f"STAGE:COMPLETE|Processed {n} articles{note} in {_fmt_eta(time.time() - t_job)}.{extra}",
+            message=f"STAGE:COMPLETE|Processed {n} articles{note} in {_fmt_eta(time.time() - t_job)}.{extra_msg}",
         )
+
+        # ── Close monitoring record (success) ─────────────────────────────────
+        if exec_record_id:
+            _finish_monitoring(db, exec_record_id, resource_monitor, "completed",
+                               t_job, n - failed, failed, _stage_ms)
 
     except Exception as exc:
         print(f"[Pipeline Error] {traceback.format_exc()}")
@@ -656,5 +763,13 @@ def run_ingestion_pipeline(
             )
         except Exception as inner:
             print(f"[Pipeline] Could not record failure: {inner}")
+        # ── Close monitoring record (failure) ─────────────────────────────────
+        if exec_record_id:
+            try:
+                _finish_monitoring(db, exec_record_id, resource_monitor, "failed",
+                                   t_job, max(n - failed, 0), failed, _stage_ms,
+                                   error_message=str(exc)[:2000])
+            except Exception:
+                pass
     finally:
         db.close()

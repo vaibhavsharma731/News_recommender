@@ -148,10 +148,10 @@ def test_signal_agreement_without_reranking():
     cand = {"id": "c1", "section": "india", "subsection": "politics", "page_views": 100}
     src = {"id": "s1", "section": "india", "subsection": "politics", "linked_ids": []}
 
-    # Dual strong retrieval without reranking
+    # Dual strong retrieval without reranking now awards +0.02 dual-signal consensus
     adj = signal_agreement_adjustment(cand, src, bm25_rank=1, dense_rank=2, rerank_score=None)
     assert -0.03 <= adj <= 0.03
-    assert adj == 0.0  # Inconclusive/moderate without CE confirmation
+    assert adj == 0.02  # Dual retrieval agreement: BM25 strong + Dense strong
 
     # Completely unretrieved
     adj_none = signal_agreement_adjustment(cand, src, bm25_rank=None, dense_rank=None, rerank_score=None)

@@ -72,6 +72,40 @@ def cosine_percentile(cosines) -> np.ndarray:
     return np.clip(pcts, 0.0, 1.0)
 
 
+def rank_adjusted_dense_norm(dense_vals, dense_rank_of: list = None) -> np.ndarray:
+    """Rank-aware dense normalisation for the live 2-signal pipeline.
+
+    Problem: top-50 dense candidates all score 0.96–0.99 cosine percentile —
+    the percentile table is calibrated on random pairs, but every candidate here
+    is already a semantic match. This flattens the dense signal to near-noise.
+
+    Fix: blend cosine percentile with a log-rank discount so rank #1 is
+    meaningfully better than rank #31.
+
+    Formula:  rank_adj = cosine_pct * log_rank_weight
+      where:  log_rank_weight = log(2) / log(rank + 1)   (rank #1 → 1.0, rank #10 → 0.53, rank #50 → 0.35)
+
+    If dense_rank_of is None (ranks unknown), falls back to cosine_percentile.
+    """
+    cosines = np.asarray(dense_vals, dtype=float)
+    pcts = cosine_percentile(cosines)
+
+    if dense_rank_of is None or len(dense_rank_of) != len(cosines):
+        return pcts
+
+    # Build log-rank discount: rank 1→1.0, rank 2→0.63, rank 10→0.33, rank 50→0.19
+    ranks = np.asarray(dense_rank_of, dtype=float)
+    # Clamp unknown / very high ranks to 50
+    ranks = np.where(ranks <= 0, 50.0, ranks)
+    ranks = np.minimum(ranks, 50.0)
+    log_weight = np.log(2.0) / np.log(ranks + 1.0)
+
+    # Blend: 50% raw percentile + 50% rank-discounted percentile
+    # This preserves absolute cosine signal while adding rank differentiation
+    blended = 0.50 * pcts + 0.50 * (pcts * log_weight)
+    return np.clip(blended, 0.0, 1.0)
+
+
 def self_normalized_bm25(values, self_bm25: float = None) -> np.ndarray:
     """Scale BM25 scores by the source article's self-score into [0.0, 1.0].
     If self_bm25 is missing or zero (e.g. text search), falls back to max-scale."""
@@ -154,11 +188,32 @@ def signal_agreement_adjustment(
 
     b_r = bm25_rank if (bm25_rank is not None and bm25_rank < 900) else None
     d_r = dense_rank if (dense_rank is not None and dense_rank < 900) else None
-    ce = float(rerank_score) if rerank_score is not None else 0.0
 
     b_grade = _signal_grade(b_r)
     d_grade = _signal_grade(d_r)
 
+    # Dual-Signal Retrieval Agreement (Live Hybrid Pipeline: BM25 + Dense without Cross-Encoder)
+    if rerank_score is None:
+        if b_grade == "strong" and d_grade == "strong":
+            adj = 0.02
+        elif (b_grade == "strong" and d_grade == "moderate") or (b_grade == "moderate" and d_grade == "strong"):
+            adj = 0.015
+        elif b_grade == "moderate" and d_grade == "moderate":
+            adj = 0.01
+        elif (b_grade == "strong" and d_grade in ("weak", "none")) or (d_grade == "strong" and b_grade in ("weak", "none")):
+            adj = 0.01
+        elif (b_grade == "moderate" and d_grade in ("weak", "none")) or (d_grade == "moderate" and b_grade in ("weak", "none")):
+            adj = 0.005
+        elif b_grade == "weak" and d_grade == "weak":
+            adj = -0.005
+        elif (b_grade == "weak" and d_grade == "none") or (d_grade == "weak" and b_grade == "none"):
+            adj = -0.01
+        else:
+            adj = 0.00
+        return float(np.clip(adj, -0.03, 0.03))
+
+    # Triple-Signal Retrieval + Cross-Encoder Agreement (Precomputation / Full Rerank Pipeline)
+    ce = float(rerank_score)
     if ce >= CE_STRONG_THRESH:
         ce_grade = "strong"
     elif ce >= CE_MOD_THRESH:
@@ -298,17 +353,39 @@ def mmr(scores, similarity, top_k: int, lam: float = config.MMR_LAMBDA,
         theta: float = config.MMR_THETA) -> list:
     """Maximal Marginal Relevance: relevance minus redundancy with what is already picked.
 
-    A similarity counts as redundancy only when it exceeds ``theta``, so ordinary
-    topical closeness is never punished - only near-duplicate wire copy is.
+    Vectorized NumPy implementation: maintains max redundancy per remaining candidate
+    against selected items with theta thresholding. Mathematically identical to the
+    recursive definition while operating in O(k) NumPy operations.
     """
-    selected, remaining = [], list(range(len(scores)))
+    scores_arr = np.asarray(scores, dtype=float)
+    n = len(scores_arr)
+    if n == 0 or top_k <= 0:
+        return []
 
-    def value(i):
-        redundant = [similarity[i][j] for j in selected if similarity[i][j] > theta]
-        return lam * scores[i] - (1 - lam) * max(redundant, default=0.0)
+    sim_mat = np.asarray(similarity, dtype=float)
+    if sim_mat.shape != (n, n):
+        sim_mat = np.zeros((n, n), dtype=float)
 
-    while remaining and len(selected) < top_k:
-        best = max(remaining, key=value)
+    selected = []
+    selected_mask = np.zeros(n, dtype=bool)
+    max_redundancy = np.zeros(n, dtype=float)
+
+    first = int(np.argmax(scores_arr))
+    selected.append(first)
+    selected_mask[first] = True
+
+    target_k = min(top_k, n)
+    for _ in range(1, target_k):
+        last_selected = selected[-1]
+        last_sims = sim_mat[:, last_selected]
+        qualifying = np.where(last_sims > theta, last_sims, 0.0)
+        max_redundancy = np.maximum(max_redundancy, qualifying)
+
+        mmr_vals = lam * scores_arr - (1.0 - lam) * max_redundancy
+        mmr_vals[selected_mask] = -np.inf
+
+        best = int(np.argmax(mmr_vals))
         selected.append(best)
-        remaining.remove(best)
+        selected_mask[best] = True
+
     return selected

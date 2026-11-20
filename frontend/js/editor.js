@@ -1,22 +1,62 @@
 /**
- * editor.js — Clean, modular Editor Studio & Animated Pipeline Controller.
+ * editor.js — Complete Two-Pipeline Studio Controller.
+ * Sub-Tab 1: Precomputation Pipeline Studio (with Cross-Encoder reranking & top-10 precomputation)
+ * Sub-Tab 2: Live Computation Pipeline Studio (Table-separated, BGE-dense embedding only, zero Cross-Encoder)
  */
 const Editor = (() => {
-  let selectedFile = null;
-  let activeJobId = null;
-  let pollInterval = null;
-  const logged = new Set();
+  let selectedPrecompFile = null;
+  let selectedLiveFile = null;
+  let activePrecompJobId = null;
+  let activeLiveJobId = null;
+  let precompPollInterval = null;
+  let livePollInterval = null;
+  const precompLogged = new Set();
+  let currentStudio = 'precomputed';
+
+  const escHtml = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   // DOM elements cache
   const dom = {};
 
   function cacheDom() {
-    dom.fileInput = document.getElementById('csv-file-input');
-    dom.dropzone = document.getElementById('upload-dropzone');
-    dom.uploadBtn = document.getElementById('start-ingest-btn');
-    dom.demoBtn = document.getElementById('ingest-demo-btn');
-    dom.preview = document.getElementById('file-preview');
-    dom.previewName = document.getElementById('file-preview-name');
+    // Top Tabs
+    dom.btnTabPrecomp = document.getElementById('tab-btn-precomputed');
+    dom.btnTabLive = document.getElementById('tab-btn-live');
+    dom.panelPrecomp = document.getElementById('editor-panel-precomputed');
+    dom.panelLive = document.getElementById('editor-panel-live');
+
+    // ── Precomputed Studio DOM ──
+    dom.precompDsSelect = document.getElementById('editor-active-dataset-select');
+    dom.precompSchemaBadge = document.getElementById('active-dataset-schema-badge');
+    dom.precompStatsInline = document.getElementById('active-dataset-stats-inline');
+    dom.btnNewPrecompRun = document.getElementById('btn-show-create-dataset');
+    dom.btnCloneCorpus = document.getElementById('btn-show-clone-dataset');
+    dom.btnDeletePrecompRun = document.getElementById('btn-delete-precomp-dataset');
+    dom.btnRefreshPrecomp = document.getElementById('btn-refresh-datasets');
+
+    dom.createPrecompCard = document.getElementById('create-dataset-form-card');
+    dom.createPrecompForm = document.getElementById('create-dataset-form');
+    dom.btnCancelCreatePrecomp = document.getElementById('btn-cancel-create-ds');
+
+    dom.cloneCorpusCard = document.getElementById('clone-dataset-form-card');
+    dom.cloneSourceSelect = document.getElementById('clone-source-dataset-select');
+    dom.cloneWithEmbeddings = document.getElementById('clone-with-embeddings');
+    dom.btnExecuteClone = document.getElementById('btn-execute-clone');
+    dom.btnCancelClone = document.getElementById('btn-cancel-clone');
+
+    dom.precompFileInput = document.getElementById('csv-file-input');
+    dom.precompDropzone = document.getElementById('upload-dropzone');
+    dom.precompUploadBtn = document.getElementById('start-ingest-btn');
+    dom.precompDemoBtn = document.getElementById('ingest-demo-btn');
+    dom.precompPreview = document.getElementById('file-preview');
+    dom.precompPreviewName = document.getElementById('file-preview-name');
+
+    dom.toggleManualBtn = document.getElementById('toggle-manual-form-btn');
+    dom.manualForm = document.getElementById('manual-article-form');
+    dom.manualAlert = document.getElementById('manual-alert-box');
+    dom.manualSubmitBtn = document.getElementById('manual-submit-btn');
+
     dom.visualizer = document.getElementById('pipeline-visualizer-card');
     dom.completion = document.getElementById('pipeline-completion-banner');
     dom.progressPct = document.getElementById('visualizer-progress-pct');
@@ -24,300 +64,843 @@ const Editor = (() => {
     dom.statusMsg = document.getElementById('visualizer-status-msg');
     dom.logWindow = document.getElementById('pipeline-log-window');
     dom.switchBtn = document.getElementById('btn-switch-to-reader');
-    dom.initBtn = document.getElementById('init-db-btn');
-    dom.clearBtn = document.getElementById('clear-db-btn');
-    dom.inspectorSelect = document.getElementById('inspector-article-select');
-    dom.inspectorBody = document.getElementById('inspector-table-body');
-    dom.inspectorEmpty = document.getElementById('inspector-empty');
-    dom.inspectorSourceBox = document.getElementById('inspector-source-box');
-    dom.inspectorCandidatesList = document.getElementById('inspector-candidates-list');
-    dom.inspectorActions = document.getElementById('inspector-actions');
-    dom.btnToggleAll = document.getElementById('btn-toggle-all-candidates');
+
     dom.recentJobsBody = document.getElementById('recent-jobs-body');
+    dom.inspectorSelect = document.getElementById('inspector-article-select');
+    dom.inspectorCandidatesList = document.getElementById('inspector-candidates-list');
+    dom.inspectorSourceBox = document.getElementById('inspector-source-box');
+    dom.inspectorActions = document.getElementById('inspector-actions');
+    dom.inspectorEmpty = document.getElementById('inspector-empty');
+    dom.btnToggleAll = document.getElementById('btn-toggle-all-candidates');
+
+    // ── Live Studio DOM ──
+    dom.liveDsSelect = document.getElementById('live-active-dataset-select');
+    dom.liveSchemaBadge = document.getElementById('live-dataset-schema-badge');
+    dom.liveStatsInline = document.getElementById('live-dataset-stats-inline');
+    dom.btnNewLiveDs = document.getElementById('btn-show-create-live-dataset');
+    dom.btnDeleteLiveDs = document.getElementById('btn-delete-live-dataset');
+    dom.btnRefreshLive = document.getElementById('btn-refresh-live-datasets');
+
+    dom.createLiveCard = document.getElementById('create-live-dataset-form-card');
+    dom.createLiveForm = document.getElementById('create-live-dataset-form');
+    dom.btnCancelCreateLive = document.getElementById('btn-cancel-create-live-ds');
+
+    dom.liveFileInput = document.getElementById('live-csv-file-input');
+    dom.liveDropzone = document.getElementById('live-upload-dropzone');
+    dom.liveUploadBtn = document.getElementById('live-start-csv-btn');
+    dom.livePreview = document.getElementById('live-file-preview');
+    dom.livePreviewName = document.getElementById('live-file-preview-name');
+    dom.liveBatchSelect = document.getElementById('live-csv-batch-size');
+
+    dom.toggleManualLiveBtn = document.getElementById('toggle-manual-live-form-btn');
+    dom.manualLiveForm = document.getElementById('manual-live-form');
+    dom.manualLiveAlert = document.getElementById('manual-live-alert-box');
+    dom.manualLiveSubmitBtn = document.getElementById('manual-live-submit-btn');
+
+    dom.startLivePrepBtn = document.getElementById('start-live-prep-btn');
+    dom.livePrepProgress = document.getElementById('live-prep-progress-card');
+    dom.livePrepStatusText = document.getElementById('live-prep-status-text');
+    dom.livePrepProgressPct = document.getElementById('live-prep-progress-pct');
+    dom.livePrepProgressFill = document.getElementById('live-prep-progress-fill');
+    dom.livePrepRecompute = document.getElementById('live-prep-recompute-checkbox');
+    dom.livePrepBatch = document.getElementById('live-prep-batch-select');
+
+    dom.liveJobsBody = document.getElementById('live-jobs-body');
   }
 
   async function init() {
     cacheDom();
     bindEvents();
-    await refreshDbHealth();
+    await loadPrecomputedDatasets();
+    await loadLiveDatasets();
+    await refreshPrecompDbHealth();
     loadInspectorArticles();
-    loadRecentJobs();
+    loadRecentPrecompJobs();
+    loadRecentLiveJobs();
   }
 
   function bindEvents() {
-    // 1. File Selection via Click
-    if (dom.dropzone && dom.fileInput) {
-      dom.dropzone.addEventListener('click', (e) => {
-        // Prevent re-triggering if click was on the input itself
-        if (e.target !== dom.fileInput) {
-          dom.fileInput.click();
-        }
-      });
+    // 1. Studio Sub-Tab Switcher
+    if (dom.btnTabPrecomp) {
+      dom.btnTabPrecomp.addEventListener('click', () => switchStudio('precomputed'));
+    }
+    if (dom.btnTabLive) {
+      dom.btnTabLive.addEventListener('click', () => switchStudio('live'));
+    }
 
-      dom.fileInput.addEventListener('change', (e) => {
-        if (e.target.files && e.target.files[0]) {
-          onFileChosen(e.target.files[0]);
-        }
+    // 2. Precomputed Dataset Selector Switch
+    if (dom.precompDsSelect) {
+      dom.precompDsSelect.addEventListener('change', async (e) => {
+        const dsId = e.target.value;
+        State.set({ activeDataset: dsId });
+        showToast(`Switched active precompute run to: ${dsId}`, 'info');
+        await refreshPrecompDbHealth();
+        loadInspectorArticles();
+        loadRecentPrecompJobs();
       });
+    }
 
-      // 2. Drag & Drop
+    // 3. Live Dataset Selector Switch
+    if (dom.liveDsSelect) {
+      dom.liveDsSelect.addEventListener('change', async (e) => {
+        const dsId = e.target.value;
+        showToast(`Switched active live dataset to: ${dsId}`, 'info');
+        await refreshLiveDbHealth();
+        loadRecentLiveJobs();
+      });
+    }
+
+    // 4. Create Precompute Run Toggle & Submit
+    if (dom.btnNewPrecompRun && dom.createPrecompCard) {
+      dom.btnNewPrecompRun.addEventListener('click', () => {
+        const isHidden = dom.createPrecompCard.style.display === 'none';
+        dom.createPrecompCard.style.display = isHidden ? 'block' : 'none';
+        if (dom.cloneCorpusCard) dom.cloneCorpusCard.style.display = 'none';
+      });
+    }
+    if (dom.btnCancelCreatePrecomp && dom.createPrecompCard) {
+      dom.btnCancelCreatePrecomp.addEventListener('click', () => {
+        dom.createPrecompCard.style.display = 'none';
+      });
+    }
+    if (dom.createPrecompForm) {
+      dom.createPrecompForm.addEventListener('submit', handleCreatePrecompDataset);
+    }
+
+    // 5. Clone Corpus Toggle & Execute
+    if (dom.btnCloneCorpus && dom.cloneCorpusCard) {
+      dom.btnCloneCorpus.addEventListener('click', () => {
+        const isHidden = dom.cloneCorpusCard.style.display === 'none';
+        dom.cloneCorpusCard.style.display = isHidden ? 'block' : 'none';
+        if (dom.createPrecompCard) dom.createPrecompCard.style.display = 'none';
+      });
+    }
+    if (dom.btnCancelClone && dom.cloneCorpusCard) {
+      dom.btnCancelClone.addEventListener('click', () => {
+        dom.cloneCorpusCard.style.display = 'none';
+      });
+    }
+    if (dom.btnExecuteClone) {
+      dom.btnExecuteClone.addEventListener('click', handleCloneCorpus);
+    }
+
+    // 6. Delete Precompute Run
+    if (dom.btnDeletePrecompRun) {
+      dom.btnDeletePrecompRun.addEventListener('click', handleDeletePrecompDataset);
+    }
+    if (dom.btnRefreshPrecomp) {
+      dom.btnRefreshPrecomp.addEventListener('click', async () => {
+        await loadPrecomputedDatasets();
+        await refreshPrecompDbHealth();
+        loadInspectorArticles();
+        loadRecentPrecompJobs();
+        showToast('Precomputed runs refreshed.', 'info');
+      });
+    }
+
+    // 7. Create Live Dataset Toggle & Submit
+    if (dom.btnNewLiveDs && dom.createLiveCard) {
+      dom.btnNewLiveDs.addEventListener('click', () => {
+        const isHidden = dom.createLiveCard.style.display === 'none';
+        dom.createLiveCard.style.display = isHidden ? 'block' : 'none';
+      });
+    }
+    if (dom.btnCancelCreateLive && dom.createLiveCard) {
+      dom.btnCancelCreateLive.addEventListener('click', () => {
+        dom.createLiveCard.style.display = 'none';
+      });
+    }
+    if (dom.createLiveForm) {
+      dom.createLiveForm.addEventListener('submit', handleCreateLiveDataset);
+    }
+    if (dom.btnDeleteLiveDs) {
+      dom.btnDeleteLiveDs.addEventListener('click', handleDeleteLiveDataset);
+    }
+    if (dom.btnRefreshLive) {
+      dom.btnRefreshLive.addEventListener('click', async () => {
+        await loadLiveDatasets();
+        await refreshLiveDbHealth();
+        loadRecentLiveJobs();
+        showToast('Live datasets refreshed.', 'info');
+      });
+    }
+
+    // 8. Manual Precomputed Article Form Toggle & Submit
+    if (dom.toggleManualBtn && dom.manualForm) {
+      dom.toggleManualBtn.addEventListener('click', () => {
+        const isHidden = dom.manualForm.style.display === 'none';
+        dom.manualForm.style.display = isHidden ? 'block' : 'none';
+        dom.toggleManualBtn.innerHTML = isHidden
+          ? '<span>✕</span> Close Manual Editor'
+          : '<span id="manual-form-toggle-icon">✏️</span> Write / Publish Single Article';
+      });
+      dom.manualForm.addEventListener('submit', handleManualPrecompSubmit);
+    }
+
+    // 9. Manual Live Article Form Toggle & Submit
+    if (dom.toggleManualLiveBtn && dom.manualLiveForm) {
+      dom.toggleManualLiveBtn.addEventListener('click', () => {
+        const isHidden = dom.manualLiveForm.style.display === 'none';
+        dom.manualLiveForm.style.display = isHidden ? 'block' : 'none';
+        dom.toggleManualLiveBtn.innerHTML = isHidden
+          ? '<span>✕</span> Close Form'
+          : '<span id="manual-live-toggle-icon">✏️</span> Write Single Article';
+      });
+      dom.manualLiveForm.addEventListener('submit', handleManualLiveSubmit);
+    }
+
+    // 10. Precomputed CSV File Dropzone & Upload
+    if (dom.precompDropzone && dom.precompFileInput) {
+      dom.precompDropzone.addEventListener('click', (e) => {
+        if (e.target !== dom.precompFileInput) dom.precompFileInput.click();
+      });
+      dom.precompFileInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) onPrecompFileChosen(e.target.files[0]);
+      });
       ['dragenter', 'dragover'].forEach(ev => {
-        dom.dropzone.addEventListener(ev, (e) => {
+        dom.precompDropzone.addEventListener(ev, (e) => {
           e.preventDefault();
-          dom.dropzone.classList.add('dragover');
+          dom.precompDropzone.classList.add('dragover');
         });
       });
-
       ['dragleave', 'drop'].forEach(ev => {
-        dom.dropzone.addEventListener(ev, (e) => {
+        dom.precompDropzone.addEventListener(ev, (e) => {
           e.preventDefault();
-          dom.dropzone.classList.remove('dragover');
+          dom.precompDropzone.classList.remove('dragover');
         });
       });
-
-      dom.dropzone.addEventListener('drop', (e) => {
-        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-          onFileChosen(e.dataTransfer.files[0]);
-        }
+      dom.precompDropzone.addEventListener('drop', (e) => {
+        if (e.dataTransfer.files && e.dataTransfer.files[0]) onPrecompFileChosen(e.dataTransfer.files[0]);
       });
     }
+    if (dom.precompUploadBtn) dom.precompUploadBtn.addEventListener('click', handlePrecompUpload);
+    if (dom.precompDemoBtn) dom.precompDemoBtn.addEventListener('click', handleDemoIngest);
 
-    // 3. Upload Trigger Button
-    if (dom.uploadBtn) {
-      dom.uploadBtn.addEventListener('click', handleUpload);
-    }
-
-    // 4. Demo Dataset Ingest Button
-    if (dom.demoBtn) {
-      dom.demoBtn.addEventListener('click', handleDemoIngest);
-    }
-
-    // 5. DB Verification Button
-    if (dom.initBtn) {
-      dom.initBtn.addEventListener('click', handleDbInit);
-    }
-
-    // 5B. DB Clear Button
-    if (dom.clearBtn) {
-      dom.clearBtn.addEventListener('click', handleDbClear);
-    }
-
-    // 6. Switch to Reader CTA
-    if (dom.switchBtn) {
-      dom.switchBtn.addEventListener('click', () => {
-        if (window.setAppRole) window.setAppRole('reader');
+    // 11. Live CSV File Dropzone & Upload
+    if (dom.liveDropzone && dom.liveFileInput) {
+      dom.liveDropzone.addEventListener('click', (e) => {
+        if (e.target !== dom.liveFileInput) dom.liveFileInput.click();
+      });
+      dom.liveFileInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) onLiveFileChosen(e.target.files[0]);
+      });
+      ['dragenter', 'dragover'].forEach(ev => {
+        dom.liveDropzone.addEventListener(ev, (e) => {
+          e.preventDefault();
+          dom.liveDropzone.classList.add('dragover');
+        });
+      });
+      ['dragleave', 'drop'].forEach(ev => {
+        dom.liveDropzone.addEventListener(ev, (e) => {
+          e.preventDefault();
+          dom.liveDropzone.classList.remove('dragover');
+        });
+      });
+      dom.liveDropzone.addEventListener('drop', (e) => {
+        if (e.dataTransfer.files && e.dataTransfer.files[0]) onLiveFileChosen(e.dataTransfer.files[0]);
       });
     }
+    if (dom.liveUploadBtn) dom.liveUploadBtn.addEventListener('click', handleLiveCsvUpload);
 
-    // 7. Inspector Select
+    // 12. Live Preprocessing Trigger
+    if (dom.startLivePrepBtn) {
+      dom.startLivePrepBtn.addEventListener('click', handleLivePreprocessing);
+    }
+
+    // 13. Inspector & Navigation
     if (dom.inspectorSelect) {
       dom.inspectorSelect.addEventListener('change', (e) => {
         if (e.target.value) inspectArticle(e.target.value);
       });
     }
-
-    // 8. Toggle All Candidate Breakdowns
-    if (dom.btnToggleAll) {
-      dom.btnToggleAll.addEventListener('click', () => {
-        const cards = dom.inspectorCandidatesList ? dom.inspectorCandidatesList.querySelectorAll('.candidate-eval-card') : [];
-        if (!cards.length) return;
-        const someCollapsed = Array.from(cards).some(c => c.classList.contains('collapsed'));
-        cards.forEach(c => {
-          c.classList.toggle('collapsed', !someCollapsed);
-          c.classList.toggle('expanded', someCollapsed);
-          const btn = c.querySelector('.candidate-toggle-btn');
-          if (btn) {
-            btn.querySelector('.toggle-icon').textContent = someCollapsed ? '▴' : '▾';
-            btn.querySelector('.toggle-text').textContent = someCollapsed ? 'Hide' : 'Inspect';
-            btn.setAttribute('aria-expanded', someCollapsed);
-          }
-        });
-        const icon = document.getElementById('toggle-all-icon');
-        const label = document.getElementById('toggle-all-label');
-        if (icon) icon.textContent = someCollapsed ? '▲' : '▼';
-        if (label) label.textContent = someCollapsed ? 'Collapse All Breakdowns' : 'Expand All Breakdowns';
+    if (dom.switchBtn) {
+      dom.switchBtn.addEventListener('click', () => {
+        if (window.setAppRole) window.setAppRole('reader');
       });
     }
   }
 
-  async function handleDbClear() {
-    if (!confirm('Are you sure you want to clear all data in PostgreSQL? This will delete all articles, embeddings, and precomputed recommendations so you can start completely fresh.')) {
-      return;
-    }
-    dom.clearBtn.disabled = true;
-    dom.clearBtn.textContent = 'Clearing...';
-    try {
-      await Api.dbClear();
-      showToast('PostgreSQL tables cleared. Ready for fresh upload.', 'success');
-      await refreshDbHealth();
-      loadInspectorArticles();
-      loadRecentJobs();
-    } catch (err) {
-      showToast('Clear failed: ' + err.message, 'error');
-    } finally {
-      dom.clearBtn.disabled = false;
-      dom.clearBtn.textContent = '🗑️ Clear Database';
+  function switchStudio(type) {
+    currentStudio = type;
+    const isPrecomp = type === 'precomputed';
+    if (dom.btnTabPrecomp) dom.btnTabPrecomp.classList.toggle('active', isPrecomp);
+    if (dom.btnTabLive) dom.btnTabLive.classList.toggle('active', !isPrecomp);
+    if (dom.panelPrecomp) dom.panelPrecomp.classList.toggle('hidden', !isPrecomp);
+    if (dom.panelLive) dom.panelLive.classList.toggle('hidden', isPrecomp);
+
+    if (isPrecomp) {
+      refreshPrecompDbHealth();
+      loadRecentPrecompJobs();
+    } else {
+      refreshLiveDbHealth();
+      loadRecentLiveJobs();
     }
   }
 
-  function onFileChosen(file) {
+  // ─── Dataset Loading & Switching ──────────────────────────────────────────
+  async function loadPrecomputedDatasets() {
+    try {
+      const res = await Api.listDatasets('precomputed');
+      const datasets = res.datasets || [];
+      const currentVal = dom.precompDsSelect?.value || State.get().activeDataset || 'default';
+
+      if (dom.precompDsSelect) {
+        dom.precompDsSelect.innerHTML = datasets.map(d => `
+          <option value="${escHtml(d.id)}" ${d.id === currentVal ? 'selected' : ''}>
+            ${escHtml(d.name)} (${escHtml(d.schema_name)})${d.is_protected ? ' [Protected]' : ''}
+          </option>
+        `).join('');
+      }
+
+      if (dom.cloneSourceSelect) {
+        dom.cloneSourceSelect.innerHTML = datasets.map(d => `
+          <option value="${escHtml(d.id)}">${escHtml(d.name)} (${escHtml(d.schema_name)})</option>
+        `).join('');
+      }
+
+      // Also sync reader and comparison dropdowns
+      const readerFilter = document.getElementById('reader-dataset-filter');
+      if (readerFilter) {
+        readerFilter.innerHTML = datasets.map(d => `
+          <option value="${escHtml(d.id)}">${escHtml(d.name)}</option>
+        `).join('');
+      }
+    } catch (err) {
+      console.warn('Load precomputed datasets warning:', err);
+    }
+  }
+
+  async function loadLiveDatasets() {
+    try {
+      const res = await Api.listDatasets('live');
+      const datasets = res.datasets || [];
+      const currentVal = dom.liveDsSelect?.value || (datasets[0] ? datasets[0].id : '');
+
+      if (dom.liveDsSelect) {
+        if (!datasets.length) {
+          dom.liveDsSelect.innerHTML = '<option value="">No live datasets created yet</option>';
+        } else {
+          dom.liveDsSelect.innerHTML = datasets.map(d => `
+            <option value="${escHtml(d.id)}" ${d.id === currentVal ? 'selected' : ''}>
+              ${escHtml(d.name)} (${escHtml(d.schema_name)})
+            </option>
+          `).join('');
+        }
+      }
+    } catch (err) {
+      console.warn('Load live datasets warning:', err);
+    }
+  }
+
+  async function refreshPrecompDbHealth() {
+    try {
+      const targetDs = dom.precompDsSelect?.value || State.get().activeDataset || 'default';
+      const data = await Api.dbHealth(targetDs);
+
+      const pgBadge = document.getElementById('pg-status-badge');
+      const vecBadge = document.getElementById('vector-status-badge');
+      const totalArts = document.getElementById('db-total-articles');
+      const totalVecs = document.getElementById('db-total-vectors');
+      const totalRecs = document.getElementById('db-total-recs');
+
+      if (pgBadge) {
+        pgBadge.className = data.connected ? 'stat-badge ready' : 'stat-badge error';
+        pgBadge.innerHTML = data.connected ? `🟢 Connected (${data.schema || 'public'})` : '🔴 Disconnected';
+      }
+      if (vecBadge) {
+        vecBadge.className = data.pgvector_ready ? 'stat-badge ready' : 'stat-badge warning';
+        vecBadge.innerHTML = data.pgvector_ready ? '⚡ pgvector Ready (384d)' : '⚠️ Extension Missing';
+      }
+      if (totalArts) totalArts.textContent = (data.total_articles || 0).toLocaleString();
+      if (totalVecs) totalVecs.textContent = (data.embedded_articles || 0).toLocaleString();
+      if (totalRecs) totalRecs.textContent = (data.total_recommendations || 0).toLocaleString();
+
+      if (dom.precompSchemaBadge) {
+        dom.precompSchemaBadge.textContent = `${data.schema || 'public'}${targetDs === 'default' ? ' (Protected)' : ''}`;
+      }
+      if (dom.precompStatsInline) {
+        dom.precompStatsInline.textContent = `${(data.total_articles || 0).toLocaleString()} arts | ${(data.total_recommendations || 0).toLocaleString()} recs`;
+      }
+    } catch (e) {
+      console.warn('Precomputed DB health warning:', e);
+    }
+  }
+
+  async function refreshLiveDbHealth() {
+    try {
+      const targetDs = dom.liveDsSelect?.value;
+      if (!targetDs) return;
+      const data = await Api.dbHealth(targetDs);
+
+      const pgBadge = document.getElementById('live-pg-status-badge');
+      const totalArts = document.getElementById('live-db-total-articles');
+      const totalVecs = document.getElementById('live-db-total-vectors');
+
+      if (pgBadge) {
+        pgBadge.className = data.connected ? 'stat-badge ready' : 'stat-badge error';
+        pgBadge.innerHTML = data.connected ? `🟢 Connected (${data.schema})` : '🔴 Disconnected';
+      }
+      if (totalArts) totalArts.textContent = (data.total_articles || 0).toLocaleString();
+      if (totalVecs) totalVecs.textContent = (data.embedded_articles || 0).toLocaleString();
+
+      if (dom.liveSchemaBadge) {
+        dom.liveSchemaBadge.textContent = data.schema || targetDs;
+      }
+      if (dom.liveStatsInline) {
+        dom.liveStatsInline.textContent = `${(data.total_articles || 0).toLocaleString()} arts | ${(data.embedded_articles || 0).toLocaleString()} embedded`;
+      }
+    } catch (e) {
+      console.warn('Live DB health warning:', e);
+    }
+  }
+
+  // ─── Dataset Actions (Create / Clone / Delete) ─────────────────────────────
+  async function handleCreatePrecompDataset(e) {
+    e.preventDefault();
+    const name = document.getElementById('new-ds-name')?.value.trim();
+    const customId = document.getElementById('new-ds-id')?.value.trim();
+    const desc = document.getElementById('new-ds-desc')?.value.trim();
+    if (!name) return;
+
+    try {
+      showToast(`Creating isolated precompute run "${name}"...`, 'info');
+      const res = await Api.createDataset({ name, description: desc, datasetId: customId || undefined, pipelineType: 'precomputed' });
+      showToast(`Precomputed run "${res.dataset.name}" created!`, 'success');
+      if (dom.createPrecompCard) dom.createPrecompCard.style.display = 'none';
+      if (dom.createPrecompForm) dom.createPrecompForm.reset();
+      await loadPrecomputedDatasets();
+      if (dom.precompDsSelect) dom.precompDsSelect.value = res.dataset.id;
+      State.set({ activeDataset: res.dataset.id });
+      await refreshPrecompDbHealth();
+      loadInspectorArticles();
+      loadRecentPrecompJobs();
+    } catch (err) {
+      showToast(`Failed to create precompute run: ${err.message}`, 'error');
+    }
+  }
+
+  async function handleCloneCorpus() {
+    const targetId = dom.precompDsSelect?.value;
+    const sourceId = dom.cloneSourceSelect?.value || 'default';
+    const withEmbeddings = dom.cloneWithEmbeddings?.checked ?? true;
+    if (!targetId || targetId === 'default') {
+      showToast('Please select an isolated experimental run as target (cannot clone into default).', 'warn');
+      return;
+    }
+
+    try {
+      showToast(`Cloning articles from "${sourceId}" to "${targetId}"...`, 'info');
+      const res = await Api.cloneDataset(targetId, sourceId, withEmbeddings);
+      showToast(`Cloned ${res.articles_copied} articles into "${targetId}"!`, 'success');
+      if (dom.cloneCorpusCard) dom.cloneCorpusCard.style.display = 'none';
+      await refreshPrecompDbHealth();
+      loadInspectorArticles();
+    } catch (err) {
+      showToast(`Clone failed: ${err.message}`, 'error');
+    }
+  }
+
+  async function handleDeletePrecompDataset() {
+    const dsId = dom.precompDsSelect?.value;
+    if (!dsId || dsId === 'default') {
+      showToast('The default precomputed dataset is protected and cannot be deleted.', 'warn');
+      return;
+    }
+    if (!confirm(`Are you sure you want to permanently delete precomputed run "${dsId}" and drop all its tables?`)) {
+      return;
+    }
+
+    try {
+      showToast(`Deleting run "${dsId}"...`, 'info');
+      await Api.deleteDataset(dsId);
+      showToast(`Run "${dsId}" deleted.`, 'success');
+      State.set({ activeDataset: 'default' });
+      await loadPrecomputedDatasets();
+      if (dom.precompDsSelect) dom.precompDsSelect.value = 'default';
+      await refreshPrecompDbHealth();
+      loadInspectorArticles();
+      loadRecentPrecompJobs();
+    } catch (err) {
+      showToast(`Delete failed: ${err.message}`, 'error');
+    }
+  }
+
+  async function handleCreateLiveDataset(e) {
+    e.preventDefault();
+    const name = document.getElementById('new-live-ds-name')?.value.trim();
+    const customId = document.getElementById('new-live-ds-id')?.value.trim();
+    const desc = document.getElementById('new-live-ds-desc')?.value.trim();
+    if (!name) return;
+
+    try {
+      showToast(`Creating isolated live dataset "${name}"...`, 'info');
+      const res = await Api.createDataset({ name, description: desc, datasetId: customId || undefined, pipelineType: 'live' });
+      showToast(`Live dataset "${res.dataset.name}" created (Recs table omitted)!`, 'success');
+      if (dom.createLiveCard) dom.createLiveCard.style.display = 'none';
+      if (dom.createLiveForm) dom.createLiveForm.reset();
+      await loadLiveDatasets();
+      if (dom.liveDsSelect) dom.liveDsSelect.value = res.dataset.id;
+      await refreshLiveDbHealth();
+      loadRecentLiveJobs();
+    } catch (err) {
+      showToast(`Failed to create live dataset: ${err.message}`, 'error');
+    }
+  }
+
+  async function handleDeleteLiveDataset() {
+    const dsId = dom.liveDsSelect?.value;
+    if (!dsId) return;
+    if (!confirm(`Are you sure you want to permanently delete live dataset "${dsId}"?`)) return;
+
+    try {
+      showToast(`Deleting live dataset "${dsId}"...`, 'info');
+      await Api.deleteDataset(dsId);
+      showToast(`Live dataset "${dsId}" deleted.`, 'success');
+      await loadLiveDatasets();
+      await refreshLiveDbHealth();
+      loadRecentLiveJobs();
+    } catch (err) {
+      showToast(`Delete failed: ${err.message}`, 'error');
+    }
+  }
+
+  // ─── Precomputed Pipeline Ingestion Handlers ──────────────────────────────
+  function onPrecompFileChosen(file) {
     if (!file.name.toLowerCase().endsWith('.csv')) {
       showToast('Please select a valid CSV file (.csv)', 'warn');
       return;
     }
-    selectedFile = file;
-    if (dom.preview && dom.previewName) {
-      dom.previewName.textContent = `${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`;
-      dom.preview.classList.remove('hidden');
+    selectedPrecompFile = file;
+    if (dom.precompPreview && dom.precompPreviewName) {
+      dom.precompPreviewName.textContent = `${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`;
+      dom.precompPreview.classList.remove('hidden');
     }
-    if (dom.uploadBtn) {
-      dom.uploadBtn.disabled = false;
-      dom.uploadBtn.textContent = `Run Ingestion on ${file.name.slice(0, 20)}...`;
+    if (dom.precompUploadBtn) {
+      dom.precompUploadBtn.disabled = false;
+      dom.precompUploadBtn.textContent = `Run Ingestion on ${file.name.slice(0, 18)}...`;
     }
   }
 
-  async function handleUpload() {
-    if (!selectedFile) return;
-    if (dom.uploadBtn) dom.uploadBtn.disabled = true;
-    if (dom.demoBtn) dom.demoBtn.disabled = true;
-    showToast('Uploading CSV to PostgreSQL...', 'info');
+  async function handlePrecompUpload() {
+    if (!selectedPrecompFile) return;
+    if (dom.precompUploadBtn) dom.precompUploadBtn.disabled = true;
+    if (dom.precompDemoBtn) dom.precompDemoBtn.disabled = true;
+    const targetDs = dom.precompDsSelect?.value || State.get().activeDataset || 'default';
+    showToast(`Uploading CSV to precompute run "${targetDs}"...`, 'info');
 
     try {
-      const res = await Api.uploadCsv(selectedFile);
-      activeJobId = res.job_id;
-      showToast(`Pipeline started: ${res.job_id}`, 'success');
-      startPipelineMonitor(res.job_id);
+      const res = await Api.uploadCsv(selectedPrecompFile, targetDs);
+      activePrecompJobId = res.job_id;
+      showToast(`Pipeline started: ${res.job_id} in ${targetDs}`, 'success');
+      startPrecompPipelineMonitor(res.job_id);
     } catch (err) {
       showToast(`Upload failed: ${err.message}`, 'error');
-      if (dom.uploadBtn) dom.uploadBtn.disabled = false;
-      if (dom.demoBtn) dom.demoBtn.disabled = false;
+      if (dom.precompUploadBtn) dom.precompUploadBtn.disabled = false;
+      if (dom.precompDemoBtn) dom.precompDemoBtn.disabled = false;
     }
   }
 
   async function handleDemoIngest() {
-    if (dom.demoBtn) {
-      dom.demoBtn.disabled = true;
-      dom.demoBtn.textContent = 'Starting Demo Pipeline...';
+    if (dom.precompDemoBtn) {
+      dom.precompDemoBtn.disabled = true;
+      dom.precompDemoBtn.textContent = 'Starting Demo Pipeline...';
     }
-    if (dom.uploadBtn) dom.uploadBtn.disabled = true;
-    showToast('Starting sample dataset ingestion (100 articles demo)...', 'info');
+    if (dom.precompUploadBtn) dom.precompUploadBtn.disabled = true;
+    const targetDs = dom.precompDsSelect?.value || State.get().activeDataset || 'default';
+    showToast(`Starting sample dataset ingestion (100 demo) into "${targetDs}"...`, 'info');
 
     try {
-      const res = await Api.ingestDefault(100);
-      activeJobId = res.job_id;
+      const res = await Api.ingestDefault(100, targetDs);
+      activePrecompJobId = res.job_id;
       showToast(`Demo pipeline active: ${res.job_id}`, 'success');
-      startPipelineMonitor(res.job_id);
+      startPrecompPipelineMonitor(res.job_id);
     } catch (err) {
       showToast(`Error: ${err.message}`, 'error');
-      if (dom.demoBtn) {
-        dom.demoBtn.disabled = false;
-        dom.demoBtn.textContent = '⚡ Ingest Sample Dataset (100 Articles Demo)';
+      if (dom.precompDemoBtn) {
+        dom.precompDemoBtn.disabled = false;
+        dom.precompDemoBtn.textContent = '⚡ Ingest Sample (100 Demo)';
       }
-      if (dom.uploadBtn && selectedFile) dom.uploadBtn.disabled = false;
+      if (dom.precompUploadBtn && selectedPrecompFile) dom.precompUploadBtn.disabled = false;
     }
   }
 
-  async function handleDbInit() {
-    dom.initBtn.disabled = true;
-    dom.initBtn.textContent = 'Verifying...';
+  async function handleManualPrecompSubmit(e) {
+    e.preventDefault();
+    if (!dom.manualAlert) return;
+    dom.manualAlert.style.display = 'block';
+    dom.manualAlert.className = 'alert alert-info';
+    dom.manualAlert.innerHTML = '⏳ <strong>Publishing &amp; Precomputing...</strong> Generating 384d vectors and reranking top-10 candidates...';
+    if (dom.manualSubmitBtn) dom.manualSubmitBtn.disabled = true;
+
     try {
-      const res = await Api.dbInit();
-      showToast(res.message, 'success');
-      await refreshDbHealth();
+      const targetDs = dom.precompDsSelect?.value || State.get().activeDataset || 'default';
+      const payload = {
+        title: document.getElementById('manual-title').value.trim(),
+        section: document.getElementById('manual-section').value,
+        subsection: document.getElementById('manual-subsection').value.trim(),
+        date: document.getElementById('manual-date').value ? new Date(document.getElementById('manual-date').value).toISOString() : new Date().toISOString(),
+        page_views: parseInt(document.getElementById('manual-views').value, 10) || 0,
+        description: document.getElementById('manual-description').value.trim(),
+        body: document.getElementById('manual-body').value.trim(),
+        url: document.getElementById('manual-url').value.trim(),
+        image: document.getElementById('manual-image').value.trim(),
+        precompute_recommendations: document.getElementById('manual-precompute').checked,
+        reverse_push: document.getElementById('manual-reverse-push').checked,
+        dataset: targetDs,
+      };
+
+      const res = await Api.addManualArticle(payload);
+      dom.manualAlert.className = 'alert alert-success';
+      dom.manualAlert.innerHTML = `
+        <div style="font-weight:700;margin-bottom:4px;">🎉 Article Ingested &amp; Precomputed Successfully!</div>
+        <div style="font-size:0.83rem;">
+          <strong>ID:</strong> ${res.article_id} | <strong>Run:</strong> ${targetDs} | <strong>Section:</strong> ${res.article.section}<br/>
+          <strong>Precomputed Recs:</strong> ${res.recommendations_count} saved | 
+          <strong>Matching Archive Stories Refreshed:</strong> ${res.refreshed_old_articles}
+        </div>
+        <div style="margin-top:8px;">
+          <button type="button" class="btn btn-secondary" style="font-size:0.75rem;padding:4px 10px;" onclick="Editor.inspectArticle('${res.article_id}')">
+            🔍 Inspect Stored Evidence &amp; Recommendations
+          </button>
+        </div>
+      `;
+
+      await refreshPrecompDbHealth();
+      loadInspectorArticles();
+      loadRecentPrecompJobs();
     } catch (err) {
-      showToast(`Init error: ${err.message}`, 'error');
+      dom.manualAlert.className = 'alert alert-danger';
+      dom.manualAlert.innerHTML = `<strong>Error Publishing Article:</strong> ${err.message}`;
     } finally {
-      dom.initBtn.disabled = false;
-      dom.initBtn.textContent = 'Verify PostgreSQL & Extension';
+      if (dom.manualSubmitBtn) dom.manualSubmitBtn.disabled = false;
     }
   }
 
-  // ─── Pipeline Monitor & Animations ───────────────────────────────────────
-  function stopPolling() {
-    if (pollInterval) {
-      clearInterval(pollInterval);
-      pollInterval = null;
+  // ─── Live Pipeline Ingestion Handlers ─────────────────────────────────────
+  function onLiveFileChosen(file) {
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      showToast('Please select a valid CSV file (.csv)', 'warn');
+      return;
+    }
+    selectedLiveFile = file;
+    if (dom.livePreview && dom.livePreviewName) {
+      dom.livePreviewName.textContent = `${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`;
+      dom.livePreview.classList.remove('hidden');
+    }
+    if (dom.liveUploadBtn) {
+      dom.liveUploadBtn.disabled = false;
+      dom.liveUploadBtn.textContent = `🚀 Ingest ${file.name.slice(0, 18)} (Fast Embed)`;
     }
   }
 
-  function startPipelineMonitor(jobId) {
+  async function handleLiveCsvUpload() {
+    if (!selectedLiveFile) return;
+    const targetDs = dom.liveDsSelect?.value;
+    if (!targetDs) {
+      showToast('Please select or create a live dataset first.', 'warn');
+      return;
+    }
+    const batchSize = parseInt(dom.liveBatchSelect?.value || '64', 10);
+    if (dom.liveUploadBtn) dom.liveUploadBtn.disabled = true;
+
+    showToast(`Uploading CSV to live dataset "${targetDs}" (Zero Rerank)...`, 'info');
+    try {
+      const res = await Api.uploadLiveCsv(selectedLiveFile, targetDs, batchSize);
+      activeLiveJobId = res.job_id;
+      showToast(`Fast live ingestion started: ${res.job_id}`, 'success');
+      startLiveJobMonitor(res.job_id);
+    } catch (err) {
+      showToast(`Live upload failed: ${err.message}`, 'error');
+      if (dom.liveUploadBtn) dom.liveUploadBtn.disabled = false;
+    }
+  }
+
+  async function handleManualLiveSubmit(e) {
+    e.preventDefault();
+    if (!dom.manualLiveAlert) return;
+    const targetDs = dom.liveDsSelect?.value;
+    if (!targetDs) {
+      showToast('Please select or create a live dataset first.', 'warn');
+      return;
+    }
+
+    dom.manualLiveAlert.style.display = 'block';
+    dom.manualLiveAlert.className = 'alert alert-info';
+    dom.manualLiveAlert.innerHTML = '⏳ <strong>Ingesting Article...</strong> Generating 384d embedding vector...';
+    if (dom.manualLiveSubmitBtn) dom.manualLiveSubmitBtn.disabled = true;
+
+    try {
+      const payload = {
+        title: document.getElementById('manual-live-title').value.trim(),
+        section: document.getElementById('manual-live-section').value,
+        subsection: document.getElementById('manual-live-subsection').value.trim(),
+        date: document.getElementById('manual-live-date').value ? new Date(document.getElementById('manual-live-date').value).toISOString() : new Date().toISOString(),
+        page_views: parseInt(document.getElementById('manual-live-views').value, 10) || 0,
+        description: document.getElementById('manual-live-description').value.trim(),
+        body: document.getElementById('manual-live-body').value.trim(),
+        url: document.getElementById('manual-live-url').value.trim(),
+        image: document.getElementById('manual-live-image').value.trim(),
+        dataset: targetDs,
+      };
+
+      const res = await Api.addManualLiveArticle(payload);
+      dom.manualLiveAlert.className = 'alert alert-success';
+      dom.manualLiveAlert.innerHTML = `
+        <div style="font-weight:700;margin-bottom:4px;">⚡ Article Ingested &amp; Embedded Successfully!</div>
+        <div style="font-size:0.83rem;">
+          <strong>ID:</strong> ${res.article_id} | <strong>Live Dataset:</strong> ${targetDs} | <strong>Execution:</strong> ${res.duration_ms} ms<br/>
+          <em>Article is immediately searchable in live semantic and hybrid search without precomputation table overhead.</em>
+        </div>
+      `;
+
+      await refreshLiveDbHealth();
+      loadRecentLiveJobs();
+    } catch (err) {
+      dom.manualLiveAlert.className = 'alert alert-danger';
+      dom.manualLiveAlert.innerHTML = `<strong>Error Publishing Article:</strong> ${err.message}`;
+    } finally {
+      if (dom.manualLiveSubmitBtn) dom.manualLiveSubmitBtn.disabled = false;
+    }
+  }
+
+  async function handleLivePreprocessing() {
+    const targetDs = dom.liveDsSelect?.value;
+    if (!targetDs) {
+      showToast('Please select or create a live dataset first.', 'warn');
+      return;
+    }
+
+    const batchSize = parseInt(dom.livePrepBatch?.value || '64', 10);
+    const recomputeAll = !!dom.livePrepRecompute?.checked;
+
+    if (dom.startLivePrepBtn) {
+      dom.startLivePrepBtn.disabled = true;
+      dom.startLivePrepBtn.textContent = '⚡ Running Live Preprocessing...';
+    }
+    if (dom.livePrepProgress) dom.livePrepProgress.style.display = 'block';
+    if (dom.livePrepStatusText) dom.livePrepStatusText.textContent = `Generating embeddings for dataset "${targetDs}"...`;
+    if (dom.livePrepProgressFill) dom.livePrepProgressFill.style.width = '20%';
+    if (dom.livePrepProgressPct) dom.livePrepProgressPct.textContent = '20%';
+
+    try {
+      const res = await Api.preprocessLive({ dataset: targetDs, batchSize, recomputeAll });
+      showToast(`Started live preprocessing job: ${res.job_id}`, 'info');
+      startLiveJobMonitor(res.job_id);
+    } catch (err) {
+      showToast(`Preprocessing error: ${err.message}`, 'error');
+      if (dom.livePrepStatusText) dom.livePrepStatusText.textContent = `Error: ${err.message}`;
+      if (dom.startLivePrepBtn) {
+        dom.startLivePrepBtn.disabled = false;
+        dom.startLivePrepBtn.textContent = '⚡ Run Live Preprocessing';
+      }
+    }
+  }
+
+  // ─── Pipeline Monitors ────────────────────────────────────────────────────
+  function startPrecompPipelineMonitor(jobId) {
     if (dom.visualizer) dom.visualizer.classList.remove('hidden');
     if (dom.completion) dom.completion.classList.add('hidden');
     if (dom.logWindow) dom.logWindow.innerHTML = '';
-    logged.clear();
+    precompLogged.clear();
 
     resetPipelineNodes();
-    appendLog(`[Pipeline Started] Task ${jobId} initiated in PostgreSQL.`);
+    appendPrecompLog(`[Pipeline Started] Task ${jobId} initiated in PostgreSQL.`);
 
-    if (pollInterval) clearInterval(pollInterval);
+    if (precompPollInterval) clearInterval(precompPollInterval);
 
-    pollInterval = setInterval(async () => {
+    precompPollInterval = setInterval(async () => {
       try {
         const job = await Api.jobStatus(jobId);
-
-        // Progress bar
         if (dom.progressPct) dom.progressPct.textContent = `${job.progress_percent}%`;
         if (dom.progressFill) dom.progressFill.style.width = `${job.progress_percent}%`;
 
-        // Message & stage
         const rawMsg = job.message || '';
         const stage = rawMsg.startsWith('STAGE:') ? rawMsg.slice(6).split('|')[0] : 'PARSE';
         const cleanMsg = rawMsg.includes('|') ? rawMsg.split('|')[1] : rawMsg;
 
         if (dom.statusMsg) dom.statusMsg.textContent = cleanMsg;
-        if (!logged.has(cleanMsg)) {
-          logged.add(cleanMsg);
-          appendLog(cleanMsg);
+        if (!precompLogged.has(cleanMsg)) {
+          precompLogged.add(cleanMsg);
+          appendPrecompLog(cleanMsg);
         }
 
         updatePipelineNodes(stage);
 
         if (job.status === 'completed') {
-          stopPolling();
+          clearInterval(precompPollInterval);
+          precompPollInterval = null;
           setAllNodesDone();
           const refreshed = job.refreshed_articles || 0;
-          appendLog('🎉 [Success] All articles and top 10 recommendations stored in PostgreSQL.');
+          appendPrecompLog('🎉 [Success] All articles and top 10 recommendations stored in PostgreSQL.');
           if (refreshed > 0) {
-            appendLog(`🔄 [Reverse Update] Refreshed recommendations for ${refreshed} existing article(s) that this upload affected.`);
+            appendPrecompLog(`🔄 [Reverse Update] Refreshed recommendations for ${refreshed} existing article(s).`);
           }
 
           if (dom.completion) {
             dom.completion.classList.remove('hidden');
             const summary = document.getElementById('completion-summary-text');
             if (summary) {
-              const refreshText = refreshed > 0
-                ? ` Also refreshed recommendations for ${refreshed} previously uploaded article(s).`
-                : ' No existing articles needed refreshing.';
-              summary.textContent = `Indexed ${job.total_articles} articles in PostgreSQL with 384d vectors and top-10 precomputed recommendations.${refreshText}`;
+              summary.textContent = `Indexed ${job.total_articles} articles in PostgreSQL with 384d vectors and top-10 precomputed recommendations. Refreshed ${refreshed} older stories.`;
             }
           }
 
-          showToast('Pipeline Finished! Recommendations are ready in PostgreSQL.', 'success');
-          await refreshDbHealth();
+          showToast('Precomputed Run Finished! Recommendations are ready.', 'success');
+          await refreshPrecompDbHealth();
           loadInspectorArticles();
-          loadRecentJobs();
-          if (typeof window.refreshReaderAfterIngest === 'function') {
-            await window.refreshReaderAfterIngest();
-          }
-          if (dom.uploadBtn && selectedFile) dom.uploadBtn.disabled = false;
-          if (dom.demoBtn) {
-            dom.demoBtn.disabled = false;
-            dom.demoBtn.textContent = '⚡ Ingest Sample Dataset (100 Articles Demo)';
-          }
+          loadRecentPrecompJobs();
+          if (dom.precompUploadBtn && selectedPrecompFile) dom.precompUploadBtn.disabled = false;
         } else if (job.status === 'failed') {
-          stopPolling();
-          appendLog(`❌ [Failed] ${job.error || 'Pipeline encountered an error.'}`);
+          clearInterval(precompPollInterval);
+          precompPollInterval = null;
+          appendPrecompLog(`❌ [Failed] ${job.error || 'Pipeline encountered an error.'}`);
           showToast(`Pipeline failed: ${job.error}`, 'error');
-          if (dom.uploadBtn && selectedFile) dom.uploadBtn.disabled = false;
-          if (dom.demoBtn) {
-            dom.demoBtn.disabled = false;
-            dom.demoBtn.textContent = '⚡ Ingest Sample Dataset (100 Articles Demo)';
-          }
+          if (dom.precompUploadBtn && selectedPrecompFile) dom.precompUploadBtn.disabled = false;
         }
       } catch (e) {
-        console.warn('Poll error:', e);
+        console.warn('Precomp poll error:', e);
       }
     }, 1200);
+  }
+
+  function startLiveJobMonitor(jobId) {
+    if (livePollInterval) clearInterval(livePollInterval);
+
+    livePollInterval = setInterval(async () => {
+      try {
+        const job = await Api.jobStatus(jobId);
+        const pct = job.progress_percent || 0;
+        if (dom.livePrepProgressFill) dom.livePrepProgressFill.style.width = `${pct}%`;
+        if (dom.livePrepProgressPct) dom.livePrepProgressPct.textContent = `${pct}%`;
+        if (dom.livePrepStatusText) dom.livePrepStatusText.textContent = job.message || 'Processing live embeddings...';
+
+        if (job.status === 'completed') {
+          clearInterval(livePollInterval);
+          livePollInterval = null;
+          if (dom.livePrepProgressFill) dom.livePrepProgressFill.style.width = '100%';
+          if (dom.livePrepProgressPct) dom.livePrepProgressPct.textContent = '100%';
+          showToast('Live processing completed successfully!', 'success');
+          if (dom.startLivePrepBtn) {
+            dom.startLivePrepBtn.disabled = false;
+            dom.startLivePrepBtn.textContent = '⚡ Run Live Preprocessing';
+          }
+          if (dom.liveUploadBtn && selectedLiveFile) dom.liveUploadBtn.disabled = false;
+          await refreshLiveDbHealth();
+          loadRecentLiveJobs();
+        } else if (job.status === 'failed') {
+          clearInterval(livePollInterval);
+          livePollInterval = null;
+          showToast(`Live job failed: ${job.error}`, 'error');
+          if (dom.startLivePrepBtn) {
+            dom.startLivePrepBtn.disabled = false;
+            dom.startLivePrepBtn.textContent = '⚡ Run Live Preprocessing';
+          }
+          if (dom.liveUploadBtn && selectedLiveFile) dom.liveUploadBtn.disabled = false;
+          loadRecentLiveJobs();
+        }
+      } catch (e) {
+        console.warn('Live poll error:', e);
+      }
+    }, 1000);
   }
 
   function resetPipelineNodes() {
@@ -345,7 +928,6 @@ const Editor = (() => {
     };
 
     const conf = stageMap[stage] || stageMap['PARSE'];
-
     conf.done.forEach(id => {
       const el = document.getElementById(id);
       if (el && !el.classList.contains('done')) {
@@ -376,7 +958,7 @@ const Editor = (() => {
     });
   }
 
-  function appendLog(msg) {
+  function appendPrecompLog(msg) {
     if (!dom.logWindow) return;
     const time = new Date().toLocaleTimeString();
     const line = document.createElement('div');
@@ -386,51 +968,157 @@ const Editor = (() => {
     dom.logWindow.scrollTop = dom.logWindow.scrollHeight;
   }
 
-  // ─── Health & Inspector ───────────────────────────────────────────────────
-  async function refreshDbHealth() {
-    try {
-      const data = await Api.dbHealth();
-      const pgBadge = document.getElementById('pg-status-badge');
-      const vecBadge = document.getElementById('vector-status-badge');
-      const totalArts = document.getElementById('db-total-articles');
-      const totalVecs = document.getElementById('db-total-vectors');
-      const totalRecs = document.getElementById('db-total-recs');
+  function formatWhen(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
 
-      if (pgBadge) {
-        pgBadge.className = data.connected ? 'stat-badge ready' : 'stat-badge error';
-        pgBadge.innerHTML = data.connected ? '🟢 Connected (PostgreSQL)' : '🔴 Disconnected';
+  // ─── Recent Jobs Loaders ──────────────────────────────────────────────────
+  async function loadRecentPrecompJobs() {
+    if (!dom.recentJobsBody) return;
+    try {
+      const targetDs = dom.precompDsSelect?.value || State.get().activeDataset || 'default';
+      const data = await Api.recentJobs(targetDs, 'precomputed');
+      const jobs = data.jobs || [];
+      const summary = data.summary || {};
+
+      const summaryEls = {
+        uploads:   document.getElementById('summary-uploads'),
+        articles:  document.getElementById('summary-articles'),
+        refreshed: document.getElementById('summary-refreshed'),
+        failed:    document.getElementById('summary-failed'),
+      };
+      if (summaryEls.uploads)   summaryEls.uploads.textContent   = summary.total_jobs ?? jobs.length;
+      if (summaryEls.articles)  summaryEls.articles.textContent  = (summary.articles_ingested || 0).toLocaleString();
+      if (summaryEls.refreshed) summaryEls.refreshed.textContent = (summary.refreshed_articles || 0).toLocaleString();
+      if (summaryEls.failed)    summaryEls.failed.textContent    = summary.failed_jobs || 0;
+
+      if (!jobs.length) {
+        dom.recentJobsBody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:14px;">No precomputed runs recorded yet.</td></tr>';
+        return;
       }
-      if (vecBadge) {
-        vecBadge.className = data.pgvector_ready ? 'stat-badge ready' : 'stat-badge warning';
-        vecBadge.innerHTML = data.pgvector_ready ? '⚡ pgvector Ready (384d)' : '⚠️ Extension Missing';
-      }
-      if (totalArts) totalArts.textContent = (data.total_articles || 0).toLocaleString();
-      if (totalVecs) totalVecs.textContent = (data.embedded_articles || 0).toLocaleString();
-      if (totalRecs) totalRecs.textContent = (data.total_recommendations || 0).toLocaleString();
+
+      dom.recentJobsBody.innerHTML = jobs.map(job => {
+        const badgeClass = job.status === 'completed' ? 'ready' : (job.status === 'failed' ? 'error' : 'warning');
+        const refreshed = job.refreshed_articles || 0;
+        const articlesCell = job.status === 'completed' ? `${job.total_articles}` : `${job.processed_articles}/${job.total_articles || '?'}`;
+        const durationStr = job.duration_seconds != null ? `${job.duration_seconds}s` : '—';
+
+        return `
+          <tr>
+            <td style="font-size:0.78rem;color:var(--text-secondary);">${formatWhen(job.created_at)}</td>
+            <td>
+              <div class="job-file">${escHtml(job.filename || '—')}</div>
+              <div class="job-id">${escHtml(job.id)}</div>
+            </td>
+            <td>${articlesCell}</td>
+            <td><strong style="color:var(--text-primary);">${durationStr}</strong></td>
+            <td><span class="job-refresh-count ${refreshed > 0 ? '' : 'zero'}">${refreshed > 0 ? refreshed : '—'}</span></td>
+            <td><span class="stat-badge ${badgeClass}">${job.status}</span></td>
+            <td>
+              <button type="button" class="btn btn-secondary btn-inspect-job-mon" data-id="${job.id}" style="font-size:0.72rem;padding:3px 8px;">
+                📊 Telemetry
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      dom.recentJobsBody.querySelectorAll('.btn-inspect-job-mon').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (window.setAppRole) {
+            window.setAppRole('monitor');
+            setTimeout(() => {
+              if (window.Monitoring && typeof window.Monitoring.refreshAll === 'function') {
+                window.Monitoring.refreshAll();
+              }
+            }, 100);
+          }
+        });
+      });
     } catch (e) {
-      console.warn('DB health check warning:', e);
+      console.warn('Recent precomp jobs warning:', e);
     }
   }
 
+  async function loadRecentLiveJobs() {
+    if (!dom.liveJobsBody) return;
+    try {
+      const targetDs = dom.liveDsSelect?.value;
+      if (!targetDs) {
+        dom.liveJobsBody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:14px;">Select or create a live dataset above.</td></tr>';
+        return;
+      }
+      const data = await Api.recentJobs(targetDs, 'live');
+      const jobs = data.jobs || [];
+
+      if (!jobs.length) {
+        dom.liveJobsBody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:14px;">No live ingestion jobs in this dataset yet.</td></tr>';
+        return;
+      }
+
+      dom.liveJobsBody.innerHTML = jobs.map(job => {
+        const badgeClass = job.status === 'completed' ? 'ready' : (job.status === 'failed' ? 'error' : 'warning');
+        const durationStr = job.duration_seconds != null ? `${job.duration_seconds}s` : '—';
+        const throughput = (job.total_articles && job.duration_seconds)
+          ? `${(job.total_articles / Math.max(job.duration_seconds, 0.01)).toFixed(1)} art/s`
+          : '—';
+
+        return `
+          <tr>
+            <td style="font-size:0.78rem;color:var(--text-secondary);">${formatWhen(job.created_at)}</td>
+            <td>
+              <div class="job-file">${escHtml(job.filename || '—')}</div>
+              <div class="job-id">${escHtml(job.id)}</div>
+            </td>
+            <td>${job.processed_articles || job.total_articles || 0}</td>
+            <td><strong style="color:var(--text-primary);">${durationStr}</strong></td>
+            <td><span style="color:#818cf8;font-weight:700;">${throughput}</span></td>
+            <td><span class="stat-badge ${badgeClass}">${job.status}</span></td>
+            <td>
+              <button type="button" class="btn btn-secondary btn-inspect-live-mon" data-id="${job.id}" style="font-size:0.72rem;padding:3px 8px;">
+                📊 Telemetry
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      dom.liveJobsBody.querySelectorAll('.btn-inspect-live-mon').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (window.setAppRole) {
+            window.setAppRole('monitor');
+            setTimeout(() => {
+              if (window.Monitoring && typeof window.Monitoring.refreshAll === 'function') {
+                window.Monitoring.refreshAll();
+              }
+            }, 100);
+          }
+        });
+      });
+    } catch (e) {
+      console.warn('Recent live jobs warning:', e);
+    }
+  }
+
+  // ─── Inspector Logic ──────────────────────────────────────────────────────
   async function loadInspectorArticles() {
     if (!dom.inspectorSelect) return;
     try {
-      dom.inspectorSelect.innerHTML = '<option value="">-- Loading all articles… --</option>';
-
-      const perPage = 100;
+      const targetDs = dom.precompDsSelect?.value || State.get().activeDataset || 'default';
       const placeholder = document.createElement('option');
       placeholder.value = '';
-      placeholder.textContent = '-- Choose an article to inspect precomputed recs --';
+      placeholder.textContent = `-- Choose an article to inspect precomputed recs --`;
       dom.inspectorSelect.innerHTML = '';
       dom.inspectorSelect.appendChild(placeholder);
 
-      // Page through the WHOLE article table so the dropdown is not capped.
+      const perPage = 100;
       let page = 1;
-      let total = Infinity;
       let count = 0;
-      while (count < total && page <= 500) {
-        const data = await Api.articles({ page, perPage, sort: 'date' });
-        total = data.total || 0;
+      while (page <= 5) {
+        const data = await Api.articles({ page, perPage, sort: 'date', dataset: targetDs });
         const arts = data.articles || [];
         arts.forEach(art => {
           const opt = document.createElement('option');
@@ -439,7 +1127,7 @@ const Editor = (() => {
           dom.inspectorSelect.appendChild(opt);
         });
         count += arts.length;
-        if (arts.length < perPage) break;   // last page reached
+        if (arts.length < perPage) break;
         page += 1;
       }
       placeholder.textContent = `-- Choose an article to inspect precomputed recs (${count}) --`;
@@ -448,27 +1136,20 @@ const Editor = (() => {
     }
   }
 
-  function escapeHtml(str) {
-    if (!str) return '';
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
-
   async function inspectArticle(articleId) {
-    if (!dom.inspectorCandidatesList && !dom.inspectorBody) return;
-
-    if (dom.inspectorCandidatesList) {
-      dom.inspectorCandidatesList.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-secondary);">Fetching precomputed recommendations &amp; grounded 7-item evaluation in sub-5ms from PostgreSQL...</div>';
-    }
+    if (!dom.inspectorCandidatesList) return;
+    dom.inspectorCandidatesList.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-secondary);">Fetching precomputed recommendations from PostgreSQL…</div>';
     if (dom.inspectorSourceBox) dom.inspectorSourceBox.style.display = 'none';
     if (dom.inspectorActions) dom.inspectorActions.style.display = 'none';
 
     try {
-      const res = await Api.precomputedRecs(articleId);
+      const targetDs = dom.precompDsSelect?.value || State.get().activeDataset || 'default';
+      const res = await Api.precomputedRecs(articleId, 10, targetDs);
       const recs = res.recommendations || [];
       const sourceArt = res.source_article || null;
 
-      if (recs.length === 0) {
-        if (dom.inspectorCandidatesList) dom.inspectorCandidatesList.innerHTML = '';
+      if (!recs.length) {
+        dom.inspectorCandidatesList.innerHTML = '';
         if (dom.inspectorEmpty) dom.inspectorEmpty.classList.remove('hidden');
         return;
       }
@@ -476,114 +1157,30 @@ const Editor = (() => {
       if (dom.inspectorEmpty) dom.inspectorEmpty.classList.add('hidden');
       if (dom.inspectorActions) dom.inspectorActions.style.display = 'block';
 
-      // 1. Render Source Article Banner
-      if (sourceArt && dom.inspectorSourceBox) {
-        const srcLead = sourceArt.description || sourceArt.body?.slice(0, 220) || '';
-        const srcDate = sourceArt.date ? new Date(sourceArt.date).toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'}) : 'Recent';
-        dom.inspectorSourceBox.innerHTML = `
-          <div class="inspector-source-hdr">
-            <span class="inspector-source-tag">📰 Source Article for Precomputed Recommendations</span>
-            <span class="cat-pill">${escapeHtml(sourceArt.section || 'General')}</span>
-          </div>
-          <div class="inspector-source-title">${escapeHtml(sourceArt.title)}</div>
-          <p style="font-size:0.83rem;color:var(--text-secondary);margin:4px 0 10px 0;line-height:1.45;font-style:italic;">
-            "${escapeHtml(srcLead)}"
-          </p>
-          <div class="inspector-source-meta">
-            <span>Section: <strong>${escapeHtml(sourceArt.section || 'General')}</strong></span>
-            ${sourceArt.subsection ? `<span>Subsection: <strong>${escapeHtml(sourceArt.subsection)}</strong></span>` : ''}
-            <span>Published: <strong>${srcDate}</strong></span>
-            <span>⚡ Storage: <strong>PostgreSQL article_recommendations table (${recs.length} candidates precomputed)</strong></span>
-          </div>
-        `;
-        dom.inspectorSourceBox.style.display = 'block';
-      }
-
-      // 2. Render 7-item Candidate Cards with Grounded Evaluation
-      if (dom.inspectorCandidatesList && window.Evaluator) {
+      if (window.Evaluator && window.Evaluator.renderReviewGroup) {
         dom.inspectorCandidatesList.innerHTML = '';
-        recs.forEach((rec, idx) => {
-          // Open top 3 candidates by default so mentor immediately sees all 7 evaluation items
-          const card = window.Evaluator.renderCard(rec, sourceArt, idx, idx < 3);
-          dom.inspectorCandidatesList.appendChild(card);
+        const group = window.Evaluator.renderReviewGroup(sourceArt, recs, {
+          pipeline: res.model_version || '384d',
+          metadata: res.scoring_metadata || null,
+          openFirst: 2,
         });
+        dom.inspectorCandidatesList.appendChild(group);
       }
     } catch (err) {
-      if (dom.inspectorCandidatesList) {
-        dom.inspectorCandidatesList.innerHTML = `<div style="color:var(--color-danger);text-align:center;padding:24px;">Failed to fetch recommendations: ${err.message}</div>`;
-      }
+      dom.inspectorCandidatesList.innerHTML = `<div style="color:var(--color-danger);text-align:center;padding:24px;">Failed to fetch recommendations: ${err.message}</div>`;
     }
   }
 
-  function formatWhen(iso) {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return '—';
-    return d.toLocaleString(undefined, {
-      day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
-    });
-  }
-
-  async function loadRecentJobs() {
-    const summaryEls = {
-      uploads:   document.getElementById('summary-uploads'),
-      articles:  document.getElementById('summary-articles'),
-      refreshed: document.getElementById('summary-refreshed'),
-      failed:    document.getElementById('summary-failed'),
-    };
-
-    if (!dom.recentJobsBody) return;
-    try {
-      const data = await Api.recentJobs();
-      const jobs = data.jobs || [];
-      const summary = data.summary || {};
-
-      // 1. Aggregate upload-history summary
-      if (summaryEls.uploads)   summaryEls.uploads.textContent   = summary.total_jobs ?? jobs.length;
-      if (summaryEls.articles)  summaryEls.articles.textContent  = (summary.articles_ingested || 0).toLocaleString();
-      if (summaryEls.refreshed) summaryEls.refreshed.textContent = (summary.refreshed_articles || 0).toLocaleString();
-      if (summaryEls.failed)    summaryEls.failed.textContent    = summary.failed_jobs || 0;
-
-      const running = jobs.find(j => j.status === 'processing' || j.status === 'pending');
-      if (running && !pollInterval) {
-        activeJobId = running.id;
-        if (dom.demoBtn) dom.demoBtn.disabled = true;
-        if (dom.uploadBtn) dom.uploadBtn.disabled = true;
-        startPipelineMonitor(running.id);
-      }
-
-      if (jobs.length === 0) {
-        dom.recentJobsBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:14px;">No uploads recorded yet.</td></tr>';
-        return;
-      }
-
-      dom.recentJobsBody.innerHTML = '';
-      jobs.forEach(job => {
-        const tr = document.createElement('tr');
-        const badgeClass = job.status === 'completed' ? 'ready' : (job.status === 'failed' ? 'error' : 'warning');
-        const refreshed = job.refreshed_articles || 0;
-        const articlesCell = job.status === 'completed'
-          ? `${job.total_articles}`
-          : `${job.processed_articles}/${job.total_articles || '?'}`;
-        tr.innerHTML = `
-          <td style="font-size:0.78rem;color:var(--text-secondary);">${formatWhen(job.created_at)}</td>
-          <td>
-            <div class="job-file">${job.filename || '—'}</div>
-            <div class="job-id">${job.id}</div>
-          </td>
-          <td>${articlesCell}</td>
-          <td><span class="job-refresh-count ${refreshed > 0 ? '' : 'zero'}">${refreshed > 0 ? refreshed : '—'}</span></td>
-          <td><span class="stat-badge ${badgeClass}">${job.status}</span></td>
-        `;
-        dom.recentJobsBody.appendChild(tr);
-      });
-    } catch (e) {
-      console.warn('Recent jobs warning:', e);
-    }
-  }
-
-  return { init, refreshDbHealth, inspectArticle };
+  return {
+    init,
+    refreshDbHealth: refreshPrecompDbHealth,
+    refreshPrecompDbHealth,
+    refreshLiveDbHealth,
+    inspectArticle,
+    loadPrecomputedDatasets,
+    loadLiveDatasets,
+    switchStudio,
+  };
 })();
 
-// Expose to window so app.js can detect and call Editor.init()
 window.Editor = Editor;

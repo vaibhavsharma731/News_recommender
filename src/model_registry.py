@@ -45,6 +45,7 @@ class RemoteEmbedderClient:
         self.model_name = model_name or config.EMBEDDING_MODEL
         self.max_seq_length = getattr(config, "EMBED_MAX_SEQ_LEN", 256)
         self._local_fallback = None
+        self.last_used_remote = True
 
     def _get_local(self):
         if self._local_fallback is None:
@@ -89,8 +90,10 @@ class RemoteEmbedderClient:
                     f"Remote embedder returned dimension {arr.shape[1]}, expected {config.EMBEDDING_DIM} "
                     f"({self.model_name}). Incompatible remote worker."
                 )
+            self.last_used_remote = True
             return arr[0] if is_single else arr
         except Exception as e:
+            self.last_used_remote = False
             print(f"[ModelRegistry Warning] Remote embedder call failed ({e}). Falling back to local model.")
             return self._get_local().encode(
                 texts,
@@ -109,6 +112,7 @@ class RemoteCrossEncoderClient:
         self.model_name = model_name or config.RERANKER_MODEL
         self.max_length = getattr(config, "RERANK_MAX_LEN", 512)
         self._local_fallback = None
+        self.last_used_remote = True
 
     def _get_local(self):
         if self._local_fallback is None:
@@ -141,8 +145,10 @@ class RemoteCrossEncoderClient:
                     data = json.loads(resp.read().decode("utf-8"))
                     results.extend(data["logits"])
 
+            self.last_used_remote = True
             return np.asarray(results, dtype=np.float32)
         except Exception as e:
+            self.last_used_remote = False
             print(f"[ModelRegistry Warning] Remote cross-encoder call failed ({e}). Falling back to local model.")
             return self._get_local().predict(
                 pairs,

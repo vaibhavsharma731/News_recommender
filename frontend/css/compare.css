@@ -1,0 +1,87 @@
+/* ─── COMPARE TAB (Section 3 — Side-by-Side Algorithm Comparison) ─────────── */
+
+/* Dual-column result grid */
+.compare-dual-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+/* Individual pane container */
+.compare-pane {
+  background: var(--surface-raised, #1e1e2e);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* Pane header bar */
+.compare-pane-header {
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+  background: var(--surface-sunken, rgba(0,0,0,0.15));
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Scrollable results list inside each pane */
+.compare-results-list {
+  max-height: 580px;
+  overflow-y: auto;
+}
+
+/* Each recommendation row */
+.compare-rec-row {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  transition: background 0.15s;
+}
+
+.compare-rec-row:last-child {
+  border-bottom: none;
+}
+
+.compare-rec-row:hover {
+  background: rgba(99, 102, 241, 0.05);
+}
+
+/* Latency comparison badge */
+.compare-latency-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: rgba(99,102,241,0.08);
+  border: 1px solid rgba(99,102,241,0.2);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 10px;
+}
+
+/* Source article display box */
+.compare-source-box {
+  background: var(--surface-raised, #1e1e2e);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+
+/* Skeleton animation */
+.compare-skeleton {
+  background: var(--surface-raised, #282840);
+  border-radius: 4px;
+  animation: compare-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes compare-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}

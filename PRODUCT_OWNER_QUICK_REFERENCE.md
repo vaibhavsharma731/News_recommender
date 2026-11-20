@@ -58,7 +58,8 @@
         ▼ 8. Diversity & Redundancy Filter (MMR):
              lambda=0.91, theta=0.76 (Redundancy penalty applied ONLY when Cosine Sim > 0.76)
         │
-        ▼ 9. Relevance Admission Cut: Hard floor 0.40, elbow drop ratio 0.45, min keep 4
+        ▼ 9. Quality Filtering & Low-Confidence Detection:
+             Candidate Quotas (12 RRF + 5 Dense + 3 BM25) + MIN_RAW_RERANK_THRESHOLD (0.12)
         │
         ▼ 10. Platt Scaling Calibration & Zero-LLM Evidence Assembly:
               P = sigmoid(4.85 * Score - 2.60) -> Confidence Band (HIGH/MED/LOW) + JSON Evidence Card
@@ -91,8 +92,8 @@
 | RECENCY_MAX_BOOST_MULT             | 1.104 (Max +10.4%)       | Multiplier for fresh articles relative to source date       |
 | MMR_LAMBDA                         | 0.91                     | Relevance vs diversity weighting in MMR                     |
 | MMR_THETA                          | 0.76                     | Redundancy threshold: penalties apply ONLY above 0.76 sim   |
-| RELEVANCE_FLOOR                    | 0.40                     | Minimum acceptable score before admission cut               |
-| ELBOW_RATIO                        | 0.45                     | Maximum allowed score drop between adjacent ranks           |
+| MIN_RAW_RERANK_THRESHOLD           | 0.12                     | Raw CE prob threshold for low-confidence flag detection     |
+| CANDIDATE_QUOTAS                   | 12 RRF / 5 Dense / 3 BM25| Guaranteed retrieval quota allocation across branches       |
 | FALLBACK_MIN_RELATED               | 3 articles               | If fewer than 3 survive, Technique 4 fallback is appended   |
 +------------------------------------+--------------------------+-------------------------------------------------------------+
 ```

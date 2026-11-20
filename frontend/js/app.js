@@ -47,12 +47,31 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // ─── 3. RECSYS CONTROLS BINDING ─────────────────────────────────────────────
+  const readerDatasetFilter = document.getElementById('reader-dataset-filter');
+  const readerDatasetBadge = document.getElementById('reader-dataset-badge');
   const topKSlider = document.getElementById('top-k-slider');
   const topKValue = document.getElementById('top-k-value');
   const sectionFilter = document.getElementById('section-filter');
   const methodSelect = document.getElementById('method-select');
   const useBoostsToggle = document.getElementById('use-boosts');
   const useDiversityToggle = document.getElementById('use-diversity');
+
+  if (readerDatasetFilter) {
+    readerDatasetFilter.addEventListener('change', async (e) => {
+      const ds = e.target.value;
+      State.set({ activeDataset: ds });
+      if (readerDatasetBadge) {
+        readerDatasetBadge.textContent = ds === 'default' ? 'Production' : ds;
+      }
+      if (window.Tabs && typeof window.Tabs.clearArticlesCache === 'function') {
+        window.Tabs.clearArticlesCache();
+        window.Tabs.reloadCurrentTab();
+      }
+      if (window.shuffleRandomizer) {
+        window.shuffleRandomizer();
+      }
+    });
+  }
 
   if (topKSlider && topKValue) {
     topKSlider.addEventListener('input', (e) => {
@@ -157,30 +176,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         </div>
       </div>`;
 
-    // On click, scroll to or create the widget in the main feed
+    // On click, route according to the active tab:
+    // If on Live Hybrid slide -> add article to the live hybrid slide and wait for user to click Run Live Hybrid
+    // If on Precomputation slide -> show article in the similar articles feed with precomputed recommendations
     widget.addEventListener('click', () => {
-      const feed = document.getElementById('article-feed');
-      if (!feed) return;
+      const activePanel = document.querySelector('.tab-panel.active');
+      const activeTab = (activePanel ? activePanel.id.replace('tab-', '') : null) 
+        || (window.State ? window.State.get().activeTab : 'similar');
 
-      // Try find existing widget in feed
-      const existing = feed.querySelector(`.feed-widget[data-id="${article.id}"]`);
-      if (existing) {
-        existing.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        existing.classList.add('widget-highlighted');
-        setTimeout(() => existing.classList.remove('widget-highlighted'), 2600);
+      if (activeTab === 'hybrid-lab' && window.HybridLab && typeof window.HybridLab.selectArticle === 'function') {
+        window.HybridLab.selectArticle(article, false);
       } else {
-        // Use Tabs to prepend the widget
-        if (window.Tabs && window.Tabs.buildFeed) {
-          const storyFinderInput = document.getElementById('story-finder-input');
-          if (storyFinderInput) {
-            storyFinderInput.value = article.title;
-            storyFinderInput.dispatchEvent(new Event('input'));
-            // Simulate selecting first match after a brief delay
-            setTimeout(() => {
-              const firstItem = document.querySelector('.story-finder-item');
-              if (firstItem) firstItem.click();
-            }, 300);
-          }
+        if (window.Tabs && typeof window.Tabs.selectArticle === 'function') {
+          window.Tabs.selectArticle(article);
         }
       }
     });
@@ -339,26 +347,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (typeof Tabs.populateCategoryPills === 'function') {
       Tabs.populateCategoryPills(sections);
     }
+    if (typeof HybridLab !== 'undefined' && typeof HybridLab.init === 'function') {
+      await HybridLab.init();
+    }
 
     // 5. Initialize Editor & PostgreSQL Pipeline Hub (Editor is a const, always available)
     await Editor.init();
 
-    // 6. Role Switcher Controller (Editor vs Reader)
+    // 5B. Initialize Monitoring & Performance Hub
+    if (typeof Monitoring !== 'undefined' && typeof Monitoring.init === 'function') {
+      await Monitoring.init();
+    }
+
+    // 5C. Initialize Side-by-Side Algorithm Comparison
+    if (typeof Compare !== 'undefined' && typeof Compare.init === 'function') {
+      Compare.init();
+    }
+
+    // 6. Role Switcher Controller (Editor vs Reader vs Monitor)
     const roleEditorBtn = document.getElementById('role-btn-editor');
     const roleReaderBtn = document.getElementById('role-btn-reader');
+    const roleMonitorBtn = document.getElementById('role-btn-monitor');
     const editorView = document.getElementById('editor-view');
     const readerView = document.getElementById('reader-view');
+    const monitorView = document.getElementById('monitoring-view');
     const readerEmptyBanner = document.getElementById('reader-empty-banner');
     const btnEmptyGotoEditor = document.getElementById('btn-empty-goto-editor');
-    const btnEmptySwitch768d = document.getElementById('btn-empty-switch-768d');
 
-    if (btnEmptySwitch768d) {
-      btnEmptySwitch768d.addEventListener('click', () => {
-        if (typeof Tabs.applyModelSwitch === 'function') {
-          Tabs.applyModelSwitch('768d');
-        }
-      });
-    }
 
     async function checkReaderDatabaseState() {
       try {
@@ -390,15 +405,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function setAppRole(role) {
       const isEditor = role === 'editor';
+      const isReader = role === 'reader';
+      const isMonitor = role === 'monitor';
+
       if (roleEditorBtn) roleEditorBtn.classList.toggle('active', isEditor);
-      if (roleReaderBtn) roleReaderBtn.classList.toggle('active', !isEditor);
+      if (roleReaderBtn) roleReaderBtn.classList.toggle('active', isReader);
+      if (roleMonitorBtn) roleMonitorBtn.classList.toggle('active', isMonitor);
+
       if (editorView) editorView.classList.toggle('hidden', !isEditor);
-      if (readerView) readerView.classList.toggle('hidden', isEditor);
+      if (readerView) readerView.classList.toggle('hidden', !isReader);
+      if (monitorView) monitorView.classList.toggle('hidden', !isMonitor);
       localStorage.setItem('app_role', role);
+
+      if (isMonitor) {
+        if (typeof Monitoring !== 'undefined') Monitoring.activate();
+      } else {
+        if (typeof Monitoring !== 'undefined') Monitoring.deactivate();
+      }
 
       if (isEditor) {
         Editor.refreshDbHealth();
-      } else {
+      } else if (isReader) {
         const hasArticles = await checkReaderDatabaseState();
         if (hasArticles) {
           try { await Hero.init(); } catch (e) { console.warn('Hero init skipped:', e.message); }
@@ -421,6 +448,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (roleEditorBtn) roleEditorBtn.addEventListener('click', () => setAppRole('editor'));
     if (roleReaderBtn) roleReaderBtn.addEventListener('click', () => setAppRole('reader'));
+    if (roleMonitorBtn) roleMonitorBtn.addEventListener('click', () => setAppRole('monitor'));
     if (btnEmptyGotoEditor) btnEmptyGotoEditor.addEventListener('click', () => setAppRole('editor'));
 
     // Default to editor if database is empty, otherwise restore saved role

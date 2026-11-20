@@ -317,6 +317,7 @@ class Reranker:
         from torch import nn
         self.model = get_cross_encoder(model_name)   # shared copy, loaded once per process
         self._identity = nn.Identity()
+        self.last_used_remote = False
         # Reranker tokenizer for pair budgeting (lazy-loaded)
         self._tokenizer = None
 
@@ -400,4 +401,6 @@ class Reranker:
         ds = [p[1] for p in pairs]
         # All queries are the same — call score() with the list of passages
         # Use the first query string (they are all the same trimmed query)
-        return self.score(qs[0], ds, batch_size=batch_size)
+        res = self.score(qs[0], ds, batch_size=batch_size)
+        self.last_used_remote = getattr(self.model, "last_used_remote", False)
+        return res

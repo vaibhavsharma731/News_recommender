@@ -15,6 +15,7 @@ import hashlib
 import math
 import os
 import re
+import time
 from collections import Counter, defaultdict
 
 import numpy as np
@@ -216,7 +217,9 @@ class BM25Index:
 
         # Build field-aware inverted index:
         # term -> [(doc_pos, tf_tilde), ...]
+        # postings_by_pos: term -> {doc_pos: tf_tilde} for O(1) evidence lookup (FIX #2)
         self.postings = defaultdict(list)
+        self.postings_by_pos = defaultdict(dict)
         doc_frequency = Counter()
 
         for pos, doc in enumerate(self.docs_fields):
@@ -236,7 +239,9 @@ class BM25Index:
                         b_val = self.FIELD_B[f]
                         len_norm = 1.0 - b_val + b_val * (self.field_lens[f][pos] / self.avg_field_lens[f])
                         tf_tilde += weight * (count / max(0.01, len_norm))
-                self.postings[term].append((pos, float(tf_tilde)))
+                tf_val = float(tf_tilde)
+                self.postings[term].append((pos, tf_val))
+                self.postings_by_pos[term][pos] = tf_val
 
         # Rare words get a high IDF weight, common words a low one
         self.idf = {
@@ -525,6 +530,22 @@ class DenseIndex:
 
         return np.asarray(vectors, dtype=np.float32)
 
+
+    def encode_query(self, text: str, short: bool = False) -> tuple[np.ndarray, float]:
+        """Encodes query text into a normalized embedding vector with precise timing."""
+        if short:
+            text = config.QUERY_PREFIX + text
+        t0 = time.perf_counter()
+        query_vec = self.model.encode(text, normalize_embeddings=True)
+        embed_ms = (time.perf_counter() - t0) * 1000
+        return query_vec, embed_ms
+
+    def scan_matrix(self, query_vec: np.ndarray) -> tuple[np.ndarray, float]:
+        """Scans the corpus vector matrix with dot product with precise timing."""
+        t0 = time.perf_counter()
+        scores = self.vectors @ query_vec
+        scan_ms = (time.perf_counter() - t0) * 1000
+        return scores, scan_ms
 
     def scores_for_text(self, text: str, short: bool = False) -> np.ndarray:
         if short:

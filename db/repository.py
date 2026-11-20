@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from .models import Article, Article768D, ArticleRecommendation, ArticleRecommendation768D, IngestionJob
+from .models import Article, ArticleRecommendation, IngestionJob
 from src.scoring import parse_ids
 
 
@@ -20,15 +20,26 @@ class ArticleRepository:
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
     def get_article(db: Session, article_id: str, model_version: str = "384d") -> Optional[Any]:
-        Model = Article768D if model_version == "768d" else Article
-        return db.query(Model).filter(Model.id == article_id).first()
+        return db.query(Article).filter(Article.id == article_id).first()
 
     @staticmethod
-    def count_articles(db: Session, model_version: str = "384d", section: Optional[str] = None) -> int:
-        Model = Article768D if model_version == "768d" else Article
-        q = db.query(func.count(Model.id))
+    def count_articles(
+        db: Session,
+        model_version: str = "384d",
+        section: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> int:
+        q = db.query(func.count(Article.id))
         if section:
-            q = q.filter(Model.section.ilike(f"%{section}%"))
+            q = q.filter(Article.section.ilike(f"%{section}%"))
+        if search:
+            search_pattern = f"%{search}%"
+            q = q.filter(
+                or_(
+                    Article.title.ilike(search_pattern),
+                    Article.description.ilike(search_pattern),
+                )
+            )
         return q.scalar() or 0
 
     @staticmethod
@@ -44,19 +55,18 @@ class ArticleRepository:
         search: Optional[str] = None,
         model_version: str = "384d",
     ) -> List[Any]:
-        Model = Article768D if model_version == "768d" else Article
-        query = db.query(Model)
+        query = db.query(Article)
         if section:
-            query = query.filter(Model.section.ilike(f"%{section}%"))
+            query = query.filter(Article.section.ilike(f"%{section}%"))
         if search:
             search_pattern = f"%{search}%"
             query = query.filter(
                 or_(
-                    Model.title.ilike(search_pattern),
-                    Model.description.ilike(search_pattern)
+                    Article.title.ilike(search_pattern),
+                    Article.description.ilike(search_pattern)
                 )
             )
-        return query.order_by(desc(Model.date).nulls_last()).offset(offset).limit(limit).all()
+        return query.order_by(desc(Article.date).nulls_last()).offset(offset).limit(limit).all()
 
     @staticmethod
     def list_articles_ranked_by_confidence(
@@ -69,19 +79,17 @@ class ArticleRepository:
         """
         List articles ordered by how CONFIDENT their precomputed recommendations are.
         """
-        ArtModel = Article768D if model_version == "768d" else Article
-        RecModel = ArticleRecommendation768D if model_version == "768d" else ArticleRecommendation
-        confidence = func.coalesce(func.avg(RecModel.score), 0.0).label("confidence")
-        rec_count = func.count(RecModel.id).label("rec_count")
+        confidence = func.coalesce(func.avg(ArticleRecommendation.score), 0.0).label("confidence")
+        rec_count = func.count(ArticleRecommendation.id).label("rec_count")
 
-        query = db.query(ArtModel).outerjoin(
-            RecModel, RecModel.article_id == ArtModel.id
+        query = db.query(Article).outerjoin(
+            ArticleRecommendation, ArticleRecommendation.article_id == Article.id
         )
         if section:
-            query = query.filter(ArtModel.section.ilike(f"%{section}%"))
+            query = query.filter(Article.section.ilike(f"%{section}%"))
         return (
-            query.group_by(ArtModel.id)
-            .order_by(desc(confidence), desc(rec_count), desc(ArtModel.date).nulls_last(), ArtModel.id)
+            query.group_by(Article.id)
+            .order_by(desc(confidence), desc(rec_count), desc(Article.date).nulls_last(), Article.id)
             .offset(offset)
             .limit(limit)
             .all()
@@ -89,8 +97,7 @@ class ArticleRepository:
 
     @staticmethod
     def get_sections(db: Session, model_version: str = "384d") -> List[str]:
-        Model = Article768D if model_version == "768d" else Article
-        results = db.query(Model.section).distinct().filter(Model.section.isnot(None)).all()
+        results = db.query(Article.section).distinct().filter(Article.section.isnot(None)).all()
         return sorted([r[0] for r in results if r[0]])
 
     @staticmethod
@@ -106,21 +113,20 @@ class ArticleRepository:
         """
         Popular stories from one section, for the graceful-degradation list.
         """
-        Model = Article768D if model_version == "768d" else Article
-        query = db.query(Model).filter(Model.section == section)
+        query = db.query(Article).filter(Article.section == section)
         ids = [str(i) for i in exclude_ids if i]
         if ids:
-            query = query.filter(Model.id.notin_(ids))
+            query = query.filter(Article.id.notin_(ids))
         if ref_date is not None:
             query = query.filter(
-                Model.date >= ref_date - timedelta(days=window_days),
-                Model.date <= ref_date + timedelta(days=window_days),
+                Article.date >= ref_date - timedelta(days=window_days),
+                Article.date <= ref_date + timedelta(days=window_days),
             )
         return (
             query.order_by(
-                desc(Model.page_views).nulls_last(),
-                desc(Model.date).nulls_last(),
-                Model.id,
+                desc(Article.page_views).nulls_last(),
+                desc(Article.date).nulls_last(),
+                Article.id,
             )
             .limit(limit)
             .all()
@@ -264,20 +270,15 @@ class ArticleRepository:
         """
         Fast lookup: Retrieves precomputed top recommendations for an article
         in sub-5ms by joining with the articles table.
-        Supports switching between:
-          - '384d': Pipeline C (BGE-small 384D, active table `article_recommendations`)
-          - '768d': Strategy E baseline (BGE-base 768D, archive table `article_recommendations_768d`)
         If diversify=True, orders by MMR-diversified rank.
         If diversify=False, orders by pure relevance (rank_raw / score) without MMR penalty.
         """
         from sqlalchemy import func
-        ArtModel = Article768D if model_version == "768d" else Article
-        RecModel = ArticleRecommendation768D if model_version == "768d" else ArticleRecommendation
-        order_col = RecModel.rank if diversify else func.coalesce(RecModel.rank_raw, RecModel.rank)
-        recs = db.query(RecModel, ArtModel).join(
-            ArtModel, RecModel.recommended_article_id == ArtModel.id
+        order_col = ArticleRecommendation.rank if diversify else func.coalesce(ArticleRecommendation.rank_raw, ArticleRecommendation.rank)
+        recs = db.query(ArticleRecommendation, Article).join(
+            Article, ArticleRecommendation.recommended_article_id == Article.id
         ).filter(
-            RecModel.article_id == article_id
+            ArticleRecommendation.article_id == article_id
         ).order_by(
             order_col
         ).limit(limit).all()
@@ -298,8 +299,7 @@ class ArticleRepository:
 
     @staticmethod
     def count_total_recommendations(db: Session, model_version: str = "384d") -> int:
-        RecModel = ArticleRecommendation768D if model_version == "768d" else ArticleRecommendation
-        return db.query(func.count(RecModel.id)).scalar() or 0
+        return db.query(func.count(ArticleRecommendation.id)).scalar() or 0
 
     @staticmethod
     def clear_all_data(db: Session) -> Dict[str, int]:
@@ -325,12 +325,14 @@ class ArticleRepository:
         job_id: str,
         filename: str,
         total_articles: int = 0,
-        pipeline_version: Optional[str] = None
+        pipeline_version: Optional[str] = None,
+        pipeline_type: Optional[str] = None,
     ) -> IngestionJob:
         job = IngestionJob(
             id=job_id,
             filename=filename,
             pipeline_version=pipeline_version,
+            pipeline_type=pipeline_type,
             total_articles=total_articles,
             processed_articles=0,
             status="pending",
@@ -350,6 +352,7 @@ class ArticleRepository:
         processed_articles: Optional[int] = None,
         refreshed_articles: Optional[int] = None,
         pipeline_version: Optional[str] = None,
+        pipeline_type: Optional[str] = None,
         message: Optional[str] = None,
         error: Optional[str] = None
     ) -> Optional[IngestionJob]:
@@ -362,6 +365,7 @@ class ArticleRepository:
             "processed_articles": processed_articles,
             "refreshed_articles": refreshed_articles,
             "pipeline_version": pipeline_version,
+            "pipeline_type": pipeline_type,
             "message": message,
             "error": error,
         }
@@ -378,8 +382,11 @@ class ArticleRepository:
         return db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
 
     @staticmethod
-    def list_recent_jobs(db: Session, limit: int = 10) -> List[IngestionJob]:
-        return db.query(IngestionJob).order_by(desc(IngestionJob.created_at)).limit(limit).all()
+    def list_recent_jobs(db: Session, limit: int = 10, pipeline_type: Optional[str] = None) -> List[IngestionJob]:
+        query = db.query(IngestionJob)
+        if pipeline_type:
+            query = query.filter(IngestionJob.pipeline_type == pipeline_type)
+        return query.order_by(desc(IngestionJob.created_at)).limit(limit).all()
 
     @staticmethod
     def get_ingestion_summary(db: Session) -> Dict[str, Any]:
