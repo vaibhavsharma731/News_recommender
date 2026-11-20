@@ -27,21 +27,21 @@ const Api = (() => {
   }
 
   /** Engine status + config */
-  async function status(pipeline = '', dataset = 'default') {
+  async function status(pipeline = '', dataset = null) {
     const pl = pipeline || (typeof State !== 'undefined' ? State.get().modelVersion : '384d') || '384d';
     const ds = dataset || (typeof State !== 'undefined' ? State.get().activeDataset : 'default') || 'default';
     return _fetch(`/status?pipeline=${encodeURIComponent(pl)}&dataset=${encodeURIComponent(ds)}`);
   }
 
   /** Trending / hero articles */
-  async function trending(n = 6, pipeline = '', dataset = 'default') {
+  async function trending(n = 6, pipeline = '', dataset = null) {
     const pl = pipeline || (typeof State !== 'undefined' ? State.get().modelVersion : '384d') || '384d';
     const ds = dataset || (typeof State !== 'undefined' ? State.get().activeDataset : 'default') || 'default';
     return _fetch(`/articles/trending?n=${n}&pipeline=${encodeURIComponent(pl)}&dataset=${encodeURIComponent(ds)}`);
   }
 
   /** Paginated article list */
-  async function articles({ page = 1, perPage = 20, section = '', sort = 'date', pipeline = '', search = '', dataset = 'default' } = {}) {
+  async function articles({ page = 1, perPage = 20, section = '', sort = 'date', pipeline = '', search = '', dataset = null } = {}) {
     const pl = pipeline || (typeof State !== 'undefined' ? State.get().modelVersion : '384d') || '384d';
     const ds = dataset || (typeof State !== 'undefined' ? State.get().activeDataset : 'default') || 'default';
     const params = new URLSearchParams({ page, per_page: perPage, section, sort, pipeline: pl, dataset: ds });
@@ -50,7 +50,7 @@ const Api = (() => {
   }
 
   /** All sections */
-  async function sections(pipeline = '', dataset = 'default') {
+  async function sections(pipeline = '', dataset = null) {
     const pl = pipeline || (typeof State !== 'undefined' ? State.get().modelVersion : '384d') || '384d';
     const ds = dataset || (typeof State !== 'undefined' ? State.get().activeDataset : 'default') || 'default';
     return _fetch(`/sections?pipeline=${encodeURIComponent(pl)}&dataset=${encodeURIComponent(ds)}`);
@@ -62,7 +62,7 @@ const Api = (() => {
   async function recommend({
     query      = null,
     articleId  = null,
-    dataset    = 'default',
+    dataset    = null,
     topK       = 10,
     method     = 'hybrid+rerank',
     useBoosts  = true,
@@ -144,7 +144,7 @@ const Api = (() => {
   }
 
   /** Precomputed recommendations lookup — sub-5ms from PostgreSQL */
-  async function precomputedRecs(articleId, limit = 10, dataset = 'default') {
+  async function precomputedRecs(articleId, limit = 10, dataset = null) {
     const ds = dataset || (typeof State !== 'undefined' ? State.get().activeDataset : 'default') || 'default';
     return _fetch(`/db/recommendations/${encodeURIComponent(articleId)}?limit=${limit}&dataset=${encodeURIComponent(ds)}`);
   }

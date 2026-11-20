@@ -365,6 +365,9 @@ const Editor = (() => {
           <option value="${escHtml(d.id)}">${escHtml(d.name)}</option>
         `).join('');
       }
+      if (window.Compare && typeof window.Compare.populateDatasets === 'function') {
+        window.Compare.populateDatasets();
+      }
     } catch (err) {
       console.warn('Load precomputed datasets warning:', err);
     }
@@ -386,6 +389,9 @@ const Editor = (() => {
             </option>
           `).join('');
         }
+      }
+      if (window.Compare && typeof window.Compare.populateDatasets === 'function') {
+        window.Compare.populateDatasets();
       }
     } catch (err) {
       console.warn('Load live datasets warning:', err);

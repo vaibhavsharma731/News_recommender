@@ -283,12 +283,31 @@ const Compare = (() => {
     return String(s || '').replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
   }
 
+  async function populateDatasets() {
+    try {
+      const res = await Api.listDatasets();
+      const datasets = res.datasets || [];
+      const opts = datasets.map(d => `<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)} (${escapeHtml(d.pipeline_type || 'precomputed')})</option>`).join('');
+      if (dom.dsA && opts) {
+        const curA = dom.dsA.value;
+        dom.dsA.innerHTML = opts;
+        if (curA) dom.dsA.value = curA;
+      }
+      if (dom.dsB && opts) {
+        const curB = dom.dsB.value;
+        dom.dsB.innerHTML = opts;
+        if (curB) dom.dsB.value = curB;
+      }
+    } catch (_) {}
+  }
+
   function init() {
     cacheDom();
     bindEvents();
+    populateDatasets();
   }
 
-  return { init };
+  return { init, populateDatasets };
 })();
 
 window.Compare = Compare;
