@@ -99,10 +99,12 @@ def get_recommender(dataset_id: Optional[str] = "default") -> Optional[Recommend
     ds_key = (dataset_id or "default").strip()
     if ds_key in _recommenders:
         return _recommenders[ds_key]
-    if ds_key == "default" and rec is not None:
+    if ds_key in ("default", "public") and rec is not None:
         return rec
     reload_engine_from_postgres(dataset_id=ds_key)
-    return _recommenders.get(ds_key) or rec
+    if ds_key in ("default", "public"):
+        return _recommenders.get(ds_key) or rec
+    return _recommenders.get(ds_key)
 
 
 def reload_engine_from_postgres(dataset_id: str = "default"):
@@ -458,13 +460,18 @@ def recommend(body: RecommendRequest):
         try:
             m_ver = (body.model_version or "384d").lower()
             with SessionLocal() as db:
-                schema = resolve_schema(db, body.dataset)
-                set_search_path(db, schema)
-                source_art = ArticleRepository.get_article(db, str(body.article_id))
-                source_dict = source_art.to_dict() if source_art else None
-                precomputed = ArticleRepository.get_precomputed_recommendations(
-                    db, str(body.article_id), limit=body.top_k, diversify=body.diversify, model_version=m_ver
-                )
+                ds_info = DatasetRepository.get_dataset(db, body.dataset or "default")
+                if ds_info and getattr(ds_info, "pipeline_type", "precomputed") == "live":
+                    # Live datasets omit the article_recommendations table; compute live instead
+                    precomputed = []
+                else:
+                    schema = resolve_schema(db, body.dataset)
+                    set_search_path(db, schema)
+                    source_art = ArticleRepository.get_article(db, str(body.article_id))
+                    source_dict = source_art.to_dict() if source_art else None
+                    precomputed = ArticleRepository.get_precomputed_recommendations(
+                        db, str(body.article_id), limit=body.top_k, diversify=body.diversify, model_version=m_ver
+                    )
             if precomputed and len(precomputed) >= body.top_k:
                 pre_ms = round((time.perf_counter() - t_pre_start) * 1000, 2)
                 from src.evidence import enrich_recommendation_evidence
