@@ -191,6 +191,10 @@ _ADDED_INDEXES = [
     ("ix_exec_stages_record_id", "ON execution_stages (record_id)"),
     ("ix_exec_records_dataset_id", "ON execution_records (dataset_id)"),
     ("ix_datasets_pipeline_type", "ON datasets (pipeline_type)"),
+    # Industrial Scale: HNSW graph index for sub-25ms vector search across 600k+ rows
+    ("ix_articles_embedding_hnsw", "ON articles USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)"),
+    # Industrial Scale: GIN index on text expressions for sub-15ms lexical search
+    ("ix_articles_fts", "ON articles USING gin (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(description, '')))"),
 ]
 
 
