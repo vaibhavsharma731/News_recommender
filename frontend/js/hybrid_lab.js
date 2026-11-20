@@ -42,8 +42,18 @@ const HybridLab = (() => {
       renderSamplePills();
       
       // Auto-select the first article as default head story WITHOUT auto-running recommendations
-      if (allArticles.length > 0 && !activeArticle) {
-        selectArticle(allArticles[0], false);
+      if (allArticles.length > 0) {
+        if (!activeArticle || !allArticles.some(a => String(a.id) === String(activeArticle.id))) {
+          selectArticle(allArticles[0], false);
+        }
+      } else {
+        activeArticle = null;
+        const input = document.getElementById('hybrid-story-input');
+        if (input) input.value = '';
+        const pillsContainer = document.getElementById('hybrid-sample-pills');
+        if (pillsContainer) pillsContainer.innerHTML = '<span style="color:var(--text-muted);font-size:0.8rem;">No articles in this dataset yet. Please ingest articles in Editor Studio.</span>';
+        const resultsGrid = document.getElementById('hybrid-evaluator-grid');
+        if (resultsGrid) resultsGrid.innerHTML = '<div style="text-align:center;padding:36px;color:var(--text-muted);grid-column:1/-1;">Dataset is empty. Add or ingest articles in Editor Studio.</div>';
       }
     } catch (e) {
       console.warn('[HybridLab] Failed to load sample articles:', e);
@@ -371,6 +381,7 @@ const HybridLab = (() => {
       const data = await Api.recommend({
         articleId: articleId ? String(articleId) : null,
         query: queryText ? String(queryText) : null,
+        dataset: (typeof State !== 'undefined' ? State.get().activeDataset : 'default') || 'default',
         method: 'hybrid', // PURE HYBRID (No Cross-Encoder)
         useBoosts,
         diversify,

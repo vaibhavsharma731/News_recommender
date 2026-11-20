@@ -70,6 +70,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (window.shuffleRandomizer) {
         window.shuffleRandomizer();
       }
+      if (typeof HybridLab !== 'undefined' && typeof HybridLab.init === 'function') {
+        try { await HybridLab.init(); } catch (_) {}
+      }
     });
   }
 
