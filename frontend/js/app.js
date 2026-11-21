@@ -342,21 +342,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     if (loadingText) loadingText.textContent = 'Connecting to Recommendation Engine...';
 
-    // 1. Fetch Engine Status with resilient retry
-    // 'let' not 'const': checkReaderDatabaseState() below refreshes this in place.
+    // 1. Fetch Engine Status & News Categories in parallel for instant (<100ms) startup
     let statusData = null;
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      try {
-        if (loadingText && attempt > 1) {
-          loadingText.textContent = `Connecting to API backend (attempt ${attempt}/4)...`;
-        }
-        statusData = await Api.status();
-        if (statusData) break;
-      } catch (e) {
-        if (attempt === 4) throw e;
-        await new Promise(r => setTimeout(r, 1200));
-      }
+    let sectionsData = null;
+    try {
+      const [statusRes, sectionsRes] = await Promise.all([
+        Api.status(),
+        Api.sections().catch(() => ({ sections: [] }))
+      ]);
+      statusData = statusRes;
+      sectionsData = sectionsRes;
+    } catch (e) {
+      // Fallback retry if first attempt hit a transient network glitch
+      statusData = await Api.status();
+      sectionsData = await Api.sections().catch(() => ({ sections: [] }));
     }
+
     State.set({ engineInfo: statusData });
 
     const engineNameEl = document.getElementById('engine-name');
@@ -364,10 +365,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (engineNameEl) engineNameEl.textContent = statusData.engine || 'RecSys v1.0';
     if (totalArticlesEl) totalArticlesEl.textContent = `${(statusData.total_articles || 0).toLocaleString()} stories`;
 
-    // 2. Fetch Sections & Categories
-    if (loadingText) loadingText.textContent = 'Loading news categories...';
-    const sectionsData = await Api.sections();
-    const sections = sectionsData.sections || [];
+    const sections = (sectionsData && sectionsData.sections) || [];
     State.set({ allSections: sections });
 
     // Populate Sidebar Category Dropdown
@@ -380,38 +378,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     }
 
-    // Category filtering is now handled by the sidebar dropdown only.
-    // The right panel is the Randomizer Bar (populated after Tabs init).
-
-    // 3. Initialize Hero Carousel
-    if (loadingText) loadingText.textContent = 'Loading top trending stories...';
-    try { await Hero.init(); } catch(e) { console.warn('Hero init skipped:', e.message); }
-
-    // 4. Initialize Tabs
+    // Initialize Tabs & subcomponents
     Tabs.init();
     if (typeof Tabs.populateCategoryPills === 'function') {
       Tabs.populateCategoryPills(sections);
     }
-    if (typeof HybridLab !== 'undefined' && typeof HybridLab.init === 'function') {
-      await HybridLab.init();
-    }
 
-    // 5. Initialize Editor & PostgreSQL Pipeline Hub (Editor is a const, always available)
-    await Editor.init();
-    updatePrecompStatsBadge('default');
-    updateLiveStatsBadge('default');
-
-    // 5B. Initialize Monitoring & Performance Hub
-    if (typeof Monitoring !== 'undefined' && typeof Monitoring.init === 'function') {
-      await Monitoring.init();
-    }
-
-    // 5C. Initialize Side-by-Side Algorithm Comparison
-    if (typeof Compare !== 'undefined' && typeof Compare.init === 'function') {
-      Compare.init();
-    }
-
-    // 6. Role Switcher Controller (Editor vs Reader vs Monitor)
+    // Role Switcher Controller (Editor vs Reader vs Monitor)
     const roleEditorBtn = document.getElementById('role-btn-editor');
     const roleReaderBtn = document.getElementById('role-btn-reader');
     const roleMonitorBtn = document.getElementById('role-btn-monitor');
@@ -420,6 +393,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     const monitorView = document.getElementById('monitoring-view');
     const readerEmptyBanner = document.getElementById('reader-empty-banner');
     const btnEmptyGotoEditor = document.getElementById('btn-empty-goto-editor');
+
+    // Background asynchronous component initialization (non-blocking)
+    setTimeout(() => {
+      Hero.init().catch(e => console.warn('Hero init skipped:', e.message));
+      if (typeof HybridLab !== 'undefined' && typeof HybridLab.init === 'function') {
+        HybridLab.init().catch(e => console.warn('HybridLab init skipped:', e.message));
+      }
+      Editor.init().then(() => {
+        updatePrecompStatsBadge('default');
+        updateLiveStatsBadge('default');
+      }).catch(e => console.warn('Editor init skipped:', e.message));
+      if (typeof Monitoring !== 'undefined' && typeof Monitoring.init === 'function') {
+        Monitoring.init().catch(e => console.warn('Monitoring init skipped:', e.message));
+      }
+      if (typeof Compare !== 'undefined' && typeof Compare.init === 'function') {
+        Compare.init();
+      }
+    }, 50);
 
 
     async function checkReaderDatabaseState() {

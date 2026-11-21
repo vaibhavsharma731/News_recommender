@@ -90,14 +90,17 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         print(f"[Startup] Could not clean up old jobs: {e}")
 
-    # Initial loading is heavy; don't block the event loop.
-    await run_in_threadpool(reload_engine_from_postgres)
-    try:
-        from src.data_loader import get_reranker_tokenizer
-        await run_in_threadpool(get_reranker_tokenizer)
-        print("[Startup] Reranker tokenizer pre-warmed for instant sub-second live queries.")
-    except Exception as e:
-        print(f"[Startup] Tokenizer warm-up skipped: {e}")
+    # Start in-memory engine and tokenizer warm-up asynchronously in background threads
+    # so FastAPI starts listening on port 5000 in < 0.1s without blocking!
+    threading.Thread(target=reload_engine_from_postgres, daemon=True).start()
+    def _warm_tok():
+        try:
+            from src.data_loader import get_reranker_tokenizer
+            get_reranker_tokenizer()
+            print("[Startup] Reranker tokenizer pre-warmed for instant sub-second live queries.")
+        except Exception as e:
+            print(f"[Startup] Tokenizer warm-up skipped: {e}")
+    threading.Thread(target=_warm_tok, daemon=True).start()
     yield
 
 
@@ -366,9 +369,10 @@ def status(pipeline: str = Query("384d"), dataset: str = Query("default")):
         total = ArticleRepository.count_articles(db)
         secs = ArticleRepository.get_sections(db)
         ds_info = DatasetRepository.get_dataset(db, dataset)
-    active_rec = get_recommender(dataset)
+    ds_key = (dataset or "default").strip()
+    active_rec = _recommenders.get(ds_key) or rec
     return {
-        "engine": active_rec.engine_summary if (active_rec and total > 0) else "PostgreSQL Engine (384D BGE-Small)",
+        "engine": active_rec.engine_summary if (active_rec and total > 0) else "PostgreSQL Industrial Engine (HNSW + GIN FTS)",
         "pipeline": "384d",
         "dataset": dataset,
         "dataset_info": ds_info,
@@ -376,7 +380,7 @@ def status(pipeline: str = Query("384d"), dataset: str = Query("default")):
         "database_empty": total == 0,
         "methods":        METHODS,
         "sections":       secs,
-        "notes":          active_rec.notes if (active_rec and total > 0) else ["Database is active; ready for dataset ingestion in Editor Studio."],
+        "notes":          active_rec.notes if (active_rec and total > 0) else ["Database is active; industrial hybrid search ready."],
         "config": {
             "top_k":        config.TOP_K,
             "n_retrieve":   config.N_RETRIEVE,
