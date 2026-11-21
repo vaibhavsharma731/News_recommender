@@ -240,7 +240,6 @@ const Compare = (() => {
     const ms = Math.round(performance.now() - t0);
     return { recs, ms };
   }
-  }
 
   function renderLoading() {
     return Array.from({ length: 5 }, (_, i) => `

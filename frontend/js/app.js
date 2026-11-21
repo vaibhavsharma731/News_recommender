@@ -4,6 +4,17 @@
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // ─── 0. FAILSAFE DISMISSAL ───────────────────────────────────────────────────
+  // Ensure the loading overlay NEVER gets permanently stuck regardless of background delays
+  setTimeout(() => {
+    const overlay = document.getElementById('loading-overlay');
+    const appEl = document.getElementById('app');
+    if (overlay && !overlay.classList.contains('fade-out')) {
+      overlay.classList.add('fade-out');
+      if (appEl) appEl.classList.remove('hidden');
+      setTimeout(() => { try { overlay.remove(); } catch (_) {} }, 400);
+    }
+  }, 1200);
 
   // ─── 1. THEME TOGGLE ────────────────────────────────────────────────────────
   const themeToggle = document.getElementById('theme-toggle');
@@ -56,6 +67,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   const liveSelectTab = document.getElementById('hybrid-lab-dataset-select');
   const liveBadgeSidebar = document.getElementById('reader-live-dataset-badge');
   const liveStatsTab = document.getElementById('hybrid-lab-stats-badge');
+
+  const topKSlider = document.getElementById('top-k-slider');
+  const topKValue = document.getElementById('top-k-value');
+  const sectionFilter = document.getElementById('section-filter');
+  const methodSelect = document.getElementById('method-select');
+  const useBoostsToggle = document.getElementById('use-boosts');
+  const useDiversityToggle = document.getElementById('use-diversity');
 
   async function updatePrecompStatsBadge(dsId) {
     try {
