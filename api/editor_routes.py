@@ -5,6 +5,7 @@ Editor and PostgreSQL API routes:
 - Ingestion progress polling
 - Instant precomputed recommendations endpoint
 """
+import os
 import uuid
 import threading
 from pathlib import Path
@@ -13,6 +14,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 import config
 import time
@@ -27,7 +29,7 @@ from db.pipeline import (
     _precompute_for_article,
     _reverse_push_for_old,
 )
-from src.data_loader import clean_dataframe
+from src.data_loader import clean_dataframe, clean_dataframe_live
 from src.model_registry import get_embedder
 from src.reranker import Reranker
 from src.retrieval import BM25Index
@@ -39,7 +41,11 @@ router = APIRouter(prefix="/api/db", tags=["Database & Editor"])
 UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB security limit
+# The precomputed path runs a cross-encoder over every article, so uploads stay small.
+# The live path only cleans + embeds, so it accepts ~100k-row CSVs (300-400 MB).
+# Both are env-overridable without a code change.
+MAX_FILE_SIZE = int(os.getenv("NEWSREC_MAX_UPLOAD_MB", "50")) * 1024 * 1024
+MAX_LIVE_FILE_SIZE = int(os.getenv("NEWSREC_MAX_LIVE_UPLOAD_MB", "600")) * 1024 * 1024
 
 
 def _require_idle(db: Session, dataset_id: str = "default") -> None:
@@ -48,10 +54,28 @@ def _require_idle(db: Session, dataset_id: str = "default") -> None:
     set_search_path(db, schema)
     active = ArticleRepository.get_active_job(db)
     if active:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Ingestion job '{active.id}' ({active.filename}) in dataset '{dataset_id}' is currently running. Please wait for it to finish.",
-        )
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        job_time = active.updated_at or active.created_at
+        is_stale = False
+        if job_time:
+            if job_time.tzinfo is None:
+                diff_sec = (datetime.now() - job_time).total_seconds()
+            else:
+                diff_sec = (now - job_time).total_seconds()
+            if diff_sec > 600:  # 10 minutes without progress
+                is_stale = True
+
+        if is_stale:
+            active.status = "failed"
+            active.error = "Auto-failed stale job: no progress recorded for > 10 minutes."
+            active.message = "Job timed out or interrupted."
+            db.commit()
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Ingestion job '{active.id}' ({active.filename}) in dataset '{dataset_id}' is currently running. Please wait for it to finish.",
+            )
 
 
 def _launch(db: Session, job_id: str, filename: str, csv_source: Path, dataset_id: str = "default", **kwargs) -> None:
@@ -131,7 +155,7 @@ async def upload_csv(
             if size > MAX_FILE_SIZE:
                 buffer.close()
                 saved_path.unlink(missing_ok=True)
-                raise HTTPException(status_code=413, detail="File too large. Maximum allowed size is 50MB.")
+                raise HTTPException(status_code=413, detail=f"File too large. Maximum allowed size is {MAX_FILE_SIZE // (1024 * 1024)}MB.")
             buffer.write(chunk)
 
     _launch(db, job_id, safe_filename, saved_path, dataset_id=target_ds)
@@ -331,11 +355,11 @@ def _run_live_csv_worker(dataset_id: str, job_id: str, csv_source: Path, batch_s
         raw_df = pd.read_csv(csv_source, low_memory=False)
         total_raw = len(raw_df)
 
-        # 2. Clean & Token Budget
+        # 2. Clean & Token Budget (live: no cross-encoder text is needed)
         ArticleRepository.update_job(
             db, job_id, total_articles=total_raw, message="STAGE:CLEAN|Applying text normalizations, deduplication, and token budgets..."
         )
-        clean_df = clean_dataframe(raw_df)
+        clean_df = clean_dataframe_live(raw_df)
         total_clean = len(clean_df)
 
         # 3. Insert into Database
@@ -355,6 +379,7 @@ def _run_live_csv_worker(dataset_id: str, job_id: str, csv_source: Path, batch_s
                 "url": str(r["url"]),
                 "image": str(r["image"]),
                 "is_live": bool(r["is_live"]),
+                "premium": bool(r.get("premium", False)),
                 "page_views": int(r["page_views"]),
                 "unique_users": int(r["unique_users"]),
                 "linked_ids": json_ids(r["linked_ids"]),
@@ -446,10 +471,13 @@ async def upload_live_csv(
     with open(saved_path, "wb") as buffer:
         while chunk := await file.read(1024 * 1024):
             size += len(chunk)
-            if size > MAX_FILE_SIZE:
+            if size > MAX_LIVE_FILE_SIZE:
                 buffer.close()
                 saved_path.unlink(missing_ok=True)
-                raise HTTPException(status_code=413, detail="File too large. Maximum allowed size is 50MB.")
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum allowed size is {MAX_LIVE_FILE_SIZE // (1024 * 1024)}MB.",
+                )
             buffer.write(chunk)
 
     schema = resolve_schema(db, target_ds)
@@ -499,14 +527,78 @@ def ingest_default_dataset(
 
 
 @router.get("/jobs/{job_id}")
-def get_job_status(job_id: str, dataset: Optional[str] = Query("default"), db: Session = Depends(get_db)):
+def get_job_status(job_id: str, dataset: Optional[str] = Query(None), db: Session = Depends(get_db)):
     """Poll progress of an ingestion job for the Editor progress bar."""
-    schema = resolve_schema(db, dataset)
-    set_search_path(db, schema)
+    # 1. Target dataset if provided
+    if dataset:
+        schema = resolve_schema(db, dataset)
+        set_search_path(db, schema)
+        job = ArticleRepository.get_job(db, job_id)
+        if job:
+            return job.to_dict()
+
+    # 2. Check public schema
+    set_search_path(db, "public")
     job = ArticleRepository.get_job(db, job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job.to_dict()
+    if job:
+        return job.to_dict()
+
+    # 3. Check all other registered dataset schemas
+    try:
+        schemas = db.execute(text("SELECT schema_name FROM public.datasets WHERE schema_name != 'public'")).fetchall()
+        for (sch,) in schemas:
+            if not sch:
+                continue
+            set_search_path(db, str(sch))
+            job = ArticleRepository.get_job(db, job_id)
+            if job:
+                return job.to_dict()
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=404, detail="Job not found")
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, dataset: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    """Cancel or reset a running/stuck ingestion job."""
+    def try_cancel(sch: str):
+        set_search_path(db, sch)
+        j = ArticleRepository.get_job(db, job_id)
+        if j and j.status in ("pending", "processing"):
+            j.status = "failed"
+            j.error = "Canceled by user request."
+            j.message = "Job manually stopped."
+            db.commit()
+            return j
+        return None
+
+    if dataset:
+        cancelled = try_cancel(resolve_schema(db, dataset))
+        if cancelled:
+            return {"status": "ok", "job_id": job_id, "message": "Job cancelled"}
+
+    cancelled = try_cancel("public")
+    if cancelled:
+        return {"status": "ok", "job_id": job_id, "message": "Job cancelled"}
+
+    try:
+        schemas = db.execute(text("SELECT schema_name FROM public.datasets WHERE schema_name != 'public'")).fetchall()
+        for (sch,) in schemas:
+            cancelled = try_cancel(str(sch))
+            if cancelled:
+                return {"status": "ok", "job_id": job_id, "message": "Job cancelled"}
+    except Exception:
+        pass
+
+    return {"status": "ok", "job_id": job_id, "message": "Job updated or already finished"}
+
+
+@router.post("/jobs/reset-stuck")
+def reset_stuck_jobs(db: Session = Depends(get_db)):
+    """Reset all pending/processing jobs across all schemas."""
+    total = ArticleRepository.fail_orphaned_jobs(db)
+    return {"status": "ok", "reset_count": total}
 
 
 @router.get("/jobs")
@@ -629,6 +721,7 @@ class ManualArticlePayload(BaseModel):
     is_live: Optional[bool] = Field(False, description="Whether article is a live blog")
     page_views: Optional[int] = Field(0, ge=0, description="Initial page views")
     unique_users: Optional[int] = Field(0, ge=0, description="Initial unique users")
+    premium: Optional[bool] = Field(False, description="Paywalled / premium article")
     linked_ids: Optional[Any] = Field([], description="Editorially linked article IDs")
     dataset: Optional[str] = Field("default", description="Target dataset")
     precompute_recommendations: Optional[bool] = Field(True, description="Precompute top-10 recs")
@@ -676,6 +769,7 @@ def add_manual_article(payload: ManualArticlePayload, db: Session = Depends(get_
         "is_live": bool(payload.is_live),
         "page_views": int(payload.page_views or 0),
         "unique_users": int(payload.unique_users or 0),
+        "premium": bool(payload.premium or False),
         "linked_ids": payload.linked_ids or [],
     }
 
@@ -699,6 +793,7 @@ def add_manual_article(payload: ManualArticlePayload, db: Session = Depends(get_
         "url": str(r["url"]),
         "image": str(r["image"]),
         "is_live": bool(r["is_live"]),
+        "premium": bool(r.get("premium", False)),
         "page_views": int(r["page_views"]),
         "unique_users": int(r["unique_users"]),
         "linked_ids": json_ids(r["linked_ids"]),
@@ -821,6 +916,7 @@ class ManualLiveArticlePayload(BaseModel):
     is_live: Optional[bool] = Field(False, description="Whether article is a live blog")
     page_views: Optional[int] = Field(0, ge=0, description="Initial page views")
     unique_users: Optional[int] = Field(0, ge=0, description="Initial unique users")
+    premium: Optional[bool] = Field(False, description="Paywalled / premium article")
     linked_ids: Optional[Any] = Field([], description="Editorially linked article IDs")
     dataset: Optional[str] = Field("default", description="Target dataset")
 
@@ -831,6 +927,7 @@ def add_manual_live_article(payload: ManualLiveArticlePayload, db: Session = Dep
     Pipeline B: Fast Single Article Live Ingestion.
     Cleans text representations, generates 384d BGE embedding, and stores into PostgreSQL.
     Completely skips Cross-Encoder reranking and precomputed recommendation tables.
+    Uses ``clean_dataframe_live`` so no reranker text is tokenised either.
     """
     target_ds = (payload.dataset or "default").strip()
     _require_idle(db, dataset_id=target_ds)
@@ -861,11 +958,12 @@ def add_manual_live_article(payload: ManualLiveArticlePayload, db: Session = Dep
         "is_live": bool(payload.is_live),
         "page_views": int(payload.page_views or 0),
         "unique_users": int(payload.unique_users or 0),
+        "premium": bool(payload.premium or False),
         "linked_ids": payload.linked_ids or [],
     }
 
     try:
-        clean_df = clean_dataframe(pd.DataFrame([raw_row]))
+        clean_df = clean_dataframe_live(pd.DataFrame([raw_row]))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to clean article: {e}")
 
@@ -883,6 +981,7 @@ def add_manual_live_article(payload: ManualLiveArticlePayload, db: Session = Dep
         "url": str(r["url"]),
         "image": str(r["image"]),
         "is_live": bool(r["is_live"]),
+        "premium": bool(r.get("premium", False)),
         "page_views": int(r["page_views"]),
         "unique_users": int(r["unique_users"]),
         "linked_ids": json_ids(r["linked_ids"]),

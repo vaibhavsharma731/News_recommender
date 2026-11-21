@@ -1,14 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>News Recommender | Indian Express Discovery &amp; PostgreSQL Pipeline</title>
-  <meta name="description" content="News recommendation engine built on Indian Express articles. Features an Editor Studio with PostgreSQL pgvector pipeline and a high-speed Reader View." />
+  <meta name="description"
+    content="News recommendation engine built on Indian Express articles. Features an Editor Studio with PostgreSQL pgvector pipeline and a high-speed Reader View." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600&display=swap"
+    rel="stylesheet" />
   <link rel="stylesheet" href="css/variables.css" />
   <link rel="stylesheet" href="css/base.css" />
   <link rel="stylesheet" href="css/layout.css" />
@@ -26,6 +30,7 @@
   <link rel="stylesheet" href="css/monitoring.css" />
   <link rel="stylesheet" href="css/compare.css" />
 </head>
+
 <body>
 
   <!-- ═══════════════════════════════ TOAST ═══════════════════════════════ -->
@@ -38,7 +43,9 @@
         <span class="logo-icon">✦</span>
         <span>News Recommender</span>
       </div>
-      <div class="loading-bar"><div class="loading-fill"></div></div>
+      <div class="loading-bar">
+        <div class="loading-fill"></div>
+      </div>
       <p id="loading-text">Connecting to PostgreSQL &amp; recommendation engine...</p>
     </div>
   </div>
@@ -97,13 +104,15 @@
         <div class="editor-hero-header">
           <div class="editor-hero-title">
             <h1><span>✍️</span> Editor Neural Pipeline &amp; Database Studio</h1>
-            <p>Upload news CSV datasets, run automated cleaning, generate 384d dense vectors, and precompute top-10 recommendations directly into PostgreSQL.</p>
+            <p>Upload news CSV datasets, run automated cleaning, generate 384d dense vectors, and precompute top-10
+              recommendations directly into PostgreSQL.</p>
           </div>
           <div style="display:flex;gap:10px;">
             <button class="btn btn-secondary" id="init-db-btn" style="font-size:0.82rem;padding:8px 14px;">
               Verify PostgreSQL &amp; Extension
             </button>
-            <button class="btn btn-secondary" id="clear-db-btn" style="font-size:0.82rem;padding:8px 14px;color:#ef4444;border-color:rgba(239,68,68,0.35);">
+            <button class="btn btn-secondary" id="clear-db-btn"
+              style="font-size:0.82rem;padding:8px 14px;color:#ef4444;border-color:rgba(239,68,68,0.35);">
               🗑️ Clear Database
             </button>
           </div>
@@ -111,10 +120,12 @@
 
         <!-- Primary Pipeline Studio Sub-Navigation Bar -->
         <div class="editor-subnav" id="editor-subnav" style="margin-bottom: 24px; display: flex; gap: 10px;">
-          <button class="editor-subnav-btn active" data-pipeline="precomputed" id="tab-btn-precomputed" style="font-size: 0.95rem; font-weight: 700; padding: 10px 22px;">
+          <button class="editor-subnav-btn active" data-pipeline="precomputed" id="tab-btn-precomputed"
+            style="font-size: 0.95rem; font-weight: 700; padding: 10px 22px;">
             <span>⚡</span> Sub-Tab 1: Precomputation Pipeline Studio
           </button>
-          <button class="editor-subnav-btn" data-pipeline="live" id="tab-btn-live" style="font-size: 0.95rem; font-weight: 700; padding: 10px 22px;">
+          <button class="editor-subnav-btn" data-pipeline="live" id="tab-btn-live"
+            style="font-size: 0.95rem; font-weight: 700; padding: 10px 22px;">
             <span>🛰️</span> Sub-Tab 2: Live Computation Pipeline Studio (Separated Tables)
           </button>
         </div>
@@ -127,14 +138,18 @@
           <!-- Precomputed Dataset Selector Toolbar -->
           <div class="active-dataset-toolbar" style="margin-bottom: 18px;">
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-              <span style="font-weight:700;font-size:0.85rem;color:var(--text-primary);display:flex;align-items:center;gap:6px;">
+              <span
+                style="font-weight:700;font-size:0.85rem;color:var(--text-primary);display:flex;align-items:center;gap:6px;">
                 <span>⚡</span> Precomputed Dataset:
               </span>
-              <select id="editor-active-dataset-select" class="select-input" style="font-size:0.85rem;padding:6px 12px;font-weight:700;min-width:260px;">
+              <select id="editor-active-dataset-select" class="select-input"
+                style="font-size:0.85rem;padding:6px 12px;font-weight:700;min-width:260px;">
                 <option value="default">Default (Production Precomputed)</option>
               </select>
-              <span id="active-dataset-schema-badge" class="dataset-badge dataset-badge-protected">public (Protected)</span>
-              <span id="active-dataset-stats-inline" style="font-size:0.8rem;color:var(--text-muted);">Loading stats...</span>
+              <span id="active-dataset-schema-badge" class="dataset-badge dataset-badge-protected">public
+                (Protected)</span>
+              <span id="active-dataset-stats-inline" style="font-size:0.8rem;color:var(--text-muted);">Loading
+                stats...</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
               <button class="btn btn-secondary" id="btn-show-create-dataset" style="font-size:0.8rem;padding:6px 14px;">
@@ -143,7 +158,8 @@
               <button class="btn btn-secondary" id="btn-show-clone-dataset" style="font-size:0.8rem;padding:6px 12px;">
                 📋 Clone Articles
               </button>
-              <button class="btn btn-secondary" id="btn-delete-precomp-dataset" style="font-size:0.8rem;padding:6px 12px;color:#ef4444;border-color:rgba(239,68,68,0.4);">
+              <button class="btn btn-secondary" id="btn-delete-precomp-dataset"
+                style="font-size:0.8rem;padding:6px 12px;color:#ef4444;border-color:rgba(239,68,68,0.4);">
                 🗑️ Delete Run
               </button>
               <button class="btn btn-secondary" id="btn-refresh-datasets" style="font-size:0.8rem;padding:6px 12px;">
@@ -153,54 +169,76 @@
           </div>
 
           <!-- Create Precomputed Dataset Inline Form (Toggleable) -->
-          <div id="create-dataset-form-card" style="display:none;margin-bottom:20px;padding:16px;background:var(--surface-sunken, rgba(0,0,0,0.2));border:1px solid var(--border-subtle);border-radius:8px;">
-            <h4 style="font-size:0.95rem;font-weight:700;margin-bottom:10px;color:var(--text-primary);">Create Isolated Precomputed Experiment Run</h4>
+          <div id="create-dataset-form-card"
+            style="display:none;margin-bottom:20px;padding:16px;background:var(--surface-sunken, rgba(0,0,0,0.2));border:1px solid var(--border-subtle);border-radius:8px;">
+            <h4 style="font-size:0.95rem;font-weight:700;margin-bottom:10px;color:var(--text-primary);">Create Isolated
+              Precomputed Experiment Run</h4>
             <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:12px;">
-              Creates an isolated PostgreSQL schema with independent articles, embeddings, and precomputed recommendation tables.
+              Creates an isolated PostgreSQL schema with independent articles, embeddings, and precomputed
+              recommendation tables.
             </p>
             <form id="create-dataset-form" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
               <div>
-                <label style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">RUN / DATASET NAME *</label>
-                <input type="text" id="new-ds-name" class="select-input" placeholder="e.g. Precompute Run B - Nov 2026" required style="width:100%;padding:8px 12px;" />
+                <label
+                  style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">RUN
+                  / DATASET NAME *</label>
+                <input type="text" id="new-ds-name" class="select-input" placeholder="e.g. Precompute Run B - Nov 2026"
+                  required style="width:100%;padding:8px 12px;" />
               </div>
               <div>
-                <label style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">OPTIONAL CUSTOM ID</label>
-                <input type="text" id="new-ds-id" class="select-input" placeholder="auto-generated if blank (e.g. run_precompute_b)" style="width:100%;padding:8px 12px;" />
+                <label
+                  style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">OPTIONAL
+                  CUSTOM ID</label>
+                <input type="text" id="new-ds-id" class="select-input"
+                  placeholder="auto-generated if blank (e.g. run_precompute_b)" style="width:100%;padding:8px 12px;" />
               </div>
               <div style="grid-column: span 2;">
-                <label style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">DESCRIPTION</label>
-                <input type="text" id="new-ds-desc" class="select-input" placeholder="Notes on model, reranking strategy, or corpus slice..." style="width:100%;padding:8px 12px;" />
+                <label
+                  style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">DESCRIPTION</label>
+                <input type="text" id="new-ds-desc" class="select-input"
+                  placeholder="Notes on model, reranking strategy, or corpus slice..."
+                  style="width:100%;padding:8px 12px;" />
               </div>
               <div style="grid-column: span 2;display:flex;justify-content:flex-end;gap:10px;margin-top:6px;">
-                <button type="button" class="btn btn-secondary" id="btn-cancel-create-ds" style="font-size:0.82rem;padding:6px 14px;">Cancel</button>
-                <button type="submit" class="btn btn-primary" style="font-size:0.82rem;padding:6px 16px;">🚀 Create Schema &amp; Precompute Tables</button>
+                <button type="button" class="btn btn-secondary" id="btn-cancel-create-ds"
+                  style="font-size:0.82rem;padding:6px 14px;">Cancel</button>
+                <button type="submit" class="btn btn-primary" style="font-size:0.82rem;padding:6px 16px;">🚀 Create
+                  Schema &amp; Precompute Tables</button>
               </div>
             </form>
           </div>
 
           <!-- Clone Articles Inline Form (Toggleable) -->
-          <div id="clone-dataset-form-card" style="display:none;margin-bottom:20px;padding:16px;background:var(--surface-sunken, rgba(0,0,0,0.2));border:1px solid var(--border-subtle);border-radius:8px;">
-            <h4 style="font-size:0.95rem;font-weight:700;margin-bottom:10px;color:var(--text-primary);">Clone Articles from Existing Dataset</h4>
+          <div id="clone-dataset-form-card"
+            style="display:none;margin-bottom:20px;padding:16px;background:var(--surface-sunken, rgba(0,0,0,0.2));border:1px solid var(--border-subtle);border-radius:8px;">
+            <h4 style="font-size:0.95rem;font-weight:700;margin-bottom:10px;color:var(--text-primary);">Clone Articles
+              from Existing Dataset</h4>
             <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:12px;">
-              Copies articles and optional 384d embedding vectors into the currently selected dataset without copying recommendations, so you can test precomputation from scratch.
+              Copies articles and optional 384d embedding vectors into the currently selected dataset without copying
+              recommendations, so you can test precomputation from scratch.
             </p>
             <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
               <div>
-                <label style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">SOURCE DATASET</label>
+                <label
+                  style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">SOURCE
+                  DATASET</label>
                 <select id="clone-source-dataset-select" class="select-input" style="padding:7px 12px;">
                   <option value="default">Default (Production)</option>
                 </select>
               </div>
               <div style="padding-top:16px;">
-                <label style="display:flex;align-items:center;gap:6px;font-size:0.82rem;color:var(--text-secondary);cursor:pointer;">
+                <label
+                  style="display:flex;align-items:center;gap:6px;font-size:0.82rem;color:var(--text-secondary);cursor:pointer;">
                   <input type="checkbox" id="clone-with-embeddings" checked /> Copy 384d Vector Embeddings
                 </label>
               </div>
               <div style="padding-top:16px;display:flex;gap:8px;">
-                <button type="button" class="btn btn-primary" id="btn-execute-clone" style="font-size:0.82rem;padding:7px 16px;">
+                <button type="button" class="btn btn-primary" id="btn-execute-clone"
+                  style="font-size:0.82rem;padding:7px 16px;">
                   📋 Clone Articles to Active Run
                 </button>
-                <button type="button" class="btn btn-secondary" id="btn-cancel-clone" style="font-size:0.82rem;padding:7px 12px;">
+                <button type="button" class="btn btn-secondary" id="btn-cancel-clone"
+                  style="font-size:0.82rem;padding:7px 12px;">
                   Cancel
                 </button>
               </div>
@@ -243,7 +281,11 @@
             <div class="upload-card">
               <div class="upload-card-header">
                 <div class="upload-card-title">
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
                   Precomputed CSV Batch Upload &amp; 6-Stage Neural Ingestion
                 </div>
                 <div style="display:flex;gap:10px;align-items:center;">
@@ -262,8 +304,10 @@
                 <div class="dz-title">Drag &amp; drop your articles CSV here, or click to browse</div>
                 <div class="dz-sub">Accepts raw or cleaned news CSV with title, body, section, and dates</div>
                 <div style="margin-top:12px;">
-                  <button type="button" id="browse-files-btn" class="btn btn-secondary" style="font-size:0.8rem;padding:6px 14px;"
-                    onclick="document.getElementById('csv-file-input').click();event.stopPropagation();">Browse Files</button>
+                  <button type="button" id="browse-files-btn" class="btn btn-secondary"
+                    style="font-size:0.8rem;padding:6px 14px;"
+                    onclick="document.getElementById('csv-file-input').click();event.stopPropagation();">Browse
+                    Files</button>
                 </div>
               </div>
 
@@ -280,25 +324,38 @@
             <div class="upload-card" id="manual-article-card">
               <div class="upload-card-header">
                 <div class="upload-card-title">
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                  </svg>
                   Manual Article Publishing &amp; Instant Precomputation
                 </div>
-                <button class="btn btn-secondary" id="toggle-manual-form-btn" type="button" style="font-size:0.82rem;padding:6px 14px;">
+                <button class="btn btn-secondary" id="toggle-manual-form-btn" type="button"
+                  style="font-size:0.82rem;padding:6px 14px;">
                   <span id="manual-form-toggle-icon">✏️</span> Write / Publish Single Article
                 </button>
               </div>
               <p style="font-size:0.83rem;color:var(--text-secondary);margin-bottom:12px;">
-                Publish a single breaking news story or editorial article directly into PostgreSQL. Automatically generates token-budgeted representations, creates 384d embedding, precomputes its top-10 candidate recommendations with Cross-Encoder reranking, and triggers reverse-push to update matching older archive stories.
+                Publish a single breaking news story or editorial article directly into PostgreSQL. Automatically
+                generates token-budgeted representations, creates 384d embedding, precomputes its top-10 candidate
+                recommendations with Cross-Encoder reranking, and triggers reverse-push to update matching older archive
+                stories.
               </p>
 
               <form id="manual-article-form" style="display:none;margin-top:16px;">
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:12px;">
                   <div style="grid-column: span 2;">
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">HEADLINE / TITLE *</label>
-                    <input type="text" id="manual-title" class="select-input" placeholder="e.g. Budget 2026: Finance Ministry announces new tax reforms for tech sector" required style="width:100%;font-size:0.95rem;font-weight:600;padding:10px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">HEADLINE
+                      / TITLE *</label>
+                    <input type="text" id="manual-title" class="select-input"
+                      placeholder="e.g. Budget 2026: Finance Ministry announces new tax reforms for tech sector"
+                      required style="width:100%;font-size:0.95rem;font-weight:600;padding:10px 12px;" />
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">PRIMARY SECTION *</label>
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">PRIMARY
+                      SECTION *</label>
                     <select id="manual-section" class="select-input" style="width:100%;padding:9px 12px;">
                       <option value="india" selected>India / National</option>
                       <option value="business">Business &amp; Economy</option>
@@ -313,45 +370,73 @@
                     </select>
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">SUBSECTION / TAG</label>
-                    <input type="text" id="manual-subsection" class="select-input" placeholder="e.g. economy, policy, banking" style="width:100%;padding:9px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">SUBSECTION
+                      / TAG</label>
+                    <input type="text" id="manual-subsection" class="select-input"
+                      placeholder="e.g. economy, policy, banking" style="width:100%;padding:9px 12px;" />
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">PUBLISH DATE &amp; TIME (UTC)</label>
-                    <input type="datetime-local" id="manual-date" class="select-input" style="width:100%;padding:9px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">PUBLISH
+                      DATE &amp; TIME (UTC)</label>
+                    <input type="datetime-local" id="manual-date" class="select-input"
+                      style="width:100%;padding:9px 12px;" />
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">INITIAL PAGE VIEWS</label>
-                    <input type="number" id="manual-views" class="select-input" placeholder="1000" value="150" min="0" style="width:100%;padding:9px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">INITIAL
+                      PAGE VIEWS</label>
+                    <input type="number" id="manual-views" class="select-input" placeholder="1000" value="150" min="0"
+                      style="width:100%;padding:9px 12px;" />
                   </div>
                   <div style="grid-column: span 2;">
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">SUMMARY / DESCRIPTION</label>
-                    <textarea id="manual-description" class="select-input" rows="2" placeholder="Brief 1-2 sentence lead summary..." style="width:100%;padding:8px 12px;font-family:inherit;"></textarea>
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">SUMMARY
+                      / DESCRIPTION</label>
+                    <textarea id="manual-description" class="select-input" rows="2"
+                      placeholder="Brief 1-2 sentence lead summary..."
+                      style="width:100%;padding:8px 12px;font-family:inherit;"></textarea>
                   </div>
                   <div style="grid-column: span 2;">
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">FULL ARTICLE BODY *</label>
-                    <textarea id="manual-body" class="select-input" rows="5" placeholder="Full paragraphs of the article story..." required style="width:100%;padding:10px 12px;font-family:inherit;"></textarea>
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">FULL
+                      ARTICLE BODY *</label>
+                    <textarea id="manual-body" class="select-input" rows="5"
+                      placeholder="Full paragraphs of the article story..." required
+                      style="width:100%;padding:10px 12px;font-family:inherit;"></textarea>
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">CANONICAL URL (OPTIONAL)</label>
-                    <input type="url" id="manual-url" class="select-input" placeholder="https://indianexpress.com/article/..." style="width:100%;padding:9px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">CANONICAL
+                      URL (OPTIONAL)</label>
+                    <input type="url" id="manual-url" class="select-input"
+                      placeholder="https://indianexpress.com/article/..." style="width:100%;padding:9px 12px;" />
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">IMAGE URL (OPTIONAL)</label>
-                    <input type="url" id="manual-image" class="select-input" placeholder="https://images.indianexpress.com/..." style="width:100%;padding:9px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">IMAGE
+                      URL (OPTIONAL)</label>
+                    <input type="url" id="manual-image" class="select-input"
+                      placeholder="https://images.indianexpress.com/..." style="width:100%;padding:9px 12px;" />
                   </div>
                 </div>
 
-                <div style="display:flex;align-items:center;justify-content:space-between;padding-top:12px;border-top:1px solid var(--border-subtle);">
+                <div
+                  style="display:flex;align-items:center;justify-content:space-between;padding-top:12px;border-top:1px solid var(--border-subtle);">
                   <div style="display:flex;align-items:center;gap:16px;">
-                    <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:var(--text-secondary);cursor:pointer;">
+                    <label
+                      style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:var(--text-secondary);cursor:pointer;">
                       <input type="checkbox" id="manual-precompute" checked /> Precompute Top-10 Recs
                     </label>
-                    <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:var(--text-secondary);cursor:pointer;">
-                      <input type="checkbox" id="manual-reverse-push" checked /> Reverse-Push into Matching Archive Articles
+                    <label
+                      style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:var(--text-secondary);cursor:pointer;">
+                      <input type="checkbox" id="manual-reverse-push" checked /> Reverse-Push into Matching Archive
+                      Articles
                     </label>
                   </div>
-                  <button type="submit" id="manual-submit-btn" class="btn btn-primary" style="padding:9px 18px;font-weight:700;">
+                  <button type="submit" id="manual-submit-btn" class="btn btn-primary"
+                    style="padding:9px 18px;font-weight:700;">
                     🚀 Ingest &amp; Embed Article
                   </button>
                 </div>
@@ -364,19 +449,24 @@
           <div class="pipeline-visualizer-card hidden" id="pipeline-visualizer-card">
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <div>
-                <h3 style="font-size:1.1rem;font-weight:800;color:var(--text-primary);display:flex;align-items:center;gap:8px;">
+                <h3
+                  style="font-size:1.1rem;font-weight:800;color:var(--text-primary);display:flex;align-items:center;gap:8px;">
                   <span>⚡</span> Live Neural Pipeline Ingestion
                 </h3>
-                <p style="font-size:0.82rem;color:var(--text-secondary);margin-top:2px;">Real-time progress across cleaning, PostgreSQL insertion, dense embedding generation, cross-encoder reranking, and reverse-push updates.</p>
+                <p style="font-size:0.82rem;color:var(--text-secondary);margin-top:2px;">Real-time progress across
+                  cleaning, PostgreSQL insertion, dense embedding generation, cross-encoder reranking, and reverse-push
+                  updates.</p>
               </div>
-              <div style="font-size:1.3rem;font-weight:800;color:var(--brand-primary);" id="visualizer-progress-pct">0%</div>
+              <div style="font-size:1.3rem;font-weight:800;color:var(--brand-primary);" id="visualizer-progress-pct">0%
+              </div>
             </div>
 
             <!-- Progress Track -->
             <div class="progress-track" style="margin-top:16px;">
               <div class="progress-bar-fill" id="visualizer-progress-fill"></div>
             </div>
-            <div class="progress-message" id="visualizer-status-msg" style="margin-bottom:20px;">Starting background worker...</div>
+            <div class="progress-message" id="visualizer-status-msg" style="margin-bottom:20px;">Starting background
+              worker...</div>
 
             <!-- 6-Node Animated Pipeline Diagram -->
             <div class="pipeline-diagram">
@@ -425,7 +515,8 @@
 
             <!-- Real-Time Terminal Log Window -->
             <div style="margin-top:18px;">
-              <div style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">
+              <div
+                style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">
                 Live Pipeline Event Log
               </div>
               <div class="pipeline-log-window" id="pipeline-log-window">
@@ -441,7 +532,8 @@
                 <div class="completion-icon">🎉</div>
                 <div>
                   <h3>Ingestion Complete &amp; Recommendations Ready!</h3>
-                  <p id="completion-summary-text">All articles and precomputed recommendations are stored in PostgreSQL.</p>
+                  <p id="completion-summary-text">All articles and precomputed recommendations are stored in PostgreSQL.
+                  </p>
                 </div>
               </div>
               <button class="btn-switch-reader" id="btn-switch-to-reader">
@@ -454,7 +546,10 @@
           <div class="inspector-card" style="margin-bottom:24px;">
             <div class="upload-card-header">
               <div class="upload-card-title">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="12 8 12 12 14 14"/><circle cx="12" cy="12" r="10"/></svg>
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="12 8 12 12 14 14" />
+                  <circle cx="12" cy="12" r="10" />
+                </svg>
                 Precomputed Pipeline Runs &amp; Cycle Timings History
               </div>
             </div>
@@ -492,7 +587,9 @@
                   </tr>
                 </thead>
                 <tbody id="recent-jobs-body">
-                  <tr><td colspan="7" style="text-align:center;padding:16px;color:var(--text-muted)">Loading jobs...</td></tr>
+                  <tr>
+                    <td colspan="7" style="text-align:center;padding:16px;color:var(--text-muted)">Loading jobs...</td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -502,11 +599,15 @@
           <div class="inspector-card">
             <div class="upload-card-header">
               <div class="upload-card-title">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
                 Recommendation Evidence Inspector
               </div>
               <div id="inspector-actions" style="display:none;">
-                <button class="candidate-toggle-btn" id="btn-toggle-all-candidates" type="button" style="padding:6px 12px;font-weight:700;">
+                <button class="candidate-toggle-btn" id="btn-toggle-all-candidates" type="button"
+                  style="padding:6px 12px;font-weight:700;">
                   <span id="toggle-all-icon">↕️</span> <span id="toggle-all-label">Collapse All Cards</span>
                 </button>
               </div>
@@ -523,8 +624,10 @@
             <div id="inspector-source-box" class="inspector-source-box" style="display:none;"></div>
 
             <div id="inspector-candidates-list" class="inspector-candidates-list">
-              <div style="text-align:center;padding:28px;color:var(--text-muted);background:rgba(255,255,255,0.02);border-radius:var(--radius-md);border:1px dashed var(--border-subtle);">
-                Select an article above to inspect its saved top-10 precomputed candidate stories with complete grounded evaluation.
+              <div
+                style="text-align:center;padding:28px;color:var(--text-muted);background:rgba(255,255,255,0.02);border-radius:var(--radius-md);border:1px dashed var(--border-subtle);">
+                Select an article above to inspect its saved top-10 precomputed candidate stories with complete grounded
+                evaluation.
               </div>
             </div>
 
@@ -550,54 +653,82 @@
           <!-- Live Dataset Selector Toolbar -->
           <div class="active-dataset-toolbar" style="margin-bottom: 18px; border-left: 4px solid #6366f1;">
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-              <span style="font-weight:700;font-size:0.85rem;color:var(--text-primary);display:flex;align-items:center;gap:6px;">
+              <span
+                style="font-weight:700;font-size:0.85rem;color:var(--text-primary);display:flex;align-items:center;gap:6px;">
                 <span>🛰️</span> Live Dataset:
               </span>
-              <select id="live-active-dataset-select" class="select-input" style="font-size:0.85rem;padding:6px 12px;font-weight:700;min-width:260px;">
+              <select id="live-active-dataset-select" class="select-input"
+                style="font-size:0.85rem;padding:6px 12px;font-weight:700;min-width:260px;">
                 <option value="">Loading live datasets...</option>
               </select>
-              <span id="live-dataset-schema-badge" class="dataset-badge" style="background:rgba(99,102,241,0.15);color:#818cf8;border:1px solid rgba(99,102,241,0.3);">live_schema</span>
-              <span id="live-dataset-stats-inline" style="font-size:0.8rem;color:var(--text-muted);">Loading stats...</span>
+              <span id="live-dataset-schema-badge" class="dataset-badge"
+                style="background:rgba(99,102,241,0.15);color:#818cf8;border:1px solid rgba(99,102,241,0.3);">live_schema</span>
+              <span id="live-dataset-stats-inline" style="font-size:0.8rem;color:var(--text-muted);">Loading
+                stats...</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
-              <button class="btn btn-secondary" id="btn-show-create-live-dataset" style="font-size:0.8rem;padding:6px 14px;">
+              <button class="btn btn-secondary" id="btn-show-create-live-dataset"
+                style="font-size:0.8rem;padding:6px 14px;">
                 ➕ New Live Dataset
               </button>
-              <button class="btn btn-secondary" id="btn-delete-live-dataset" style="font-size:0.8rem;padding:6px 12px;color:#ef4444;border-color:rgba(239,68,68,0.4);">
+              <button class="btn btn-secondary" id="btn-delete-live-dataset"
+                style="font-size:0.8rem;padding:6px 12px;color:#ef4444;border-color:rgba(239,68,68,0.4);">
                 🗑️ Delete Live Dataset
               </button>
-              <button class="btn btn-secondary" id="btn-refresh-live-datasets" style="font-size:0.8rem;padding:6px 12px;">
+              <button class="btn btn-secondary" id="btn-refresh-live-datasets"
+                style="font-size:0.8rem;padding:6px 12px;">
                 🔄 Refresh
+              </button>
+              <button class="btn btn-secondary" id="btn-reset-live-jobs"
+                style="font-size:0.8rem;padding:6px 12px;color:var(--text-secondary);" title="Clear any stuck or interrupted jobs">
+                🧹 Clear Stuck Jobs
               </button>
             </div>
           </div>
 
-          <div style="margin-bottom:18px;padding:12px 16px;background:rgba(99,102,241,0.06);border-left:3px solid #6366f1;border-radius:6px;font-size:0.83rem;color:var(--text-secondary);">
-            <strong>Table Separation Architecture:</strong> Live datasets store articles with 384d dense embeddings and lexical indexes in an isolated PostgreSQL schema, but <strong>omit the <code>article_recommendations</code> table</strong> completely. This eliminates Cross-Encoder reranking overhead and enables scalable, instant real-time recommendations.
+          <div
+            style="margin-bottom:18px;padding:12px 16px;background:rgba(99,102,241,0.06);border-left:3px solid #6366f1;border-radius:6px;font-size:0.83rem;color:var(--text-secondary);">
+            <strong>Table Separation Architecture:</strong> Live datasets store articles with 384d dense embeddings and
+            lexical indexes in an isolated PostgreSQL schema, but <strong>omit the <code>article_recommendations</code>
+              table</strong> completely. This eliminates Cross-Encoder reranking overhead and enables scalable, instant
+            real-time recommendations.
           </div>
 
           <!-- Create Live Dataset Inline Form (Toggleable) -->
-          <div id="create-live-dataset-form-card" style="display:none;margin-bottom:20px;padding:16px;background:var(--surface-sunken, rgba(0,0,0,0.2));border:1px solid var(--border-subtle);border-radius:8px;">
-            <h4 style="font-size:0.95rem;font-weight:700;margin-bottom:10px;color:var(--text-primary);">Create Isolated Live Computation Dataset</h4>
+          <div id="create-live-dataset-form-card"
+            style="display:none;margin-bottom:20px;padding:16px;background:var(--surface-sunken, rgba(0,0,0,0.2));border:1px solid var(--border-subtle);border-radius:8px;">
+            <h4 style="font-size:0.95rem;font-weight:700;margin-bottom:10px;color:var(--text-primary);">Create Isolated
+              Live Computation Dataset</h4>
             <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:12px;">
-              Initializes an independent schema containing only <code>articles</code> and <code>ingestion_jobs</code> tables. No precomputed recommendation pairs table is generated.
+              Initializes an independent schema containing only <code>articles</code> and <code>ingestion_jobs</code>
+              tables. No precomputed recommendation pairs table is generated.
             </p>
             <form id="create-live-dataset-form" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
               <div>
-                <label style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">LIVE DATASET NAME *</label>
-                <input type="text" id="new-live-ds-name" class="select-input" placeholder="e.g. 600K Archive Live Retrieval" required style="width:100%;padding:8px 12px;" />
+                <label
+                  style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">LIVE
+                  DATASET NAME *</label>
+                <input type="text" id="new-live-ds-name" class="select-input"
+                  placeholder="e.g. 600K Archive Live Retrieval" required style="width:100%;padding:8px 12px;" />
               </div>
               <div>
-                <label style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">OPTIONAL CUSTOM ID</label>
-                <input type="text" id="new-live-ds-id" class="select-input" placeholder="e.g. ds_live_archive" style="width:100%;padding:8px 12px;" />
+                <label
+                  style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">OPTIONAL
+                  CUSTOM ID</label>
+                <input type="text" id="new-live-ds-id" class="select-input" placeholder="e.g. ds_live_archive"
+                  style="width:100%;padding:8px 12px;" />
               </div>
               <div style="grid-column: span 2;">
-                <label style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">DESCRIPTION</label>
-                <input type="text" id="new-live-ds-desc" class="select-input" placeholder="Purpose or source dataset slice notes..." style="width:100%;padding:8px 12px;" />
+                <label
+                  style="display:block;font-size:0.75rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">DESCRIPTION</label>
+                <input type="text" id="new-live-ds-desc" class="select-input"
+                  placeholder="Purpose or source dataset slice notes..." style="width:100%;padding:8px 12px;" />
               </div>
               <div style="grid-column: span 2;display:flex;justify-content:flex-end;gap:10px;margin-top:6px;">
-                <button type="button" class="btn btn-secondary" id="btn-cancel-create-live-ds" style="font-size:0.82rem;padding:6px 14px;">Cancel</button>
-                <button type="submit" class="btn btn-primary" style="font-size:0.82rem;padding:6px 16px;">🚀 Create Live Schema (No Recs Table)</button>
+                <button type="button" class="btn btn-secondary" id="btn-cancel-create-live-ds"
+                  style="font-size:0.82rem;padding:6px 14px;">Cancel</button>
+                <button type="submit" class="btn btn-primary" style="font-size:0.82rem;padding:6px 16px;">🚀 Create Live
+                  Schema (No Recs Table)</button>
               </div>
             </form>
           </div>
@@ -627,7 +758,8 @@
             <div class="editor-stat-card">
               <div class="stat-icon">🚫</div>
               <div class="stat-label">Precomputed Rec Pairs</div>
-              <div class="stat-value" id="live-db-total-recs" style="color:var(--text-muted);font-size:1.2rem;">0 (Omitted Table)</div>
+              <div class="stat-value" id="live-db-total-recs" style="color:var(--text-muted);font-size:1.2rem;">0
+                (Omitted Table)</div>
             </div>
           </div>
 
@@ -638,7 +770,11 @@
             <div class="upload-card">
               <div class="upload-card-header">
                 <div class="upload-card-title">
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
                   Live CSV Fast Batch Ingestion (Dense Vectors Only — Zero Cross-Encoder)
                 </div>
                 <div style="display:flex;gap:10px;align-items:center;">
@@ -660,10 +796,12 @@
               <div class="upload-dropzone" id="live-upload-dropzone" role="button" tabindex="0">
                 <span class="dz-icon">📂</span>
                 <div class="dz-title">Drag &amp; drop CSV for Live Ingestion, or click to browse</div>
-                <div class="dz-sub">Cleans and writes directly to PostgreSQL with 384d BGE embeddings. Zero Cross-Encoder reranking.</div>
+                <div class="dz-sub">Cleans and writes directly to PostgreSQL with 384d BGE embeddings. Zero
+                  Cross-Encoder reranking.</div>
                 <div style="margin-top:12px;">
                   <button type="button" class="btn btn-secondary" style="font-size:0.8rem;padding:6px 14px;"
-                    onclick="document.getElementById('live-csv-file-input').click();event.stopPropagation();">Browse Files</button>
+                    onclick="document.getElementById('live-csv-file-input').click();event.stopPropagation();">Browse
+                    Files</button>
                 </div>
               </div>
 
@@ -674,31 +812,66 @@
                 </div>
                 <span style="font-size:0.75rem;color:var(--color-success)">✓ File ready for fast live ingestion</span>
               </div>
+
+              <!-- Live CSV Ingestion Progress Display -->
+              <div id="live-csv-progress-card" style="display:none;margin-top:16px;padding:16px;background:rgba(13,148,136,0.08);border:1px solid rgba(13,148,136,0.25);border-radius:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                  <span id="live-csv-status-text" style="font-weight:700;font-size:0.85rem;color:var(--text-primary);display:flex;align-items:center;gap:8px;">
+                    <span class="spinner" style="width:14px;height:14px;border:2px solid rgba(45,212,191,0.2);border-top-color:#2dd4bf;border-radius:50%;animation:spin 0.8s linear infinite;"></span>
+                    Processing Live Ingestion &amp; Embeddings...
+                  </span>
+                  <div style="display:flex;align-items:center;gap:10px;">
+                    <span id="live-csv-progress-pct" style="font-weight:800;font-size:0.95rem;color:#2dd4bf;">0%</span>
+                    <button type="button" class="btn btn-secondary" id="btn-cancel-live-csv" style="font-size:0.72rem;padding:2px 8px;color:#ef4444;border-color:rgba(239,68,68,0.3);">✕ Cancel</button>
+                  </div>
+                </div>
+                <div style="width:100%;height:8px;background:var(--border-subtle);border-radius:4px;overflow:hidden;margin-bottom:10px;">
+                  <div id="live-csv-progress-fill" style="width:0%;height:100%;background:linear-gradient(90deg, #0d9488, #2dd4bf);transition:width 0.3s ease;"></div>
+                </div>
+                <!-- 4-Stage Pill Pipeline Tracker -->
+                <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:0.75rem;">
+                  <span id="live-node-parse" class="badge" style="background:var(--surface-sunken);border:1px solid var(--border-subtle);padding:3px 8px;">1. Parse CSV</span>
+                  <span id="live-node-clean" class="badge" style="background:var(--surface-sunken);border:1px solid var(--border-subtle);padding:3px 8px;">2. Clean &amp; Deduplicate</span>
+                  <span id="live-node-storage" class="badge" style="background:var(--surface-sunken);border:1px solid var(--border-subtle);padding:3px 8px;">3. Store Articles</span>
+                  <span id="live-node-embed" class="badge" style="background:var(--surface-sunken);border:1px solid var(--border-subtle);padding:3px 8px;">4. 384d Dense Vectors</span>
+                </div>
+              </div>
             </div>
 
             <!-- 2. Single Article Live Ingestion (Manual) -->
             <div class="upload-card">
               <div class="upload-card-header">
                 <div class="upload-card-title">
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                  </svg>
                   Single Article Live Ingestion (Type &amp; Ingest)
                 </div>
-                <button class="btn btn-secondary" id="toggle-manual-live-form-btn" type="button" style="font-size:0.82rem;padding:6px 14px;">
+                <button class="btn btn-secondary" id="toggle-manual-live-form-btn" type="button"
+                  style="font-size:0.82rem;padding:6px 14px;">
                   <span id="manual-live-toggle-icon">✏️</span> Write Single Article
                 </button>
               </div>
               <p style="font-size:0.83rem;color:var(--text-secondary);margin-bottom:12px;">
-                Type and ingest an article directly into the live dataset. Cleans text and computes 384-dimensional dense vector in ~50ms. No Cross-Encoder or precomputation tables.
+                Type and ingest an article directly into the live dataset. Cleans text and computes 384-dimensional
+                dense vector in ~50ms. No Cross-Encoder or precomputation tables.
               </p>
 
               <form id="manual-live-form" style="display:none;margin-top:16px;">
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:12px;">
                   <div style="grid-column: span 2;">
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">HEADLINE / TITLE *</label>
-                    <input type="text" id="manual-live-title" class="select-input" placeholder="e.g. Breaking: Election Commission announces poll dates" required style="width:100%;font-size:0.95rem;font-weight:600;padding:10px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">HEADLINE
+                      / TITLE *</label>
+                    <input type="text" id="manual-live-title" class="select-input"
+                      placeholder="e.g. Breaking: Election Commission announces poll dates" required
+                      style="width:100%;font-size:0.95rem;font-weight:600;padding:10px 12px;" />
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">PRIMARY SECTION *</label>
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">PRIMARY
+                      SECTION *</label>
                     <select id="manual-live-section" class="select-input" style="width:100%;padding:9px 12px;">
                       <option value="india" selected>India / National</option>
                       <option value="business">Business &amp; Economy</option>
@@ -713,37 +886,62 @@
                     </select>
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">SUBSECTION / TAG</label>
-                    <input type="text" id="manual-live-subsection" class="select-input" placeholder="e.g. politics, polls" style="width:100%;padding:9px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">SUBSECTION
+                      / TAG</label>
+                    <input type="text" id="manual-live-subsection" class="select-input"
+                      placeholder="e.g. politics, polls" style="width:100%;padding:9px 12px;" />
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">PUBLISH DATE &amp; TIME (UTC)</label>
-                    <input type="datetime-local" id="manual-live-date" class="select-input" style="width:100%;padding:9px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">PUBLISH
+                      DATE &amp; TIME (UTC)</label>
+                    <input type="datetime-local" id="manual-live-date" class="select-input"
+                      style="width:100%;padding:9px 12px;" />
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">INITIAL PAGE VIEWS</label>
-                    <input type="number" id="manual-live-views" class="select-input" placeholder="100" value="100" min="0" style="width:100%;padding:9px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">INITIAL
+                      PAGE VIEWS</label>
+                    <input type="number" id="manual-live-views" class="select-input" placeholder="100" value="100"
+                      min="0" style="width:100%;padding:9px 12px;" />
                   </div>
                   <div style="grid-column: span 2;">
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">SUMMARY / DESCRIPTION</label>
-                    <textarea id="manual-live-description" class="select-input" rows="2" placeholder="Brief lead summary..." style="width:100%;padding:8px 12px;font-family:inherit;"></textarea>
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">SUMMARY
+                      / DESCRIPTION</label>
+                    <textarea id="manual-live-description" class="select-input" rows="2"
+                      placeholder="Brief lead summary..."
+                      style="width:100%;padding:8px 12px;font-family:inherit;"></textarea>
                   </div>
                   <div style="grid-column: span 2;">
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">FULL ARTICLE BODY *</label>
-                    <textarea id="manual-live-body" class="select-input" rows="5" placeholder="Full paragraphs of the story..." required style="width:100%;padding:10px 12px;font-family:inherit;"></textarea>
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">FULL
+                      ARTICLE BODY *</label>
+                    <textarea id="manual-live-body" class="select-input" rows="5"
+                      placeholder="Full paragraphs of the story..." required
+                      style="width:100%;padding:10px 12px;font-family:inherit;"></textarea>
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">CANONICAL URL (OPTIONAL)</label>
-                    <input type="url" id="manual-live-url" class="select-input" placeholder="https://indianexpress.com/..." style="width:100%;padding:9px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">CANONICAL
+                      URL (OPTIONAL)</label>
+                    <input type="url" id="manual-live-url" class="select-input"
+                      placeholder="https://indianexpress.com/..." style="width:100%;padding:9px 12px;" />
                   </div>
                   <div>
-                    <label style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">IMAGE URL (OPTIONAL)</label>
-                    <input type="url" id="manual-live-image" class="select-input" placeholder="https://images.indianexpress.com/..." style="width:100%;padding:9px 12px;" />
+                    <label
+                      style="display:block;font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:4px;">IMAGE
+                      URL (OPTIONAL)</label>
+                    <input type="url" id="manual-live-image" class="select-input"
+                      placeholder="https://images.indianexpress.com/..." style="width:100%;padding:9px 12px;" />
                   </div>
                 </div>
 
-                <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;padding-top:12px;border-top:1px solid var(--border-subtle);">
-                  <button type="submit" id="manual-live-submit-btn" class="btn btn-primary" style="padding:9px 20px;font-weight:700;">
+                <div
+                  style="display:flex;align-items:center;justify-content:flex-end;gap:12px;padding-top:12px;border-top:1px solid var(--border-subtle);">
+                  <button type="submit" id="manual-live-submit-btn" class="btn btn-primary"
+                    style="padding:9px 20px;font-weight:700;">
                     ⚡ Ingest &amp; Embed for Live Search
                   </button>
                 </div>
@@ -755,7 +953,9 @@
             <div class="upload-card">
               <div class="upload-card-header">
                 <div class="upload-card-title">
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                  </svg>
                   Corpus Embedder (Encode Un-embedded Articles in Live Dataset)
                 </div>
                 <button class="btn btn-primary" id="start-live-prep-btn" style="padding:8px 16px;">
@@ -763,12 +963,16 @@
                 </button>
               </div>
               <p style="font-size:0.83rem;color:var(--text-secondary);margin-bottom:14px;">
-                Generates 384-dimensional dense vectors for all articles in the active live dataset that lack embeddings, making them immediately searchable.
+                Generates 384-dimensional dense vectors for all articles in the active live dataset that lack
+                embeddings, making them immediately searchable.
               </p>
 
-              <div style="display:flex;align-items:center;gap:20px;padding:12px 16px;background:var(--surface-sunken, rgba(0,0,0,0.15));border-radius:8px;border:1px solid var(--border-subtle);margin-bottom:16px;">
-                <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;color:var(--text-secondary);cursor:pointer;">
-                  <input type="checkbox" id="live-prep-recompute-checkbox" /> Re-encode all articles (even if already embedded)
+              <div
+                style="display:flex;align-items:center;gap:20px;padding:12px 16px;background:var(--surface-sunken, rgba(0,0,0,0.15));border-radius:8px;border:1px solid var(--border-subtle);margin-bottom:16px;">
+                <label
+                  style="display:flex;align-items:center;gap:8px;font-size:0.82rem;color:var(--text-secondary);cursor:pointer;">
+                  <input type="checkbox" id="live-prep-recompute-checkbox" /> Re-encode all articles (even if already
+                  embedded)
                 </label>
                 <div style="display:flex;align-items:center;gap:8px;font-size:0.82rem;color:var(--text-secondary);">
                   <span>Batch Size:</span>
@@ -781,10 +985,13 @@
               </div>
 
               <!-- Live Preprocess Progress Display -->
-              <div id="live-prep-progress-card" style="display:none;padding:16px;background:rgba(99,102,241,0.06);border:1px solid rgba(99,102,241,0.25);border-radius:8px;">
+              <div id="live-prep-progress-card"
+                style="display:none;padding:16px;background:rgba(99,102,241,0.06);border:1px solid rgba(99,102,241,0.25);border-radius:8px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                  <span id="live-prep-status-text" style="font-weight:700;font-size:0.85rem;color:var(--text-primary);">Processing embeddings...</span>
-                  <span id="live-prep-progress-pct" style="font-weight:800;font-size:0.95rem;color:var(--brand-primary);">0%</span>
+                  <span id="live-prep-status-text"
+                    style="font-weight:700;font-size:0.85rem;color:var(--text-primary);">Processing embeddings...</span>
+                  <span id="live-prep-progress-pct"
+                    style="font-weight:800;font-size:0.95rem;color:var(--brand-primary);">0%</span>
                 </div>
                 <div class="progress-track">
                   <div class="progress-bar-fill" id="live-prep-progress-fill" style="width:0%;"></div>
@@ -798,7 +1005,10 @@
           <div class="inspector-card">
             <div class="upload-card-header">
               <div class="upload-card-title">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="12 8 12 12 14 14"/><circle cx="12" cy="12" r="10"/></svg>
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="12 8 12 12 14 14" />
+                  <circle cx="12" cy="12" r="10" />
+                </svg>
                 Live Pipeline Processing &amp; Ingestion History
               </div>
             </div>
@@ -817,7 +1027,10 @@
                   </tr>
                 </thead>
                 <tbody id="live-jobs-body">
-                  <tr><td colspan="7" style="text-align:center;padding:16px;color:var(--text-muted)">Loading live jobs...</td></tr>
+                  <tr>
+                    <td colspan="7" style="text-align:center;padding:16px;color:var(--text-muted)">Loading live jobs...
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -842,36 +1055,46 @@
             <!-- RecSys Controls -->
             <section class="sidebar-section">
               <div class="sidebar-section-header">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14" />
+                </svg>
                 <span>RecSys Controls</span>
               </div>
 
               <!-- ⚡ Precomputation Pipeline Database Selector -->
-              <div class="control-group" style="border-left: 3px solid #6366f1; padding-left: 10px; margin-bottom: 14px;">
+              <div class="control-group"
+                style="border-left: 3px solid #6366f1; padding-left: 10px; margin-bottom: 14px;">
                 <label class="control-label" style="display:flex;justify-content:space-between;align-items:center;">
                   <span style="font-weight:700;color:#818cf8;">⚡ Precomputed DB</span>
-                  <span class="badge" id="reader-precomp-dataset-badge" style="font-size:0.68rem;padding:2px 6px;">Production</span>
+                  <span class="badge" id="reader-precomp-dataset-badge"
+                    style="font-size:0.68rem;padding:2px 6px;">Production</span>
                 </label>
                 <select id="reader-precomp-dataset-select" class="select-input" style="font-size:0.82rem;">
                   <option value="default">Default (Production Precomputed)</option>
                 </select>
-                <div style="font-size:0.68rem;color:var(--text-muted);margin-top:4px;">Applies to <strong>Similar Articles</strong> tab</div>
+                <div style="font-size:0.68rem;color:var(--text-muted);margin-top:4px;">Applies to <strong>Similar
+                    Articles</strong> tab</div>
               </div>
 
               <!-- 🛰️ Live Pipeline Database Selector -->
-              <div class="control-group" style="border-left: 3px solid #0d9488; padding-left: 10px; margin-bottom: 14px;">
+              <div class="control-group"
+                style="border-left: 3px solid #0d9488; padding-left: 10px; margin-bottom: 14px;">
                 <label class="control-label" style="display:flex;justify-content:space-between;align-items:center;">
                   <span style="font-weight:700;color:#2dd4bf;">🛰️ Live Pipeline DB</span>
-                  <span class="badge" id="reader-live-dataset-badge" style="font-size:0.68rem;padding:2px 6px;background:rgba(13,148,136,0.2);color:#2dd4bf;">Live</span>
+                  <span class="badge" id="reader-live-dataset-badge"
+                    style="font-size:0.68rem;padding:2px 6px;background:rgba(13,148,136,0.2);color:#2dd4bf;">Live</span>
                 </label>
                 <select id="reader-live-dataset-select" class="select-input" style="font-size:0.82rem;">
                   <option value="default">Default (Production Database)</option>
                 </select>
-                <div style="font-size:0.68rem;color:var(--text-muted);margin-top:4px;">Applies to <strong>Live Hybrid Lab</strong> tab</div>
+                <div style="font-size:0.68rem;color:var(--text-muted);margin-top:4px;">Applies to <strong>Live Hybrid
+                    Lab</strong> tab</div>
               </div>
 
               <div class="control-group">
-                <label class="control-label">Recommendations Count <span style="color:var(--text-muted);font-weight:500;">(precomputed)</span></label>
+                <label class="control-label">Recommendations Count <span
+                    style="color:var(--text-muted);font-weight:500;">(precomputed)</span></label>
                 <div class="slider-row">
                   <input type="range" id="top-k-slider" min="1" max="10" value="10" class="slider" />
                   <span class="slider-value" id="top-k-value">10</span>
@@ -891,9 +1114,15 @@
             <section class="sidebar-section">
               <details class="collapsible">
                 <summary class="collapsible-header">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                    <path d="M2 17l10 5 10-5" />
+                    <path d="M2 12l10 5 10-5" />
+                  </svg>
                   <span>Engine Architecture</span>
-                  <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                  <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
                 </summary>
                 <div class="collapsible-body">
                   <div class="control-group">
@@ -941,7 +1170,7 @@
             <div class="ai-learn-badge">
               <span class="ai-badge-icon">✦</span>
               <div>
-                <strong>PostgreSQL + pgvector</strong><br/>
+                <strong>PostgreSQL + pgvector</strong><br />
                 <small>Sub-5ms Precomputed Recommendations</small>
               </div>
             </div>
@@ -980,19 +1209,31 @@
           <!-- Tabs -->
           <nav class="tabs-nav" id="tabs-nav">
             <button class="tab-btn active" data-tab="similar">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
               Similar Articles (Precomputed)
             </button>
             <button class="tab-btn" data-tab="hybrid-lab" id="tab-btn-hybrid-lab">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+              </svg>
               Live Hybrid Lab (No Rerank)
             </button>
             <button class="tab-btn" data-tab="compare" id="tab-btn-compare">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="10" height="18" rx="1"/><rect x="13" y="3" width="10" height="18" rx="1"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="1" y="3" width="10" height="18" rx="1" />
+                <rect x="13" y="3" width="10" height="18" rx="1" />
+              </svg>
               Algorithm Comparison
             </button>
             <button class="tab-btn" data-tab="search">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.35-4.35" />
+              </svg>
               Semantic Search
             </button>
           </nav>
@@ -1000,19 +1241,25 @@
           <!-- Tab: Similar Articles -->
           <section class="tab-panel active" id="tab-similar">
             <!-- Precomputed Database Selector Toolbar -->
-            <div class="active-dataset-toolbar" style="margin-bottom: 16px; background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 10px; padding: 10px 16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+            <div class="active-dataset-toolbar"
+              style="margin-bottom: 16px; background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 10px; padding: 10px 16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
               <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                <span style="font-weight:700; font-size:0.86rem; color:#818cf8; display:flex; align-items:center; gap:6px;">
+                <span
+                  style="font-weight:700; font-size:0.86rem; color:#818cf8; display:flex; align-items:center; gap:6px;">
                   <span>⚡</span> Precomputed Pipeline Database:
                 </span>
-                <select id="similar-precomp-dataset-select" class="select-input" style="font-size:0.84rem; padding:5px 12px; font-weight:700; min-width:260px; border-color:rgba(99,102,241,0.4);">
+                <select id="similar-precomp-dataset-select" class="select-input"
+                  style="font-size:0.84rem; padding:5px 12px; font-weight:700; min-width:260px; border-color:rgba(99,102,241,0.4);">
                   <option value="default">Default (Production Precomputed)</option>
                 </select>
-                <span id="similar-precomp-stats-badge" class="badge" style="background:rgba(99,102,241,0.15); color:#818cf8; border:1px solid rgba(99,102,241,0.3); font-size:0.75rem; padding:4px 10px;">
+                <span id="similar-precomp-stats-badge" class="badge"
+                  style="background:rgba(99,102,241,0.15); color:#818cf8; border:1px solid rgba(99,102,241,0.3); font-size:0.75rem; padding:4px 10px;">
                   Loading stats...
                 </span>
               </div>
-              <button type="button" class="btn btn-secondary" style="font-size:0.78rem; padding:5px 12px; border-color:rgba(99,102,241,0.35); color:#818cf8;" onclick="if (window.setAppRole) { setAppRole('editor'); if (window.Editor) Editor.switchStudio('precomputed'); }">
+              <button type="button" class="btn btn-secondary"
+                style="font-size:0.78rem; padding:5px 12px; border-color:rgba(99,102,241,0.35); color:#818cf8;"
+                onclick="if (window.setAppRole) { setAppRole('editor'); if (window.Editor) Editor.switchStudio('precomputed'); }">
                 ⚙️ Manage Precomputed Runs in Editor Studio
               </button>
             </div>
@@ -1020,10 +1267,14 @@
             <div class="panel-header">
               <div>
                 <h2 class="panel-title">
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/></svg>
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="2" y="3" width="20" height="14" rx="2" />
+                  </svg>
                   Item-to-Item Recommendations
                 </h2>
-                <p class="panel-sub">Stories are ordered by recommendation confidence — the strongest matches (highest average %) appear first. Scroll for more; the ⚡/🛰️ chip shows whether each block was served precomputed or live.</p>
+                <p class="panel-sub">Stories are ordered by recommendation confidence — the strongest matches (highest
+                  average %) appear first. Scroll for more; the ⚡/🛰️ chip shows whether each block was served
+                  precomputed or live.</p>
               </div>
             </div>
 
@@ -1041,8 +1292,10 @@
             <div class="story-finder-box" id="story-finder-box">
               <div class="story-finder-input-wrap">
                 <span class="story-finder-icon">🔍</span>
-                <input type="text" id="story-finder-input" placeholder="Quickly find a main story by title to view its recommendations..." autocomplete="off" />
-                <button type="button" class="story-finder-clear hidden" id="story-finder-clear" title="Clear search">✕</button>
+                <input type="text" id="story-finder-input"
+                  placeholder="Quickly find a main story by title to view its recommendations..." autocomplete="off" />
+                <button type="button" class="story-finder-clear hidden" id="story-finder-clear"
+                  title="Clear search">✕</button>
               </div>
               <div class="story-finder-dropdown hidden" id="story-finder-dropdown"></div>
             </div>
@@ -1070,9 +1323,13 @@
                 <h2 class="panel-title" style="display:flex;align-items:center;gap:10px;">
                   <span style="color:#6366f1;font-size:1.4rem;">⚖️</span>
                   Dual Algorithm Side-by-Side Comparison
-                  <span class="badge" style="background:rgba(99,102,241,0.15);color:#6366f1;border:1px solid rgba(99,102,241,0.35);font-size:0.75rem;padding:3px 8px;">Section 3</span>
+                  <span class="badge"
+                    style="background:rgba(99,102,241,0.15);color:#6366f1;border:1px solid rgba(99,102,241,0.35);font-size:0.75rem;padding:3px 8px;">Section
+                    3</span>
                 </h2>
-                <p class="panel-sub">Select any article and two retrieval algorithms to compare their recommendation rankings, scores, and explanations side by side. Rank shifts, score deltas, and agreement badges are highlighted automatically.</p>
+                <p class="panel-sub">Select any article and two retrieval algorithms to compare their recommendation
+                  rankings, scores, and explanations side by side. Rank shifts, score deltas, and agreement badges are
+                  highlighted automatically.</p>
               </div>
             </div>
 
@@ -1080,17 +1337,22 @@
             <div class="story-finder-box" style="margin-bottom:16px;">
               <div class="story-finder-input-wrap">
                 <span class="story-finder-icon">🔍</span>
-                <input type="text" id="compare-story-input" placeholder="Search for a source article to compare algorithms on…" autocomplete="off" />
-                <button type="button" class="story-finder-clear hidden" id="compare-story-clear" title="Clear">✕</button>
+                <input type="text" id="compare-story-input"
+                  placeholder="Search for a source article to compare algorithms on…" autocomplete="off" />
+                <button type="button" class="story-finder-clear hidden" id="compare-story-clear"
+                  title="Clear">✕</button>
               </div>
               <div class="story-finder-dropdown hidden" id="compare-story-dropdown"></div>
             </div>
 
             <!-- Algorithm & Dataset Selectors -->
-            <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin-bottom:16px;">
-              <div style="background:var(--bg-surface);border:2px solid rgba(99,102,241,0.4);border-radius:var(--radius-md);padding:12px 16px;">
+            <div
+              style="display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center;margin-bottom:16px;">
+              <div
+                style="background:var(--bg-surface);border:2px solid rgba(99,102,241,0.4);border-radius:var(--radius-md);padding:12px 16px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                  <span style="font-size:0.72rem;font-weight:700;color:#6366f1;letter-spacing:0.08em;">SYSTEM A — LEFT PANE</span>
+                  <span style="font-size:0.72rem;font-weight:700;color:#6366f1;letter-spacing:0.08em;">SYSTEM A — LEFT
+                    PANE</span>
                   <div style="display:flex;align-items:center;gap:6px;font-size:0.76rem;color:var(--text-secondary);">
                     <span>Dataset:</span>
                     <select id="compare-dataset-a" class="select-input" style="font-size:0.76rem;padding:3px 8px;">
@@ -1106,9 +1368,11 @@
                 </select>
               </div>
               <div style="text-align:center;font-size:1.8rem;color:var(--text-muted);">VS</div>
-              <div style="background:var(--bg-surface);border:2px solid rgba(234,88,12,0.4);border-radius:var(--radius-md);padding:12px 16px;">
+              <div
+                style="background:var(--bg-surface);border:2px solid rgba(234,88,12,0.4);border-radius:var(--radius-md);padding:12px 16px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                  <span style="font-size:0.72rem;font-weight:700;color:#f97316;letter-spacing:0.08em;">SYSTEM B — RIGHT PANE</span>
+                  <span style="font-size:0.72rem;font-weight:700;color:#f97316;letter-spacing:0.08em;">SYSTEM B — RIGHT
+                    PANE</span>
                   <div style="display:flex;align-items:center;gap:6px;font-size:0.76rem;color:var(--text-secondary);">
                     <span>Dataset:</span>
                     <select id="compare-dataset-b" class="select-input" style="font-size:0.76rem;padding:3px 8px;">
@@ -1130,31 +1394,40 @@
               <button id="compare-run-btn" class="btn btn-primary" style="font-size:0.9rem;padding:10px 24px;" disabled>
                 ⚖️ Run Comparison
               </button>
-              <div id="compare-latency-badge" style="display:none;align-items:center;gap:8px;font-size:0.82rem;color:var(--text-secondary);background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:8px 14px;">
+              <div id="compare-latency-badge"
+                style="display:none;align-items:center;gap:8px;font-size:0.82rem;color:var(--text-secondary);background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:8px 14px;">
                 <span id="compare-latency-text"></span>
               </div>
             </div>
 
             <!-- Comparison source article -->
-            <div id="compare-source-box" style="display:none;padding:12px 16px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.25);border-radius:var(--radius-md);margin-bottom:16px;">
-              <div style="font-size:0.72rem;font-weight:700;color:#6366f1;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">Comparing algorithms for:</div>
+            <div id="compare-source-box"
+              style="display:none;padding:12px 16px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.25);border-radius:var(--radius-md);margin-bottom:16px;">
+              <div
+                style="font-size:0.72rem;font-weight:700;color:#6366f1;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">
+                Comparing algorithms for:</div>
               <div id="compare-source-title" style="font-size:0.95rem;font-weight:700;color:var(--text-primary);"></div>
               <div id="compare-source-meta" style="font-size:0.78rem;color:var(--text-muted);margin-top:2px;"></div>
             </div>
 
             <!-- Dual Column Results -->
-            <div id="compare-columns" style="display:none;grid-template-columns:1fr 1fr;gap:16px;" class="compare-dual-grid">
+            <div id="compare-columns" style="display:none;grid-template-columns:1fr 1fr;gap:16px;"
+              class="compare-dual-grid">
               <!-- Left Pane: Algorithm A -->
-              <div class="compare-pane" style="border:2px solid rgba(99,102,241,0.3);border-radius:var(--radius-md);overflow:hidden;">
-                <div class="compare-pane-header" style="background:rgba(99,102,241,0.12);padding:10px 14px;border-bottom:1px solid rgba(99,102,241,0.25);">
+              <div class="compare-pane"
+                style="border:2px solid rgba(99,102,241,0.3);border-radius:var(--radius-md);overflow:hidden;">
+                <div class="compare-pane-header"
+                  style="background:rgba(99,102,241,0.12);padding:10px 14px;border-bottom:1px solid rgba(99,102,241,0.25);">
                   <span style="font-weight:700;color:#6366f1;" id="compare-header-a">Algorithm A</span>
                   <span style="float:right;font-size:0.75rem;color:var(--text-muted);" id="compare-latency-a"></span>
                 </div>
                 <div id="compare-results-a" class="compare-results-list"></div>
               </div>
               <!-- Right Pane: Algorithm B -->
-              <div class="compare-pane" style="border:2px solid rgba(249,115,22,0.3);border-radius:var(--radius-md);overflow:hidden;">
-                <div class="compare-pane-header" style="background:rgba(249,115,22,0.12);padding:10px 14px;border-bottom:1px solid rgba(249,115,22,0.25);">
+              <div class="compare-pane"
+                style="border:2px solid rgba(249,115,22,0.3);border-radius:var(--radius-md);overflow:hidden;">
+                <div class="compare-pane-header"
+                  style="background:rgba(249,115,22,0.12);padding:10px 14px;border-bottom:1px solid rgba(249,115,22,0.25);">
                   <span style="font-weight:700;color:#f97316;" id="compare-header-b">Algorithm B</span>
                   <span style="float:right;font-size:0.75rem;color:var(--text-muted);" id="compare-latency-b"></span>
                 </div>
@@ -1166,26 +1439,33 @@
             <div id="compare-empty" class="empty-state" style="padding:48px 24px;">
               <div class="empty-icon">⚖️</div>
               <h3>Algorithm Comparison</h3>
-              <p>Search for and select an article, then choose two algorithms to compare their rankings side by side.</p>
+              <p>Search for and select an article, then choose two algorithms to compare their rankings side by side.
+              </p>
             </div>
           </section>
 
           <!-- Tab: Live Hybrid Lab (No Cross-Encoder) -->
           <section class="tab-panel" id="tab-hybrid-lab">
             <!-- Live Database Selector Toolbar -->
-            <div class="active-dataset-toolbar" style="margin-bottom: 16px; background: rgba(13, 148, 136, 0.08); border: 1px solid rgba(13, 148, 136, 0.25); border-radius: 10px; padding: 10px 16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+            <div class="active-dataset-toolbar"
+              style="margin-bottom: 16px; background: rgba(13, 148, 136, 0.08); border: 1px solid rgba(13, 148, 136, 0.25); border-radius: 10px; padding: 10px 16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
               <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                <span style="font-weight:700; font-size:0.86rem; color:#2dd4bf; display:flex; align-items:center; gap:6px;">
+                <span
+                  style="font-weight:700; font-size:0.86rem; color:#2dd4bf; display:flex; align-items:center; gap:6px;">
                   <span>🛰️</span> Live Pipeline Database:
                 </span>
-                <select id="hybrid-lab-dataset-select" class="select-input" style="font-size:0.84rem; padding:5px 12px; font-weight:700; min-width:260px; border-color:rgba(13,148,136,0.4);">
+                <select id="hybrid-lab-dataset-select" class="select-input"
+                  style="font-size:0.84rem; padding:5px 12px; font-weight:700; min-width:260px; border-color:rgba(13,148,136,0.4);">
                   <option value="default">Default (Production Database)</option>
                 </select>
-                <span id="hybrid-lab-stats-badge" class="badge" style="background:rgba(13,148,136,0.15); color:#2dd4bf; border:1px solid rgba(13,148,136,0.3); font-size:0.75rem; padding:4px 10px;">
+                <span id="hybrid-lab-stats-badge" class="badge"
+                  style="background:rgba(13,148,136,0.15); color:#2dd4bf; border:1px solid rgba(13,148,136,0.3); font-size:0.75rem; padding:4px 10px;">
                   Loading stats...
                 </span>
               </div>
-              <button type="button" class="btn btn-secondary" style="font-size:0.78rem; padding:5px 12px; border-color:rgba(13,148,136,0.35); color:#2dd4bf;" onclick="if (window.setAppRole) { setAppRole('editor'); if (window.Editor) Editor.switchStudio('live'); }">
+              <button type="button" class="btn btn-secondary"
+                style="font-size:0.78rem; padding:5px 12px; border-color:rgba(13,148,136,0.35); color:#2dd4bf;"
+                onclick="if (window.setAppRole) { setAppRole('editor'); if (window.Editor) Editor.switchStudio('live'); }">
                 ⚙️ Manage Live Datasets in Editor Studio
               </button>
             </div>
@@ -1194,9 +1474,13 @@
               <div>
                 <h2 class="panel-title" style="display:flex;align-items:center;gap:10px;">
                   <span style="color:#eab308;font-size:1.4rem;">⚡</span>
-                  Live Hybrid Recommendation Lab <span class="badge" style="background:rgba(234,179,8,0.15);color:#eab308;border:1px solid rgba(234,179,8,0.35);font-size:0.75rem;padding:3px 8px;">No Cross-Encoder</span>
+                  Live Hybrid Recommendation Lab <span class="badge"
+                    style="background:rgba(234,179,8,0.15);color:#eab308;border:1px solid rgba(234,179,8,0.35);font-size:0.75rem;padding:3px 8px;">No
+                    Cross-Encoder</span>
                 </h2>
-                <p class="panel-sub">Select or search any story to compute pure live recommendations on-the-fly using <strong>Lexical BM25 + Dense BGE Embeddings + Domain Boosts + MMR + Platt Calibration</strong>. Inspect stage-by-stage execution latency (ms) and refreshed probability calibration.</p>
+                <p class="panel-sub">Select or search any story to compute pure live recommendations on-the-fly using
+                  <strong>Lexical BM25 + Dense BGE Embeddings + Domain Boosts + MMR + Platt Calibration</strong>.
+                  Inspect stage-by-stage execution latency (ms) and refreshed probability calibration.</p>
               </div>
             </div>
 
@@ -1205,15 +1489,19 @@
               <div class="story-finder-box" style="margin-bottom:12px;">
                 <div class="story-finder-input-wrap">
                   <span class="story-finder-icon">🔍</span>
-                  <input type="text" id="hybrid-story-input" placeholder="Type a headline or keyword to choose an article for live hybrid evaluation..." autocomplete="off" />
-                  <button type="button" class="story-finder-clear hidden" id="hybrid-story-clear" title="Clear search">✕</button>
+                  <input type="text" id="hybrid-story-input"
+                    placeholder="Type a headline or keyword to choose an article for live hybrid evaluation..."
+                    autocomplete="off" />
+                  <button type="button" class="story-finder-clear hidden" id="hybrid-story-clear"
+                    title="Clear search">✕</button>
                 </div>
                 <div class="story-finder-dropdown hidden" id="hybrid-story-dropdown"></div>
               </div>
 
               <!-- Quick Story Pills -->
               <div class="hybrid-sample-pills" id="hybrid-sample-pills">
-                <span style="font-size:0.76rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;">Quick Test Stories:</span>
+                <span style="font-size:0.76rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;">Quick
+                  Test Stories:</span>
               </div>
             </div>
 
@@ -1228,41 +1516,51 @@
               </div>
               <h3 id="hybrid-source-title" class="hybrid-source-title">Loading story for live hybrid evaluation...</h3>
               <p id="hybrid-source-snippet" class="hybrid-source-snippet"></p>
-              
+
               <!-- Evaluation Tuning Options -->
               <div class="hybrid-controls-bar">
                 <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
-                  <label class="control-label" style="display:flex;align-items:center;gap:6px;font-size:0.82rem;cursor:pointer;">
+                  <label class="control-label"
+                    style="display:flex;align-items:center;gap:6px;font-size:0.82rem;cursor:pointer;">
                     <input type="checkbox" id="hybrid-toggle-boosts" checked />
                     <span>Domain Boosts (Section, Recency, Views)</span>
                   </label>
-                  <label class="control-label" style="display:flex;align-items:center;gap:6px;font-size:0.82rem;cursor:pointer;">
+                  <label class="control-label"
+                    style="display:flex;align-items:center;gap:6px;font-size:0.82rem;cursor:pointer;">
                     <input type="checkbox" id="hybrid-toggle-diversify" checked />
                     <span>MMR Diversity (λ=0.91, θ=0.76)</span>
                   </label>
-                  <label class="control-label" style="display:flex;align-items:center;gap:6px;font-size:0.82rem;cursor:pointer;">
+                  <label class="control-label"
+                    style="display:flex;align-items:center;gap:6px;font-size:0.82rem;cursor:pointer;">
                     <input type="checkbox" id="hybrid-toggle-calibration" checked />
                     <span>Platt Calibration (Prob Scaling)</span>
                   </label>
                   <!-- Candidate Pool Strategy Switcher -->
-                  <div class="candidate-strategy-switcher" style="display:inline-flex;align-items:center;background:var(--bg-canvas, #0f172a);border:1px solid var(--border-color);border-radius:20px;padding:2px;gap:2px;">
-                    <button type="button" class="cand-strat-btn active" id="btn-strat-quota" data-strategy="quota" title="Plan: 12 RRF agreement + up to 5 Dense-only + up to 3 BM25-only" style="border:none;border-radius:16px;padding:3px 10px;font-size:0.75rem;font-weight:700;cursor:pointer;background:var(--color-primary);color:#fff;transition:all 0.15s ease;">
+                  <div class="candidate-strategy-switcher"
+                    style="display:inline-flex;align-items:center;background:var(--bg-canvas, #0f172a);border:1px solid var(--border-color);border-radius:20px;padding:2px;gap:2px;">
+                    <button type="button" class="cand-strat-btn active" id="btn-strat-quota" data-strategy="quota"
+                      title="Plan: 12 RRF agreement + up to 5 Dense-only + up to 3 BM25-only"
+                      style="border:none;border-radius:16px;padding:3px 10px;font-size:0.75rem;font-weight:700;cursor:pointer;background:var(--color-primary);color:#fff;transition:all 0.15s ease;">
                       🎯 Quota Plan (12 / 5 / 3)
                     </button>
-                    <button type="button" class="cand-strat-btn" id="btn-strat-rrf" data-strategy="pure_rrf" title="Plan: Pure Reciprocal Rank Fusion (20 top slots)" style="border:none;border-radius:16px;padding:3px 10px;font-size:0.75rem;font-weight:600;cursor:pointer;background:transparent;color:var(--text-secondary);transition:all 0.15s ease;">
+                    <button type="button" class="cand-strat-btn" id="btn-strat-rrf" data-strategy="pure_rrf"
+                      title="Plan: Pure Reciprocal Rank Fusion (20 top slots)"
+                      style="border:none;border-radius:16px;padding:3px 10px;font-size:0.75rem;font-weight:600;cursor:pointer;background:transparent;color:var(--text-secondary);transition:all 0.15s ease;">
                       🔀 Pure 20 RRF Slots
                     </button>
                   </div>
                   <div style="display:flex;align-items:center;gap:6px;font-size:0.82rem;">
                     <span>Top-K:</span>
-                    <select id="hybrid-select-topk" class="select-sm" style="background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-color);border-radius:6px;padding:2px 8px;">
+                    <select id="hybrid-select-topk" class="select-sm"
+                      style="background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-color);border-radius:6px;padding:2px 8px;">
                       <option value="5">5</option>
                       <option value="10" selected>10</option>
                       <option value="15">15</option>
                     </select>
                   </div>
                 </div>
-                <button type="button" class="btn btn-primary btn-sm" id="btn-recompute-hybrid" style="display:flex;align-items:center;gap:6px;">
+                <button type="button" class="btn btn-primary btn-sm" id="btn-recompute-hybrid"
+                  style="display:flex;align-items:center;gap:6px;">
                   <span>⚡</span> Run Live Hybrid
                 </button>
               </div>
@@ -1274,11 +1572,18 @@
                 <div>
                   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                     <span class="hybrid-total-ms" id="hud-total-ms">⏱️ 0.0 ms</span>
-                    <span class="badge" style="background:rgba(16,185,129,0.15);color:#10b981;border:1px solid rgba(16,185,129,0.35);font-weight:700;">🚀 Pure In-Memory (0 Cross-Encoder Calls)</span>
-                    <span class="badge" style="background:rgba(99,102,241,0.15);color:#818cf8;border:1px solid rgba(99,102,241,0.35);font-weight:700;">⚡ Dual-Retriever (BM25 + BGE Dense)</span>
-                    <span class="badge" id="hud-candidate-strategy-badge" style="background:rgba(236,72,153,0.15);color:#ec4899;border:1px solid rgba(236,72,153,0.35);font-weight:700;">🎯 Quota (12 / 5 / 3)</span>
+                    <span class="badge"
+                      style="background:rgba(16,185,129,0.15);color:#10b981;border:1px solid rgba(16,185,129,0.35);font-weight:700;">🚀
+                      Pure In-Memory (0 Cross-Encoder Calls)</span>
+                    <span class="badge"
+                      style="background:rgba(99,102,241,0.15);color:#818cf8;border:1px solid rgba(99,102,241,0.35);font-weight:700;">⚡
+                      Dual-Retriever (BM25 + BGE Dense)</span>
+                    <span class="badge" id="hud-candidate-strategy-badge"
+                      style="background:rgba(236,72,153,0.15);color:#ec4899;border:1px solid rgba(236,72,153,0.35);font-weight:700;">🎯
+                      Quota (12 / 5 / 3)</span>
                   </div>
-                  <p style="font-size:0.80rem;color:var(--text-muted);margin-top:4px;">Real-time execution latency benchmark measured across all pipeline stages on local CPU memory.</p>
+                  <p style="font-size:0.80rem;color:var(--text-muted);margin-top:4px;">Real-time execution latency
+                    benchmark measured across all pipeline stages on local CPU memory.</p>
                 </div>
               </div>
 
@@ -1318,16 +1623,19 @@
                 <!-- 1: Query Prep -->
                 <div class="stage-metric-card stage-seg-prep">
                   <div class="stage-card-title">1. Query Prep & IDF</div>
-                  <div class="stage-card-ms" id="stage-prep-ms"><span class="ms-num">0.00</span><span class="ms-unit">ms</span></div>
+                  <div class="stage-card-ms" id="stage-prep-ms"><span class="ms-num">0.00</span><span
+                      class="ms-unit">ms</span></div>
                   <div class="stage-card-desc">Title + top-15 IDF body tokens</div>
                 </div>
                 <!-- 2: Retrieval (BM25 + Dense) -->
                 <div class="stage-metric-card highlight stage-seg-retrieval">
                   <div class="stage-card-title">2. Retrieval (Scan)</div>
-                  <div class="stage-card-ms" id="stage-retrieval-ms"><span class="ms-num">0.00</span><span class="ms-unit">ms</span></div>
+                  <div class="stage-card-ms" id="stage-retrieval-ms"><span class="ms-num">0.00</span><span
+                      class="ms-unit">ms</span></div>
                   <div class="stage-sub-metrics" style="display:flex;flex-wrap:wrap;gap:8px;">
                     <span>Dense Dot: <strong id="stage-dense-ms">0.00<span class="ms-unit-sub">ms</span></strong></span>
-                    <span>Query Embed: <strong id="stage-query-embed-ms">0.00<span class="ms-unit-sub">ms</span></strong></span>
+                    <span>Query Embed: <strong id="stage-query-embed-ms">0.00<span
+                          class="ms-unit-sub">ms</span></strong></span>
                     <span>BM25: <strong id="stage-bm25-ms">0.00<span class="ms-unit-sub">ms</span></strong></span>
                   </div>
                   <div class="stage-card-desc">4,177 articles scanned in memory</div>
@@ -1335,25 +1643,29 @@
                 <!-- 3: Blend -->
                 <div class="stage-metric-card stage-seg-blend">
                   <div class="stage-card-title">3. Hybrid Blending</div>
-                  <div class="stage-card-ms" id="stage-blend-ms"><span class="ms-num">0.00</span><span class="ms-unit">ms</span></div>
+                  <div class="stage-card-ms" id="stage-blend-ms"><span class="ms-num">0.00</span><span
+                      class="ms-unit">ms</span></div>
                   <div class="stage-card-desc">60% Semantic + 40% Self-Norm BM25</div>
                 </div>
                 <!-- 4: Boosts -->
                 <div class="stage-metric-card stage-seg-boosts">
                   <div class="stage-card-title">4. Domain Boosts</div>
-                  <div class="stage-card-ms" id="stage-boosts-ms"><span class="ms-num">0.00</span><span class="ms-unit">ms</span></div>
+                  <div class="stage-card-ms" id="stage-boosts-ms"><span class="ms-num">0.00</span><span
+                      class="ms-unit">ms</span></div>
                   <div class="stage-card-desc">Section, Recency, View multiplier</div>
                 </div>
                 <!-- 5: MMR -->
                 <div class="stage-metric-card stage-seg-mmr">
                   <div class="stage-card-title">5. MMR Diversity</div>
-                  <div class="stage-card-ms" id="stage-mmr-ms"><span class="ms-num">0.00</span><span class="ms-unit">ms</span></div>
+                  <div class="stage-card-ms" id="stage-mmr-ms"><span class="ms-num">0.00</span><span
+                      class="ms-unit">ms</span></div>
                   <div class="stage-card-desc">Cosine penalty matrix reduction</div>
                 </div>
                 <!-- 6: Platt Calibration -->
                 <div class="stage-metric-card stage-seg-calib">
                   <div class="stage-card-title">6. Platt Calibration</div>
-                  <div class="stage-card-ms" id="stage-calib-ms"><span class="ms-num">0.00</span><span class="ms-unit">ms</span></div>
+                  <div class="stage-card-ms" id="stage-calib-ms"><span class="ms-num">0.00</span><span
+                      class="ms-unit">ms</span></div>
                   <div class="stage-card-desc">Sigmoid probability & evidence cards</div>
                 </div>
               </div>
@@ -1362,10 +1674,12 @@
             <!-- Results Section -->
             <div class="hybrid-results-section" id="hybrid-results-section">
               <div class="hybrid-results-hdr">
-                <h3 style="font-size:1.05rem;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:8px;">
+                <h3
+                  style="font-size:1.05rem;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:8px;">
                   <span>🎯</span> Live Recommendations & Refreshed Platt Calibration
                 </h3>
-                <span id="hybrid-results-count" class="badge" style="background:var(--bg-surface);color:var(--text-secondary);">0 stories</span>
+                <span id="hybrid-results-count" class="badge"
+                  style="background:var(--bg-surface);color:var(--text-secondary);">0 stories</span>
               </div>
               <div id="hybrid-results-grid" class="cards-grid">
                 <!-- Recommended cards rendered here -->
@@ -1378,7 +1692,10 @@
             <div class="panel-header">
               <div>
                 <h2 class="panel-title">
-                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="m21 21-4.35-4.35" />
+                  </svg>
                   Semantic Search
                 </h2>
                 <p class="panel-sub">Search articles in PostgreSQL by concept, event, or keyword</p>
@@ -1387,8 +1704,12 @@
 
             <div class="search-panel">
               <div class="search-input-wrap">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-                <input type="text" id="search-query-input" placeholder="e.g. Virat Kohli, Akhilesh Yadav, Supreme Court, Budget 2025…" autocomplete="off" />
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+                  <circle cx="11" cy="11" r="8" />
+                  <path d="m21 21-4.35-4.35" />
+                </svg>
+                <input type="text" id="search-query-input"
+                  placeholder="e.g. Virat Kohli, Akhilesh Yadav, Supreme Court, Budget 2025…" autocomplete="off" />
                 <button class="btn btn-primary" id="search-btn">Search</button>
               </div>
               <div class="quick-pills" id="quick-pills">
@@ -1420,11 +1741,18 @@
           <!-- Randomizer Header -->
           <div class="rp-card randomizer-header-card">
             <div class="rp-card-header">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M16 3h5v5" />
+                <path d="M4 20L21 3" />
+                <path d="M21 16v5h-5" />
+                <path d="M15 15l6 6" />
+                <path d="M4 4l5 5" />
+              </svg>
               <span>Discover Random</span>
               <span class="randomizer-count" id="randomizer-count">0 stories</span>
             </div>
-            <p class="rp-card-sub">Serendipitous discovery — hit shuffle to uncover hidden gems from the entire archive.</p>
+            <p class="rp-card-sub">Serendipitous discovery — hit shuffle to uncover hidden gems from the entire archive.
+            </p>
             <button class="randomizer-shuffle-btn" id="randomizer-shuffle-btn" title="Shuffle articles">
               <span class="shuffle-icon">🎲</span>
               <span>Shuffle</span>
@@ -1455,13 +1783,15 @@
         <div class="monitoring-header">
           <div class="monitoring-title">
             <h1><span>📊</span> Centralised Performance &amp; Execution History Hub</h1>
-            <p>Real-time CPU, RAM, GPU telemetry, persistent pipeline execution history, database storage analytics, and version comparisons.</p>
+            <p>Real-time CPU, RAM, GPU telemetry, persistent pipeline execution history, database storage analytics, and
+              version comparisons.</p>
           </div>
           <div style="display:flex;gap:10px;align-items:center;">
             <button class="btn btn-secondary" id="mon-refresh-btn" style="font-size:0.82rem;padding:7px 14px;">
               🔄 Refresh Metrics
             </button>
-            <div style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:var(--text-secondary);background:var(--bg-surface);padding:6px 12px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);">
+            <div
+              style="display:flex;align-items:center;gap:6px;font-size:0.8rem;color:var(--text-secondary);background:var(--bg-surface);padding:6px 12px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);">
               <input type="checkbox" id="mon-auto-refresh-toggle" checked style="cursor:pointer;" />
               <label for="mon-auto-refresh-toggle" style="cursor:pointer;">Auto-poll (3s)</label>
             </div>
@@ -1474,7 +1804,8 @@
           <div class="telemetry-card">
             <div class="telemetry-card-hdr">
               <span class="telemetry-card-label"><span>⚡</span> CPU Utilisation</span>
-              <span class="status-badge" id="tele-cpu-badge" style="background:rgba(56,189,248,0.15);color:#38bdf8;">ACTIVE</span>
+              <span class="status-badge" id="tele-cpu-badge"
+                style="background:rgba(56,189,248,0.15);color:#38bdf8;">ACTIVE</span>
             </div>
             <div class="telemetry-value-wrap">
               <span class="telemetry-val" id="tele-cpu-val">0.0</span>
@@ -1512,7 +1843,8 @@
           <div class="telemetry-card">
             <div class="telemetry-card-hdr">
               <span class="telemetry-card-label"><span>🚀</span> GPU Hardware</span>
-              <span class="status-badge" id="tele-gpu-badge" style="background:rgba(255,255,255,0.06);color:var(--text-muted);">CHECKING</span>
+              <span class="status-badge" id="tele-gpu-badge"
+                style="background:rgba(255,255,255,0.06);color:var(--text-muted);">CHECKING</span>
             </div>
             <div class="telemetry-value-wrap">
               <span class="telemetry-val" id="tele-gpu-val">—</span>
@@ -1585,7 +1917,9 @@
                 </tr>
               </thead>
               <tbody id="storage-tables-body">
-                <tr><td colspan="5" style="text-align:center;padding:12px;">Loading storage metrics...</td></tr>
+                <tr>
+                  <td colspan="5" style="text-align:center;padding:12px;">Loading storage metrics...</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -1626,7 +1960,8 @@
 
           <!-- Average Stage Latency Waterfall Strip -->
           <div style="margin:16px 0 10px;">
-            <div style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:6px;">
+            <div
+              style="font-size:0.75rem;font-weight:700;color:var(--text-muted);text-transform:uppercase;margin-bottom:6px;">
               Average Stage Timing Composition (ms)
             </div>
             <div id="live-stage-breakdown-tags" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
@@ -1640,10 +1975,12 @@
               <span>📜</span> Permanent Execution History Log
             </div>
             <div style="display:flex;gap:10px;">
-              <button class="btn btn-secondary" id="btn-compare-selected" style="font-size:0.78rem;padding:6px 12px;" disabled>
+              <button class="btn btn-secondary" id="btn-compare-selected" style="font-size:0.78rem;padding:6px 12px;"
+                disabled>
                 ⚖️ Compare Selected (0)
               </button>
-              <button class="btn btn-secondary" id="btn-cleanup-modal-trigger" style="font-size:0.78rem;padding:6px 12px;color:var(--color-danger);border-color:rgba(239,68,68,0.3);">
+              <button class="btn btn-secondary" id="btn-cleanup-modal-trigger"
+                style="font-size:0.78rem;padding:6px 12px;color:var(--color-danger);border-color:rgba(239,68,68,0.3);">
                 🧹 Retention Cleanup
               </button>
             </div>
@@ -1664,9 +2001,11 @@
               <option value="running">Running</option>
               <option value="failed">Failed</option>
             </select>
-            <input type="text" class="filter-input" id="filter-version" placeholder="Pipeline version..." style="max-width:160px;" />
+            <input type="text" class="filter-input" id="filter-version" placeholder="Pipeline version..."
+              style="max-width:160px;" />
             <input type="date" class="filter-input" id="filter-date" title="Filter from date" />
-            <button type="button" class="btn btn-secondary" id="filter-reset-btn" style="padding:6px 10px;font-size:0.75rem;">Reset</button>
+            <button type="button" class="btn btn-secondary" id="filter-reset-btn"
+              style="padding:6px 10px;font-size:0.75rem;">Reset</button>
           </div>
 
           <!-- Execution History Table -->
@@ -1688,17 +2027,23 @@
                 </tr>
               </thead>
               <tbody id="execution-history-body">
-                <tr><td colspan="11" style="text-align:center;padding:18px;color:var(--text-muted)">Loading execution history...</td></tr>
+                <tr>
+                  <td colspan="11" style="text-align:center;padding:18px;color:var(--text-muted)">Loading execution
+                    history...</td>
+                </tr>
               </tbody>
             </table>
           </div>
 
           <!-- Pagination Bar -->
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;font-size:0.8rem;color:var(--text-secondary);">
+          <div
+            style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;font-size:0.8rem;color:var(--text-secondary);">
             <div id="exec-pagination-info">Showing 0 of 0 runs</div>
             <div style="display:flex;gap:6px;">
-              <button class="btn btn-secondary" id="exec-prev-btn" style="padding:4px 10px;font-size:0.75rem;" disabled>&larr; Prev</button>
-              <button class="btn btn-secondary" id="exec-next-btn" style="padding:4px 10px;font-size:0.75rem;" disabled>Next &rarr;</button>
+              <button class="btn btn-secondary" id="exec-prev-btn" style="padding:4px 10px;font-size:0.75rem;"
+                disabled>&larr; Prev</button>
+              <button class="btn btn-secondary" id="exec-next-btn" style="padding:4px 10px;font-size:0.75rem;"
+                disabled>Next &rarr;</button>
             </div>
           </div>
         </div>
@@ -1709,7 +2054,8 @@
             <div class="monitoring-card-title">
               <span>⚖️</span> Pipeline Version &amp; Execution Run Comparison
             </div>
-            <button type="button" class="btn btn-secondary" id="btn-close-comparison" style="font-size:0.75rem;padding:4px 10px;">✕ Close</button>
+            <button type="button" class="btn btn-secondary" id="btn-close-comparison"
+              style="font-size:0.75rem;padding:4px 10px;">✕ Close</button>
           </div>
           <div class="comparison-grid" id="comparison-grid"></div>
         </div>
@@ -1729,16 +2075,17 @@
 
   </div>
 
-  <script src="js/api.js?v=3"></script>
-  <script src="js/state.js?v=3"></script>
-  <script src="js/ui.js?v=3"></script>
-  <script src="js/evaluator.js?v=3"></script>
-  <script src="js/hero.js?v=3"></script>
-  <script src="js/tabs.js?v=3"></script>
-  <script src="js/hybrid_lab.js?v=3"></script>
-  <script src="js/editor.js?v=3"></script>
-  <script src="js/monitoring.js?v=3"></script>
-  <script src="js/compare.js?v=3"></script>
-  <script src="js/app.js?v=3"></script>
+  <script src="js/api.js?v=4"></script>
+  <script src="js/state.js?v=4"></script>
+  <script src="js/ui.js?v=4"></script>
+  <script src="js/evaluator.js?v=4"></script>
+  <script src="js/hero.js?v=4"></script>
+  <script src="js/tabs.js?v=4"></script>
+  <script src="js/hybrid_lab.js?v=4"></script>
+  <script src="js/editor.js?v=4"></script>
+  <script src="js/monitoring.js?v=4"></script>
+  <script src="js/compare.js?v=4"></script>
+  <script src="js/app.js?v=4"></script>
 </body>
+
 </html>

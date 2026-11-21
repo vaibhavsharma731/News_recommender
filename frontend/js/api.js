@@ -121,8 +121,28 @@ const Api = (() => {
     return res.json();
   }
 
-  async function jobStatus(jobId) {
-    return _fetch(`/db/jobs/${encodeURIComponent(jobId)}`);
+  async function jobStatus(jobId, dataset = null) {
+    const params = dataset ? `?dataset=${encodeURIComponent(dataset)}` : '';
+    return _fetch(`/db/jobs/${encodeURIComponent(jobId)}${params}`);
+  }
+
+  async function cancelJob(jobId, dataset = null) {
+    const params = dataset ? `?dataset=${encodeURIComponent(dataset)}` : '';
+    const res = await fetch(`${API_BASE}/db/jobs/${encodeURIComponent(jobId)}/cancel${params}`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Cancel failed with status ${res.status}`);
+    }
+    return res.json();
+  }
+
+  async function resetStuckJobs() {
+    const res = await fetch(`${API_BASE}/db/jobs/reset-stuck`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Reset failed with status ${res.status}`);
+    }
+    return res.json();
   }
 
   async function recentJobs(dataset = 'default', pipelineType = null) {
@@ -272,6 +292,8 @@ const Api = (() => {
     uploadCsv,
     ingestDefault,
     jobStatus,
+    cancelJob,
+    resetStuckJobs,
     recentJobs,
     precomputedRecs,
     addManualArticle,

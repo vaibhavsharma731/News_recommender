@@ -91,6 +91,12 @@ const Editor = (() => {
     dom.livePreview = document.getElementById('live-file-preview');
     dom.livePreviewName = document.getElementById('live-file-preview-name');
     dom.liveBatchSelect = document.getElementById('live-csv-batch-size');
+    dom.liveCsvProgress = document.getElementById('live-csv-progress-card');
+    dom.liveCsvStatusText = document.getElementById('live-csv-status-text');
+    dom.liveCsvProgressPct = document.getElementById('live-csv-progress-pct');
+    dom.liveCsvProgressFill = document.getElementById('live-csv-progress-fill');
+    dom.btnCancelLiveCsv = document.getElementById('btn-cancel-live-csv');
+    dom.btnResetLiveJobs = document.getElementById('btn-reset-live-jobs');
 
     dom.toggleManualLiveBtn = document.getElementById('toggle-manual-live-form-btn');
     dom.manualLiveForm = document.getElementById('manual-live-form');
@@ -301,6 +307,39 @@ const Editor = (() => {
       });
     }
     if (dom.liveUploadBtn) dom.liveUploadBtn.addEventListener('click', handleLiveCsvUpload);
+
+    if (dom.btnCancelLiveCsv) {
+      dom.btnCancelLiveCsv.addEventListener('click', async () => {
+        if (!activeLiveJobId) return;
+        try {
+          await Api.cancelJob(activeLiveJobId, dom.liveDsSelect?.value);
+          showToast('Job cancellation requested.', 'info');
+        } catch (err) {
+          showToast(`Cancel failed: ${err.message}`, 'error');
+        }
+      });
+    }
+
+    if (dom.btnResetLiveJobs) {
+      dom.btnResetLiveJobs.addEventListener('click', async () => {
+        if (!confirm('Clear any stuck, pending, or interrupted jobs across all datasets?')) return;
+        try {
+          const res = await Api.resetStuckJobs();
+          showToast(`Cleared ${res.reset_count || 0} stuck jobs.`, 'success');
+          if (dom.liveCsvProgress) dom.liveCsvProgress.style.display = 'none';
+          if (dom.livePrepProgress) dom.livePrepProgress.style.display = 'none';
+          if (dom.liveUploadBtn && selectedLiveFile) dom.liveUploadBtn.disabled = false;
+          if (dom.startLivePrepBtn) {
+            dom.startLivePrepBtn.disabled = false;
+            dom.startLivePrepBtn.textContent = '⚡ Run Live Preprocessing';
+          }
+          await refreshLiveDbHealth();
+          loadRecentLiveJobs();
+        } catch (err) {
+          showToast(`Reset failed: ${err.message}`, 'error');
+        }
+      });
+    }
 
     // 12. Live Preprocessing Trigger
     if (dom.startLivePrepBtn) {
@@ -729,6 +768,38 @@ const Editor = (() => {
     }
   }
 
+  function resetLivePills() {
+    ['live-node-parse', 'live-node-clean', 'live-node-storage', 'live-node-embed'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.style.background = 'var(--surface-sunken)';
+        el.style.borderColor = 'var(--border-subtle)';
+        el.style.color = 'var(--text-muted)';
+        el.style.fontWeight = 'normal';
+      }
+    });
+  }
+
+  function setLivePillActive(id) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.background = 'rgba(13,148,136,0.25)';
+      el.style.borderColor = '#2dd4bf';
+      el.style.color = '#2dd4bf';
+      el.style.fontWeight = '700';
+    }
+  }
+
+  function setLivePillDone(id) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.style.background = 'rgba(16,185,129,0.18)';
+      el.style.borderColor = '#10b981';
+      el.style.color = '#10b981';
+      el.style.fontWeight = '600';
+    }
+  }
+
   async function handleLiveCsvUpload() {
     if (!selectedLiveFile) return;
     const targetDs = dom.liveDsSelect?.value;
@@ -739,14 +810,29 @@ const Editor = (() => {
     const batchSize = parseInt(dom.liveBatchSelect?.value || '64', 10);
     if (dom.liveUploadBtn) dom.liveUploadBtn.disabled = true;
 
-    showToast(`Uploading CSV to live dataset "${targetDs}" (Zero Rerank)...`, 'info');
+    if (dom.liveCsvProgress) dom.liveCsvProgress.style.display = 'block';
+    if (dom.liveCsvStatusText) {
+      dom.liveCsvStatusText.innerHTML = `
+        <span class="spinner" style="width:14px;height:14px;border:2px solid rgba(45,212,191,0.2);border-top-color:#2dd4bf;border-radius:50%;animation:spin 0.8s linear infinite;display:inline-block;"></span>
+        Uploading &amp; validating <strong>${escHtml(selectedLiveFile.name)}</strong>...
+      `;
+    }
+    if (dom.liveCsvProgressFill) dom.liveCsvProgressFill.style.width = '5%';
+    if (dom.liveCsvProgressPct) dom.liveCsvProgressPct.textContent = '5%';
+    resetLivePills();
+    setLivePillActive('live-node-parse');
+
+    showToast(`Uploading CSV to live dataset "${targetDs}"...`, 'info');
     try {
       const res = await Api.uploadLiveCsv(selectedLiveFile, targetDs, batchSize);
       activeLiveJobId = res.job_id;
       showToast(`Fast live ingestion started: ${res.job_id}`, 'success');
-      startLiveJobMonitor(res.job_id);
+      startLiveJobMonitor(res.job_id, targetDs);
     } catch (err) {
       showToast(`Live upload failed: ${err.message}`, 'error');
+      if (dom.liveCsvStatusText) {
+        dom.liveCsvStatusText.innerHTML = `<span style="color:#ef4444;">❌ Ingestion failed: ${escHtml(err.message)}</span>`;
+      }
       if (dom.liveUploadBtn) dom.liveUploadBtn.disabled = false;
     }
   }
@@ -914,44 +1000,105 @@ const Editor = (() => {
     }, 1200);
   }
 
-  function startLiveJobMonitor(jobId) {
+  function startLiveJobMonitor(jobId, dataset = null) {
     if (livePollInterval) clearInterval(livePollInterval);
 
     livePollInterval = setInterval(async () => {
       try {
-        const job = await Api.jobStatus(jobId);
+        const job = await Api.jobStatus(jobId, dataset);
         const pct = job.progress_percent || 0;
+        const rawMsg = job.message || '';
+        let stage = 'PARSE';
+        let detail = rawMsg;
+        if (rawMsg.startsWith('STAGE:')) {
+          const parts = rawMsg.slice(6).split('|');
+          stage = parts[0] || 'PARSE';
+          detail = parts[1] || rawMsg;
+        }
+
+        // Update pills based on current pipeline stage
+        if (stage === 'PARSE') {
+          setLivePillActive('live-node-parse');
+        } else if (stage === 'CLEAN') {
+          setLivePillDone('live-node-parse');
+          setLivePillActive('live-node-clean');
+        } else if (stage === 'STORAGE') {
+          setLivePillDone('live-node-parse');
+          setLivePillDone('live-node-clean');
+          setLivePillActive('live-node-storage');
+        } else if (stage === 'EMBED') {
+          setLivePillDone('live-node-parse');
+          setLivePillDone('live-node-clean');
+          setLivePillDone('live-node-storage');
+          setLivePillActive('live-node-embed');
+        }
+
+        const spinnerHtml = `<span class="spinner" style="width:14px;height:14px;border:2px solid rgba(45,212,191,0.2);border-top-color:#2dd4bf;border-radius:50%;animation:spin 0.8s linear infinite;display:inline-block;vertical-align:middle;margin-right:6px;"></span>`;
+
+        // Update Live CSV progress card (Card 1)
+        if (dom.liveCsvProgressFill) dom.liveCsvProgressFill.style.width = `${pct}%`;
+        if (dom.liveCsvProgressPct) dom.liveCsvProgressPct.textContent = `${pct}%`;
+        if (dom.liveCsvStatusText && job.status === 'processing') {
+          dom.liveCsvStatusText.innerHTML = `${spinnerHtml} <span>${escHtml(detail)}</span>`;
+        }
+
+        // Update Live Corpus Embedder card (Card 3)
         if (dom.livePrepProgressFill) dom.livePrepProgressFill.style.width = `${pct}%`;
         if (dom.livePrepProgressPct) dom.livePrepProgressPct.textContent = `${pct}%`;
-        if (dom.livePrepStatusText) dom.livePrepStatusText.textContent = job.message || 'Processing live embeddings...';
+        if (dom.livePrepStatusText && job.status === 'processing') {
+          dom.livePrepStatusText.innerHTML = `${spinnerHtml} <span>${escHtml(detail)}</span>`;
+        }
 
         if (job.status === 'completed') {
           clearInterval(livePollInterval);
           livePollInterval = null;
+          activeLiveJobId = null;
+
+          ['live-node-parse', 'live-node-clean', 'live-node-storage', 'live-node-embed'].forEach(id => setLivePillDone(id));
+
+          if (dom.liveCsvProgressFill) dom.liveCsvProgressFill.style.width = '100%';
+          if (dom.liveCsvProgressPct) dom.liveCsvProgressPct.textContent = '100%';
           if (dom.livePrepProgressFill) dom.livePrepProgressFill.style.width = '100%';
           if (dom.livePrepProgressPct) dom.livePrepProgressPct.textContent = '100%';
+
           const durStr = formatDuration(job.duration_seconds);
           const whenStr = formatWhen(job.created_at);
-          const fileName = job.filename || selectedLiveFile?.name || 'Live Fast Batch Upload';
-          if (dom.livePrepStatusText) {
-            dom.livePrepStatusText.innerHTML = `
-              🎉 <strong>Completed!</strong> 📄 ${escHtml(fileName)} &middot; 📅 ${whenStr} &middot;
-              <span class="badge" style="background:rgba(13,148,136,0.15);color:#2dd4bf;border:1px solid rgba(13,148,136,0.3);padding:2px 7px;font-weight:700;">
-                ⏱️ Time Taken: ${durStr}
-              </span>
-            `;
-          }
-          showToast(`Live upload completed in ${durStr}!`, 'success');
+          const fileName = job.filename || selectedLiveFile?.name || 'Live Batch Upload';
+
+          const successHtml = `
+            🎉 <strong>Completed!</strong> 📄 ${escHtml(fileName)} &middot; 📅 ${whenStr} &middot;
+            <span class="badge" style="background:rgba(13,148,136,0.15);color:#2dd4bf;border:1px solid rgba(13,148,136,0.3);padding:2px 7px;font-weight:700;">
+              ⏱️ Time Taken: ${durStr}
+            </span>
+            <div style="font-size:0.78rem;color:var(--text-muted);margin-top:4px;">
+              ${escHtml(detail)}
+            </div>
+          `;
+
+          if (dom.liveCsvStatusText) dom.liveCsvStatusText.innerHTML = successHtml;
+          if (dom.livePrepStatusText) dom.livePrepStatusText.innerHTML = successHtml;
+
+          showToast(`Live upload & embedding completed in ${durStr}!`, 'success');
+
           if (dom.startLivePrepBtn) {
             dom.startLivePrepBtn.disabled = false;
             dom.startLivePrepBtn.textContent = '⚡ Run Live Preprocessing';
           }
           if (dom.liveUploadBtn && selectedLiveFile) dom.liveUploadBtn.disabled = false;
+
           await refreshLiveDbHealth();
           loadRecentLiveJobs();
+          if (window.updateLiveStatsBadge) window.updateLiveStatsBadge(dataset || dom.liveDsSelect?.value);
+
         } else if (job.status === 'failed') {
           clearInterval(livePollInterval);
           livePollInterval = null;
+          activeLiveJobId = null;
+
+          const failHtml = `<span style="color:#ef4444;">❌ Failed: ${escHtml(job.error || 'Job failed')}</span>`;
+          if (dom.liveCsvStatusText) dom.liveCsvStatusText.innerHTML = failHtml;
+          if (dom.livePrepStatusText) dom.livePrepStatusText.innerHTML = failHtml;
+
           showToast(`Live job failed: ${job.error}`, 'error');
           if (dom.startLivePrepBtn) {
             dom.startLivePrepBtn.disabled = false;

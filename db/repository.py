@@ -3,6 +3,7 @@ Database Repository providing clean CRUD, recommendation persistence,
 and ingestion job management.
 """
 from typing import List, Optional, Dict, Any, Union
+import re
 from datetime import datetime, timedelta
 import numpy as np
 from sqlalchemy.orm import Session
@@ -156,6 +157,7 @@ class ArticleRepository:
                 "url": str(a.url or ""),
                 "image": str(a.image or ""),
                 "is_live": bool(a.is_live),
+                "premium": bool(a.premium),
                 "linked_ids": parse_ids(a.linked_ids),
                 "text_embed": a.text_embed or f"{a.title}. {a.description or ''}",
                 "text_bm25": a.text_bm25 or f"{a.title}. {a.title}. {a.title}. {a.description or ''}. {a.body or ''}",
@@ -341,7 +343,10 @@ class ArticleRepository:
         )
         db.add(job)
         db.commit()
-        db.refresh(job)
+        try:
+            db.refresh(job)
+        except Exception:
+            pass
         return job
 
     @staticmethod
@@ -374,7 +379,10 @@ class ArticleRepository:
             if value is not None:
                 setattr(job, field, value)
         db.commit()
-        db.refresh(job)
+        try:
+            db.refresh(job)
+        except Exception:
+            pass
         return job
 
 
@@ -415,7 +423,9 @@ class ArticleRepository:
 
     @staticmethod
     def fail_orphaned_jobs(db: Session) -> int:
-        """Mark jobs left in pending/processing after a server restart as failed."""
+        """Mark jobs left in pending/processing after a server restart as failed across all schemas."""
+        total_failed = 0
+        # 1. Clean public schema
         jobs = (
             db.query(IngestionJob)
             .filter(IngestionJob.status.in_(["processing", "pending"]))
@@ -426,7 +436,27 @@ class ArticleRepository:
             job.error = "Interrupted because the API server restarted."
             job.message = "Processing encountered an error"
         db.commit()
-        return len(jobs)
+        total_failed += len(jobs)
+
+        # 2. Clean all isolated dataset schemas
+        try:
+            schemas = db.execute(text("SELECT schema_name FROM public.datasets WHERE schema_name != 'public'")).fetchall()
+            for (sch,) in schemas:
+                if not sch:
+                    continue
+                safe_sch = re.sub(r"[^a-zA-Z0-9_]", "", str(sch))
+                res = db.execute(text(
+                    f"UPDATE {safe_sch}.ingestion_jobs SET status = 'failed', "
+                    f"error = 'Interrupted because the API server restarted.', "
+                    f"message = 'Processing encountered an error' "
+                    f"WHERE status IN ('processing', 'pending')"
+                ))
+                db.commit()
+                total_failed += (res.rowcount or 0)
+        except Exception:
+            pass
+
+        return total_failed
 
     @staticmethod
     def retrieve_hybrid_candidates(
