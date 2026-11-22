@@ -37,6 +37,7 @@ class Article(Base):
     url = Column(Text, nullable=True)
     image = Column(Text, nullable=True)
     is_live = Column(Boolean, default=False)
+    premium = Column(Boolean, default=False)
     page_views = Column(Integer, default=0)
     unique_users = Column(Integer, default=0)
     linked_ids = Column(Text, nullable=True)    # JSON string of editor "Also Read" article IDs
@@ -86,6 +87,7 @@ class Article(Base):
             "url": self.url or "",
             "image": self.image or "",
             "is_live": bool(self.is_live),
+            "premium": bool(self.premium),
             "pageViews": self.page_views or 0,
             "uniqueUsers": self.unique_users or 0,
             "embed_token_count": self.embed_token_count or 0,

@@ -1,5 +1,18 @@
 # AGENTS.md — NewsRec v2.0 Project Memory
 
+> **2026-11-22 architecture update:** Dataset-isolated pipelines are explicit.
+> `precomputed` schemas persist the full hybrid/reranked top-10. `live` schemas omit
+> `article_recommendations` and always use PostgreSQL HNSW + GIN retrieval; they must
+> never build a corpus-sized in-memory `Recommender`. Both paths share canonical
+> scoring, calibration, MMR, and evidence modules. Dataset metadata is centralized
+> in `public.datasets`. Monitoring is centralized in `public.execution_records` and
+> `public.execution_stages`, exposed by `api/monitoring_routes.py` and the frontend
+> Monitor role. The UI also includes pipeline comparison and Hybrid Lab views.
+> Schema lifecycle is transactional: new precomputed schemas own an independent
+> recommendation-ID sequence, live-only HNSW/GIN indexes are not duplicated into
+> precomputed schemas, startup migrates every registered isolated schema, and all
+> clone/delete/ingest mutations invalidate cached responses and dataset engines.
+
 > Persistent architecture memory for AI agents working in this repo.
 > Last verified against the working tree on **2026-10-26** (branch `add_db`).
 > **Authoritative source = live code, NOT `PROJECT_AI_SPEC.md`.** The spec doc is

@@ -520,6 +520,7 @@ def run_ingestion_pipeline(
             "url": str(r["url"]),
             "image": str(r["image"]),
             "is_live": bool(r["is_live"]),
+            "premium": bool(r.get("premium", False)),
             "page_views": int(r["page_views"]),
             "unique_users": int(r["unique_users"]),
             "linked_ids": json_ids(r["linked_ids"]),

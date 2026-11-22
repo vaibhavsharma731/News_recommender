@@ -271,22 +271,31 @@ def build_sentence_budgeted_texts(
     budget: int,
     tokenizer=None,
     query_prefix: str = "",
+    progress_callback=None,
 ) -> Tuple[List[str], List[int], List[bool]]:
     """
     Batch compose budgeted texts across articles:
     Returns (texts, token_counts, is_truncated_flags).
+
+    ``progress_callback(done, total)`` is optional and only used by the live
+    ingestion worker to report sub-progress on large CSVs.  The precompute
+    path never passes one, so its behaviour is unchanged.
     """
     texts: List[str] = []
     counts: List[int] = []
     trunc_flags: List[bool] = []
+    pairs = list(zip(titles, descriptions, bodies))
+    total = len(pairs)
 
-    for t, d, b in zip(titles, descriptions, bodies):
+    for idx, (t, d, b) in enumerate(pairs, start=1):
         text, count, is_trunc = compose_sentence_budgeted_text(
             t, d, b, budget=budget, tokenizer=tokenizer, query_prefix=query_prefix
         )
         texts.append(text)
         counts.append(count)
         trunc_flags.append(is_trunc)
+        if progress_callback and (idx % 250 == 0 or idx == total):
+            progress_callback(idx, total)
 
     return texts, counts, trunc_flags
 
@@ -447,13 +456,19 @@ def _deduplicate(
 # clean_dataframe — THE single authoritative cleaning function
 # ──────────────────────────────────────────────────────────────────────────────
 
-def clean_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
+def clean_dataframe(raw_df: pd.DataFrame, with_rerank: bool = True, progress_callback=None) -> pd.DataFrame:
     """
     Clean and normalise a raw article DataFrame for ingestion or evaluation.
 
     This is the **single authoritative cleaning function** shared by every
     consumer (disk-based ``load_articles``, the ingestion pipeline, EDA, and
     evaluation).  Do NOT create parallel cleaning code elsewhere.
+
+    ``with_rerank=False`` is the **live-ingestion** mode: identical cleaning,
+    but the cross-encoder text (``text_rerank``) is not built.  The live path
+    never calls a reranker, so tokenising a second 254-token copy of every
+    article is pure waste.  ``text_embed``, ``text_bm25`` and all metadata are
+    unchanged, so both modes write the same DB schema.
 
     Input
     -----
@@ -464,10 +479,15 @@ def clean_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
     A cleaned DataFrame with **snake_case** column names for DB compatibility::
 
         id, title, description, section, subsection, date, url, image,
-        is_live, body, linked_ids (JSON string), page_views, unique_users,
+        is_live, premium, body, linked_ids (JSON string), page_views, unique_users,
         text_embed, text_bm25, text_rerank
     """
     raw = raw_df.copy()
+
+    def _progress(done: int, total: int, label: str) -> None:
+        """Optional live-ingestion progress hook; a no-op for precompute callers."""
+        if progress_callback:
+            progress_callback(done, total, label)
 
     # 1. Resolve ID column and deduplicate
     id_col_name = _resolve_column(raw, _ID_CANDIDATES)
@@ -501,6 +521,7 @@ def clean_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
         )
         + ")."
     )
+    _progress(len(raw), len(raw), "Deduplicating articles")
 
     # 2. Extract and clean text fields (flexible column names)
     titles = _col(raw, _TITLE_CANDIDATES).map(normalise_text)
@@ -512,19 +533,24 @@ def clean_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
     for d, b in zip(raw_desc, raw_bodies):
         text = str(d).strip() if pd.notna(d) and str(d).strip() else str(b)[:200].strip()
         clean_desc.append(_short_description(remove_links(normalise_text(text))))
+    _progress(len(raw), len(raw), "Normalizing text fields")
 
     # 3. Build headline index and extract "Also Read" links
     headlines = _headline_index(titles, ids)
     bodies, linked_ids = [], []
-    for article_id, body in zip(ids, raw_bodies):
+    for idx, (article_id, body) in enumerate(zip(ids, raw_bodies), start=1):
         body_clean = remove_links(normalise_text(body))
         body_clean, linked = strip_also_read(body_clean, article_id, headlines)
         bodies.append(body_clean)
         linked_ids.append(sorted(set(linked)))
+        if idx % 1000 == 0:
+            _progress(idx, len(ids), "Extracting editor links")
+    _progress(len(ids), len(ids), "Extracting editor links")
 
     # 4. Remove boilerplate sentences
     boilerplate = _find_boilerplate(bodies)
     bodies = [_strip_boilerplate(b, boilerplate) for b in bodies]
+    _progress(len(bodies), len(bodies), "Removing boilerplate")
 
     # 5. Resolve metadata columns flexibly
     sec_series = _col(raw, ["sectionName", "section1Slug", "section", "category"])
@@ -538,6 +564,7 @@ def clean_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
         raw, ["uniqueUsers", "uniqueUsers_latest", "uniqueUsers_max", "users"], default=0
     )
     date_series = _col(raw, _DATE_CANDIDATES, default=None)
+    prem_series = _col(raw, ["premium", "isPremium", "is_premium", "premiumArticle"], default=False)
 
     # 6. Build standardised output (snake_case for DB compatibility)
     clean_df = pd.DataFrame({
@@ -550,6 +577,7 @@ def clean_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
         "url": _col(raw, ["articleUrl", "url", "link"]).fillna("").values,
         "image": _col(raw, ["articleFeaturedImage", "image", "imageUrl", "img"]).fillna("").values,
         "is_live": _col(raw, ["liveBlog", "is_live"], default=False).map(_as_bool).values,
+        "premium": prem_series.map(_as_bool).values,
         "body": bodies,
         "linked_ids": [json.dumps(l) for l in linked_ids],
         "page_views": pd.to_numeric(pv_series, errors="coerce").fillna(0).astype(int).values,
@@ -569,7 +597,6 @@ def clean_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     embed_tok = get_embedder_tokenizer()
-    rerank_tok = get_reranker_tokenizer()
 
     embed_texts, embed_counts, embed_trunc = build_sentence_budgeted_texts(
         clean_df.title.tolist(),
@@ -577,15 +604,30 @@ def clean_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
         clean_df.body.tolist(),
         budget=embed_budget,
         tokenizer=embed_tok,
+        progress_callback=(
+            (lambda done, total: _progress(done, total, "Building embedding text"))
+            if progress_callback else None
+        ),
     )
 
-    rerank_texts, rerank_counts, rerank_trunc = build_sentence_budgeted_texts(
-        clean_df.title.tolist(),
-        clean_df.description.tolist(),
-        clean_df.body.tolist(),
-        budget=rerank_budget,
-        tokenizer=rerank_tok,
-    )
+    if with_rerank:
+        rerank_tok = get_reranker_tokenizer()
+        rerank_texts, rerank_counts, rerank_trunc = build_sentence_budgeted_texts(
+            clean_df.title.tolist(),
+            clean_df.description.tolist(),
+            clean_df.body.tolist(),
+            budget=rerank_budget,
+            tokenizer=rerank_tok,
+        )
+    else:
+        # Live ingestion: no cross-encoder is ever run on these rows. Leave the
+        # columns empty so corpus_rows()' existing fallback can synthesise a
+        # cheap lead text if a caller ever asks for it, but pay zero tokenizer
+        # cost here.
+        n = len(clean_df)
+        rerank_texts = [""] * n
+        rerank_counts = [0] * n
+        rerank_trunc = [False] * n
 
     recipe_version = getattr(config, "TEXT_RECIPE_VERSION", "v2_sentence_token_budget")
     is_truncated_list = [bool(et or rt) for et, rt in zip(embed_trunc, rerank_trunc)]
@@ -609,13 +651,28 @@ def clean_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
     e_max = int(np.max(embed_counts)) if embed_counts else 0
     r_mean = float(np.mean(rerank_counts)) if rerank_counts else 0.0
     r_max = int(np.max(rerank_counts)) if rerank_counts else 0
+    rerank_line = (
+        f"  * text_rerank (RoBERTa, cap {rerank_budget}): mean={r_mean:.1f}, max={r_max} tokens\n"
+        if with_rerank else "  * text_rerank: SKIPPED (live path - no cross-encoder)\n"
+    )
     print(
         f"[DataLoader] Text Budgets (recipe={recipe_version}):\n"
         f"  * text_embed  (BERT, cap {embed_budget}): mean={e_mean:.1f}, max={e_max} tokens\n"
-        f"  * text_rerank (RoBERTa, cap {rerank_budget}): mean={r_mean:.1f}, max={r_max} tokens\n"
-        f"  * Truncated: {trunc_count}/{total_arts} ({trunc_pct:.1f}%) articles capped at whole sentence boundary."
+        + rerank_line
+        + f"  * Truncated: {trunc_count}/{total_arts} ({trunc_pct:.1f}%) articles capped at whole sentence boundary."
     )
     return clean_df
+
+
+def clean_dataframe_live(raw_df: pd.DataFrame, progress_callback=None) -> pd.DataFrame:
+    """Live (embedding-only) cleaning: same cleaning, no cross-encoder text.
+
+    Use this for ``/api/db/upload-live-csv``.  Precomputation keeps calling
+    ``clean_dataframe()`` so it still gets ``text_rerank``.  Both functions
+    share exactly the same cleaning code above - only the second tokenisation
+    pass is skipped.
+    """
+    return clean_dataframe(raw_df, with_rerank=False, progress_callback=progress_callback)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

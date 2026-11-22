@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import func
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +27,9 @@ from pydantic import BaseModel
 
 import config
 from src.recommender import METHODS, Recommender
+from src.calibration import ConfidenceCalibrator
+from src.evidence import build_evidence_reason, evaluate_signal_agreement
+from src.scoring import boost_parts, mmr, rank_adjusted_dense_norm, self_normalized_bm25
 from api.editor_routes import router as editor_router
 from api.monitoring_routes import router as monitoring_router, record_live_query
 from api.dataset_routes import router as dataset_router
@@ -139,9 +143,24 @@ articles: pd.DataFrame = pd.DataFrame()
 _recommenders: Dict[str, Recommender] = {}
 
 
+def invalidate_dataset_runtime(dataset_id: str = "default") -> None:
+    """Drop stale response/engine state after any dataset mutation."""
+    global rec, articles
+    ds_key = (dataset_id or "default").strip()
+    _rec_cache.clear()
+    with _reload_lock:
+        _recommenders.pop(ds_key, None)
+        if ds_key in ("default", "public"):
+            rec, articles = None, pd.DataFrame()
+
+
 def get_recommender(dataset_id: Optional[str] = "default") -> Optional[Recommender]:
     """Retrieves or lazily loads the Recommender instance for a specific dataset."""
     ds_key = (dataset_id or "default").strip()
+    with SessionLocal() as db:
+        ds_info = DatasetRepository.get_dataset(db, ds_key)
+    if ds_info and ds_info.get("pipeline_type") == "live":
+        return None  # live schemas must remain DB-backed
     if ds_key in _recommenders:
         return _recommenders[ds_key]
     if ds_key in ("default", "public") and rec is not None:
@@ -159,8 +178,13 @@ def reload_engine_from_postgres(dataset_id: str = "default"):
     """
     global rec, articles, _recommenders
     ds_key = (dataset_id or "default").strip()
+    invalidate_dataset_runtime(ds_key)
     try:
         with SessionLocal() as db:
+            ds_info = DatasetRepository.get_dataset(db, ds_key)
+            if ds_info and ds_info.get("pipeline_type") == "live":
+                print(f"[READY] Live dataset '{ds_key}' uses PostgreSQL HNSW/GIN; no in-memory engine built.")
+                return
             schema = resolve_schema(db, ds_key)
             set_search_path(db, schema)
             if ArticleRepository.count_articles(db) == 0:
@@ -187,7 +211,7 @@ def reload_engine_from_postgres(dataset_id: str = "default"):
                 _recommenders[ds_key] = new_rec
                 if ds_key in ("default", "public"):
                     rec, articles = new_rec, new_rec.articles  # instant reference swap
-            print(f"[READY] Engine initialized for dataset '{ds_key}' ({schema}): {len(articles)} articles.")
+            print(f"[READY] Engine initialized for dataset '{ds_key}' ({schema}): {len(new_rec.articles)} articles.")
     except Exception as e:
         print(f"[DB Warning] Could not load dataset '{ds_key}' from PostgreSQL: {e}")
         with _reload_lock:
@@ -565,41 +589,76 @@ def _compute_db_backed_recommendations(body: RecommendRequest) -> dict:
                 rerank_scores = []
             t_rerank_ms = (time.perf_counter() - t_rerank_start) * 1000
 
-        recs = []
-        for i, c in enumerate(candidates):
-            r_score = float(rerank_scores[i]) if len(rerank_scores) > i else float(c.get("rrf_score", 0.0))
-            d_score = float(c.get("dense_score", 0.0))
-            b_score = float(c.get("bm25_score", 0.0))
-
-            if body.method == "hybrid+rerank" and len(rerank_scores) > i:
-                rel = 0.55 * r_score + 0.15 * min(b_score, 1.0) + 0.30 * max(d_score, 0.0)
-            else:
-                rel = max(d_score, 0.0) * 0.6 + min(b_score, 1.0) * 0.4
-
-            boost_mult = 1.0
-            if body.use_boosts and source_art:
-                if c.get("section") and source_art.section and c["section"].lower() == source_art.section.lower():
-                    boost_mult *= 1.10
-                if c.get("page_views"):
-                    boost_mult *= min(1.0 + math.log1p(c["page_views"]) * 0.005, 1.05)
-
-            boosted = rel * boost_mult
-            recs.append({
-                "article": c,
-                "score": round(min(rel, 1.0), 4),
-                "boosted_score": round(boosted, 4),
-                "rerank_score": round(r_score, 4) if len(rerank_scores) > i else 0.0,
-                "rank": i + 1,
-                "rank_raw": i + 1,
-                "confidence_band": "HIGH" if rel >= 0.65 else ("MEDIUM" if rel >= 0.35 else "LOW"),
-                "reason": f"Corroborated by HNSW Dense & GIN Lexical consensus ({c.get('section', 'General')})",
-            })
-
-        recs.sort(key=lambda x: x["boosted_score"], reverse=True)
-        recs = recs[:body.top_k]
-        for idx, item in enumerate(recs):
-            item["rank"] = idx + 1
-            item["rank_raw"] = idx + 1
+        # Hydrate only the bounded candidate pool for canonical boosts, MMR and evidence.
+        cand_ids = [c["id"] for c in candidates]
+        cand_rows = db.query(Article).filter(Article.id.in_(cand_ids)).all()
+        row_by_id = {str(a.id): a for a in cand_rows}
+        max_views = int(db.query(func.max(Article.page_views)).scalar() or 1)
+        max_date = db.query(func.max(Article.date)).scalar()
+        source_row = source_art.to_dict() if source_art else {
+            "title": query_text or "", "description": "", "body": ""
+        }
+        if source_art:
+            # ORM serializer formats dates for the API; scoring requires datetime arithmetic.
+            source_row["date"] = source_art.date
+        dense_vals = np.asarray([float(c.get("dense_score", 0.0)) for c in candidates])
+        bm25_vals = np.asarray([float(c.get("bm25_score", 0.0)) for c in candidates])
+        dense_order = list(np.argsort(-dense_vals))
+        bm25_order = [int(i) for i in np.argsort(-bm25_vals) if bm25_vals[i] > 0]
+        dense_rank = {i: r + 1 for r, i in enumerate(dense_order)}
+        bm25_rank = {i: r + 1 for r, i in enumerate(bm25_order)}
+        dense_norm = rank_adjusted_dense_norm(dense_vals, [dense_rank[i] for i in range(len(candidates))])
+        bm25_norm = self_normalized_bm25(bm25_vals)
+        has_ce = body.method == "hybrid+rerank" and len(rerank_scores) == len(candidates)
+        if has_ce:
+            rerank_arr = np.asarray(rerank_scores, dtype=float)
+            relevance = (config.WEIGHT_RERANK * rerank_arr + config.WEIGHT_BM25 * bm25_norm
+                         + config.WEIGHT_DENSE * dense_norm)
+            ce_rank = {int(i): r + 1 for r, i in enumerate(np.argsort(-rerank_arr))}
+        else:
+            rerank_arr = None
+            relevance = config.LIVE_WEIGHT_DENSE * dense_norm + config.LIVE_WEIGHT_BM25 * bm25_norm
+            ce_rank = {}
+        parts, final_scores = {}, np.asarray(relevance, dtype=float).copy()
+        if body.use_boosts:
+            for i, c in enumerate(candidates):
+                raw_ce = float(rerank_arr[i]) if has_ce else None
+                parts[i] = boost_parts(source_row if source_art else None, c, max_views, max_date,
+                                       bm25_rank.get(i), dense_rank.get(i), raw_ce)
+                final_scores[i] = relevance[i] * parts[i]["domain_multiplier"] + parts[i]["agreement_adjustment"]
+        raw_order = list(np.argsort(-final_scores))
+        raw_rank = {int(i): r + 1 for r, i in enumerate(raw_order)}
+        vectors = np.asarray([
+            row_by_id[c["id"]].embedding if row_by_id.get(c["id"]) and row_by_id[c["id"]].embedding is not None
+            else [0.0] * config.EMBEDDING_DIM for c in candidates
+        ], dtype=np.float32)
+        order = (mmr(final_scores, vectors @ vectors.T, body.top_k,
+                     config.MMR_LAMBDA_SEARCH if body.query else config.MMR_LAMBDA,
+                     config.MMR_THETA_SEARCH if body.query else config.MMR_THETA)
+                 if body.diversify else raw_order[:body.top_k])
+        calibrator, recs = ConfidenceCalibrator(), []
+        for out_rank, i in enumerate(order, start=1):
+            i = int(i)
+            c, art = candidates[i], row_by_id.get(candidates[i]["id"])
+            cand_row = art.to_dict() if art else c
+            raw_ce = float(rerank_arr[i]) if has_ce else None
+            agree, _ = evaluate_signal_agreement(bm25_rank.get(i), dense_rank.get(i), raw_ce, ce_rank.get(i))
+            next_rel = float(relevance[order[out_rank]]) if out_rank < len(order) else None
+            conf = calibrator.calibrate(float(relevance[i]), next_rel, agree, 3 if has_ce else 2)
+            reason = build_evidence_reason(
+                source_row, cand_row, bm25_rank=bm25_rank.get(i), dense_rank=dense_rank.get(i),
+                rerank_score=raw_ce, confidence_info=conf,
+                scores={"blend": float(relevance[i]), "bm25_norm": float(bm25_norm[i]),
+                        "dense_norm": float(dense_norm[i]), "boost_items": parts.get(i),
+                        "boosted_raw": float(final_scores[i]), "platt_calibrated": conf["calibrated_prob"]},
+                rank_raw=raw_rank[i], final_rank=out_rank, bm25_query=query_text,
+                cosine=float(dense_vals[i]), rerank_rank=ce_rank.get(i))
+            recs.append({"article": c, "score": conf["calibrated_prob"],
+                         "boosted_score": round(float(final_scores[i]), 4),
+                         "rerank_score": round(raw_ce, 4) if raw_ce is not None else 0.0,
+                         "rank": out_rank, "rank_raw": raw_rank[i],
+                         "confidence_band": conf["band"], "margin": conf["margin"],
+                         "agreement_count": agree, "reason": reason})
 
         total_ms = round((time.perf_counter() - t_start) * 1000, 2)
         payload = {
@@ -635,6 +694,11 @@ def recommend(body: RecommendRequest):
             detail="Please provide either 'query' (for search) or 'article_id' (for similar articles).",
         )
 
+    with SessionLocal() as db:
+        ds_info = DatasetRepository.get_dataset(db, body.dataset or "default")
+    if not ds_info:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+
     # 1. Check Sub-1ms In-Memory TTL Cache
     cache_key = f"{body.dataset}:{body.article_id}:{body.query}:{body.section}:{body.method}:{body.top_k}:{body.diversify}:{body.use_boosts}"
     cached_payload = _rec_cache.get(cache_key)
@@ -642,6 +706,12 @@ def recommend(body: RecommendRequest):
         cached_copy = dict(cached_payload)
         cached_copy["notes"] = list(cached_copy.get("notes", [])) + ["⚡ Instant Cache Hit (< 1ms)"]
         return cached_copy
+
+    # Live datasets always use bounded PostgreSQL HNSW/GIN retrieval.
+    if ds_info.get("pipeline_type") == "live":
+        payload = _compute_db_backed_recommendations(body)
+        _rec_cache.set(cache_key, payload)
+        return payload
 
     # Precomputed recommendations represent similar-article requests with or without MMR diversity.
     use_precomputed = bool(
@@ -658,7 +728,7 @@ def recommend(body: RecommendRequest):
             m_ver = (body.model_version or "384d").lower()
             with SessionLocal() as db:
                 ds_info = DatasetRepository.get_dataset(db, body.dataset or "default")
-                if ds_info and getattr(ds_info, "pipeline_type", "precomputed") == "live":
+                if ds_info and ds_info.get("pipeline_type") == "live":
                     # Live datasets omit the article_recommendations table; compute live instead
                     precomputed = []
                 else:

@@ -173,55 +173,61 @@ class DatasetRepository:
         schema_name = f"ds_{clean_type[:4]}_{slug}_{hex_suffix}"[:63]
         ds_id = dataset_id.strip() if dataset_id else f"{clean_type}_{slug}_{hex_suffix}"[:64]
 
-        # 1. Create PostgreSQL schema
-        db.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}"))
+        if db.query(Dataset).filter(Dataset.id == ds_id).first():
+            raise ValueError(f"Dataset ID '{ds_id}' already exists.")
 
-        # 2. Clone articles and ingestion_jobs tables from public schema
-        db.execute(text(f"""
-            CREATE TABLE IF NOT EXISTS {schema_name}.articles (
-                LIKE public.articles INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES
-            )
-        """))
-        db.execute(text(f"""
-            CREATE TABLE IF NOT EXISTS {schema_name}.ingestion_jobs (
-                LIKE public.ingestion_jobs INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES
-            )
-        """))
-
-        # 3. For precomputed pipeline, also create article_recommendations table and FK constraints
-        if clean_type == "precomputed":
-            db.execute(text(f"""
-                CREATE TABLE IF NOT EXISTS {schema_name}.article_recommendations (
-                    LIKE public.article_recommendations INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES
-                )
-            """))
-            try:
+        try:
+            # One transaction: a partial schema is never left registered or usable.
+            db.execute(text(f"CREATE SCHEMA {schema_name}"))
+            for table_name in ("articles", "ingestion_jobs"):
                 db.execute(text(f"""
-                    ALTER TABLE {schema_name}.article_recommendations
-                    ADD CONSTRAINT fk_{schema_name}_rec_article
-                    FOREIGN KEY (article_id) REFERENCES {schema_name}.articles(id) ON DELETE CASCADE
+                    CREATE TABLE {schema_name}.{table_name} (
+                        LIKE public.{table_name} INCLUDING DEFAULTS INCLUDING CONSTRAINTS
+                    )
                 """))
-                db.execute(text(f"""
-                    ALTER TABLE {schema_name}.article_recommendations
-                    ADD CONSTRAINT fk_{schema_name}_rec_recommended
-                    FOREIGN KEY (recommended_article_id) REFERENCES {schema_name}.articles(id) ON DELETE CASCADE
-                """))
-            except Exception:
-                pass
+            db.execute(text(f"ALTER TABLE {schema_name}.articles ADD PRIMARY KEY (id)"))
+            db.execute(text(f"ALTER TABLE {schema_name}.ingestion_jobs ADD PRIMARY KEY (id)"))
 
-        # 4. Register in public.datasets
-        new_ds = Dataset(
-            id=ds_id,
-            name=clean_name,
-            schema_name=schema_name,
-            pipeline_type=clean_type,
-            description=description or "",
-            pipeline_version=config.get_pipeline_version(),
-            is_protected=False,
-        )
-        db.add(new_ds)
-        db.commit()
-        db.refresh(new_ds)
+            # Common compact indexes. Precomputed datasets do not need corpus-sized
+            # HNSW/GIN indexes because their live fallback uses the in-memory engine.
+            for suffix, target in (
+                ("articles_section_idx", "articles (section)"),
+                ("articles_date_idx", "articles (date)"),
+                ("articles_section_date_idx", "articles (section, date)"),
+            ):
+                db.execute(text(f"CREATE INDEX {suffix} ON {schema_name}.{target}"))
+
+            if clean_type == "live":
+                db.execute(text(f"CREATE INDEX articles_embedding_idx ON {schema_name}.articles USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64)"))
+                db.execute(text(f"CREATE INDEX articles_to_tsvector_idx ON {schema_name}.articles USING gin (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(description, '')))"))
+            else:
+                db.execute(text(f"""
+                    CREATE TABLE {schema_name}.article_recommendations (
+                        LIKE public.article_recommendations INCLUDING DEFAULTS INCLUDING CONSTRAINTS
+                    )
+                """))
+                db.execute(text(f"ALTER TABLE {schema_name}.article_recommendations ADD PRIMARY KEY (id)"))
+                db.execute(text(f"ALTER TABLE {schema_name}.article_recommendations ADD UNIQUE (article_id, rank)"))
+                # Independent sequence removes cross-schema coupling to public.
+                db.execute(text(f"CREATE SEQUENCE {schema_name}.article_recommendations_id_seq OWNED BY {schema_name}.article_recommendations.id"))
+                db.execute(text(f"ALTER TABLE {schema_name}.article_recommendations ALTER COLUMN id SET DEFAULT nextval('{schema_name}.article_recommendations_id_seq'::regclass)"))
+                db.execute(text(f"ALTER TABLE {schema_name}.article_recommendations ADD CONSTRAINT fk_{schema_name}_rec_article FOREIGN KEY (article_id) REFERENCES {schema_name}.articles(id) ON DELETE CASCADE"))
+                db.execute(text(f"ALTER TABLE {schema_name}.article_recommendations ADD CONSTRAINT fk_{schema_name}_rec_recommended FOREIGN KEY (recommended_article_id) REFERENCES {schema_name}.articles(id) ON DELETE CASCADE"))
+                db.execute(text(f"CREATE INDEX article_recommendations_article_id_idx ON {schema_name}.article_recommendations (article_id)"))
+                db.execute(text(f"CREATE INDEX article_recommendations_recommended_article_id_idx ON {schema_name}.article_recommendations (recommended_article_id)"))
+                db.execute(text(f"CREATE INDEX article_recommendations_article_id_rank_idx ON {schema_name}.article_recommendations (article_id, rank)"))
+
+            new_ds = Dataset(
+                id=ds_id, name=clean_name, schema_name=schema_name,
+                pipeline_type=clean_type, description=description or "",
+                pipeline_version=config.get_pipeline_version(), is_protected=False,
+            )
+            db.add(new_ds)
+            db.commit()
+            db.refresh(new_ds)
+        except Exception:
+            db.rollback()
+            raise
 
         result = new_ds.to_dict()
         result.update(DatasetRepository.get_dataset_stats(db, schema_name))
@@ -275,13 +281,13 @@ class DatasetRepository:
         insert_sql = text(f"""
             INSERT INTO {dst_schema}.articles (
                 id, title, description, body, section, subsection, date, url, image,
-                is_live, page_views, unique_users, linked_ids, text_embed, text_bm25,
+                is_live, premium, page_views, unique_users, linked_ids, text_embed, text_bm25,
                 text_rerank, embed_token_count, rerank_token_count, is_truncated,
                 recipe_version, embedding
             )
             SELECT
                 id, title, description, body, section, subsection, date, url, image,
-                is_live, page_views, unique_users, linked_ids, text_embed, text_bm25,
+                is_live, premium, page_views, unique_users, linked_ids, text_embed, text_bm25,
                 text_rerank, embed_token_count, rerank_token_count, is_truncated,
                 recipe_version, {emb_expr}
             FROM {src_schema}.articles

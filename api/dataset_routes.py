@@ -13,6 +13,12 @@ from db.dataset_repository import DatasetRepository
 router = APIRouter(prefix="/api/datasets", tags=["Datasets"])
 
 
+def _invalidate(dataset_id: str) -> None:
+    # Late import avoids the server <-> router import cycle.
+    from api.server import invalidate_dataset_runtime
+    invalidate_dataset_runtime(dataset_id)
+
+
 class CreateDatasetPayload(BaseModel):
     name: str = Field(..., min_length=2, max_length=100, description="Display name for the dataset")
     description: Optional[str] = Field("", description="Optional purpose or notes for this dataset")
@@ -70,7 +76,11 @@ def delete_dataset(dataset_id: str, db: Session = Depends(get_db)):
     Protected datasets (like 'default'/public) cannot be deleted.
     """
     try:
+        ds_info = DatasetRepository.get_dataset(db, dataset_id)
         DatasetRepository.delete_dataset(db, dataset_id)
+        _invalidate(dataset_id)
+        if ds_info and ds_info.get("schema_name") != dataset_id:
+            _invalidate(ds_info["schema_name"])
         return {
             "status": "success",
             "message": f"Dataset '{dataset_id}' and all its isolated tables deleted.",
@@ -98,6 +108,7 @@ def clone_articles(
             target_id=dataset_id,
             with_embeddings=payload.with_embeddings,
         )
+        _invalidate(dataset_id)
         return {
             "status": "success",
             "message": f"Cloned {copied} articles into dataset '{dataset_id}'.",

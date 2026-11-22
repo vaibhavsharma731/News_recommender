@@ -828,6 +828,13 @@
                 <div style="width:100%;height:8px;background:var(--border-subtle);border-radius:4px;overflow:hidden;margin-bottom:10px;">
                   <div id="live-csv-progress-fill" style="width:0%;height:100%;background:linear-gradient(90deg, #0d9488, #2dd4bf);transition:width 0.3s ease;"></div>
                 </div>
+                <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:0.74rem;color:var(--text-secondary);margin-bottom:8px;">
+                  <span>🕐 Started: <strong id="live-csv-time-start">—</strong></span>
+                  <span>⏱️ Elapsed: <strong id="live-csv-time-elapsed">0s</strong></span>
+                  <span id="live-csv-time-finish-wrap" style="display:none;">✅ Finished: <strong id="live-csv-time-finish">—</strong></span>
+                  <button type="button" id="live-csv-stuck-badge" class="live-stuck-badge" style="display:none;">⚠ Stuck — click to reset</button>
+                </div>
+                <div id="live-csv-log-window" class="pipeline-log-window" style="height:92px;margin-bottom:10px;"></div>
                 <!-- 4-Stage Pill Pipeline Tracker -->
                 <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:0.75rem;">
                   <span id="live-node-parse" class="badge" style="background:var(--surface-sunken);border:1px solid var(--border-subtle);padding:3px 8px;">1. Parse CSV</span>
@@ -996,6 +1003,13 @@
                 <div class="progress-track">
                   <div class="progress-bar-fill" id="live-prep-progress-fill" style="width:0%;"></div>
                 </div>
+                <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:0.74rem;color:var(--text-secondary);margin:8px 0;">
+                  <span>🕐 Started: <strong id="live-prep-time-start">—</strong></span>
+                  <span>⏱️ Elapsed: <strong id="live-prep-time-elapsed">0s</strong></span>
+                  <span id="live-prep-time-finish-wrap" style="display:none;">✅ Finished: <strong id="live-prep-time-finish">—</strong></span>
+                  <button type="button" id="live-prep-stuck-badge" class="live-stuck-badge" style="display:none;">⚠ Stuck — click to reset</button>
+                </div>
+                <div id="live-prep-log-window" class="pipeline-log-window" style="height:92px;"></div>
               </div>
             </div>
 

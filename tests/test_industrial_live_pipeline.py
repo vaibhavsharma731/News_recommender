@@ -9,6 +9,7 @@ import pytest
 import time
 from db.connection import SessionLocal, resolve_schema, set_search_path
 from db.repository import ArticleRepository
+from db.models import Article
 from api.server import RecommendationCache, RecommendRequest, _compute_db_backed_recommendations
 
 
@@ -67,9 +68,15 @@ def test_industrial_hybrid_candidate_retrieval():
 
 
 def test_db_backed_live_recommendation_computation():
-    """Test _compute_db_backed_recommendations serves live results using DB candidates and 0MB Python RAM."""
+    """Discover a real fixture article instead of depending on a stale hard-coded ID."""
+    with SessionLocal() as db:
+        set_search_path(db, resolve_schema(db, "default"))
+        source = db.query(Article).filter(Article.embedding.isnot(None)).order_by(Article.id).first()
+        if not source:
+            pytest.skip("No embedded article available in default dataset")
+        source_id = source.id
     req = RecommendRequest(
-        article_id="art_fbd9aa_1",
+        article_id=source_id,
         dataset="default",
         top_k=5,
         method="hybrid",

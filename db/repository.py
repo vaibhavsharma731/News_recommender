@@ -365,6 +365,19 @@ class ArticleRepository:
         job = db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
         if not job:
             return None
+
+        # Keep the row self-consistent even if an early STAGE update was lost
+        # or the worker never got to write it: a STAGE message means work has
+        # begun, and "Embedded N / M" carries the true total.
+        if message:
+            msg = str(message)
+            if job.status == "pending" and msg.startswith("STAGE:"):
+                job.status = "processing"
+            if not job.total_articles:
+                m = re.search(r"Embedded\s+(\d+)\s*/\s*(\d+)", msg, re.I)
+                if m and int(m.group(2)) > 0:
+                    job.total_articles = int(m.group(2))
+
         changes = {
             "status": status,
             "total_articles": total_articles,

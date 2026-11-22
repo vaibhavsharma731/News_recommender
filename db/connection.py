@@ -3,8 +3,9 @@ Database connection, session management, and extension initialization.
 """
 import re
 import os
+import threading
 from typing import Dict, Any, Generator, Optional, Union
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError
 from dotenv import load_dotenv
@@ -47,12 +48,48 @@ except Exception as e:
         print(f"[DB Warning] Could not initialize engine: {e2}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Dataset isolation across pooled connections
+# ─────────────────────────────────────────────────────────────────────────────
+# PostgreSQL's `SET search_path` is CONNECTION-scoped, but SQLAlchemy returns a
+# connection to the pool after every commit. The next session can therefore
+# inherit a different dataset's schema — which is how a live upload ended up
+# writing its embeddings into `public`. Remember the intended schema per thread
+# and re-apply it whenever the pool hands us a connection.
+_schema_ctx = threading.local()
+
+
+def _schema_for_thread() -> str:
+    return getattr(_schema_ctx, "schema", "public")
+
+
+if engine is not None:
+    @event.listens_for(engine, "checkout")
+    def _apply_search_path_on_checkout(dbapi_conn, connection_record, connection_proxy=None):
+        schema = _schema_for_thread()
+        cur = dbapi_conn.cursor()
+        try:
+            cur.execute(f'SET search_path TO "{schema}", public')
+        finally:
+            cur.close()
+
 
 def set_search_path(session_or_conn, schema: str = "public") -> str:
-    """Sets PostgreSQL search_path on the session or connection."""
+    """Set the target schema for this thread and for the current connection.
+
+    The thread-local part is what survives commits and pool checkouts; the
+    explicit SET makes the change immediate on a connection already checked out.
+    Always call this before the first query on a new session.
+    """
     safe_schema = re.sub(r"[^a-zA-Z0-9_]", "", str(schema or "public").strip()) or "public"
-    session_or_conn.execute(text(f"SET search_path TO {safe_schema}, public"))
+    _schema_ctx.schema = safe_schema
+    session_or_conn.execute(text(f'SET search_path TO {safe_schema}, public'))
     return safe_schema
+
+
+def reset_search_path() -> None:
+    """Return this thread to the protected default schema."""
+    _schema_ctx.schema = "public"
 
 
 def resolve_schema(session_or_conn, dataset_id_or_schema: Optional[str] = None) -> str:
@@ -83,9 +120,11 @@ def get_db() -> Generator:
         raise RuntimeError("Database engine is not configured.")
     db = SessionLocal()
     try:
+        set_search_path(db, "public")  # never inherit a dataset from the pooled connection
         yield db
     finally:
         db.close()
+        reset_search_path()
 
 
 def check_db_health() -> Dict[str, Any]:
@@ -172,6 +211,8 @@ _ADDED_COLUMNS = [
      "the text was cut at the token budget"),
     ("articles", "recipe_version", "VARCHAR(32)",
      "text-composition recipe used for this row"),
+    ("articles", "premium", "BOOLEAN DEFAULT FALSE",
+     "paywalled/premium flag carried from the source CSV"),
     ("execution_records", "dataset_id", "VARCHAR(64) DEFAULT 'default'",
      "dataset this execution ran against"),
     ("datasets", "pipeline_type", "VARCHAR(32) DEFAULT 'precomputed'",
@@ -204,13 +245,15 @@ def ensure_schema() -> bool:
         return False
     try:
         from . import models  # noqa: register models with Base
-        Base.metadata.create_all(bind=engine)
+        with engine.begin() as conn:
+            conn.execute(text('SET LOCAL search_path TO public'))
+            Base.metadata.create_all(bind=conn)
     except Exception as e:
         print(f"[DB Schema] Table verification notice: {e}")
 
-    statements = [f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}"
+    statements = [f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS {column} {sql_type}"
                   for table, column, sql_type, _why in _ADDED_COLUMNS]
-    statements += [f"CREATE INDEX IF NOT EXISTS {name} {target}"
+    statements += [f"CREATE INDEX IF NOT EXISTS {name} {target.replace('ON ', 'ON public.', 1)}"
                    for name, target in _ADDED_INDEXES]
     try:
         with engine.connect() as conn:
@@ -223,10 +266,56 @@ def ensure_schema() -> bool:
                 ON CONFLICT (id) DO UPDATE SET is_protected = TRUE, pipeline_type = COALESCE(datasets.pipeline_type, 'precomputed');
             """))
             conn.commit()
+        ensure_dataset_schemas()
+        reset_search_path()
         return True
     except Exception as e:
         print(f"[DB Schema] Could not ensure schema: {e}")
         return False
+
+
+def ensure_dataset_schemas() -> int:
+    """Migrate every registered isolated schema without creating shared tables there."""
+    if not engine:
+        return 0
+    migrated = 0
+    with engine.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT schema_name, pipeline_type FROM public.datasets WHERE schema_name <> 'public'"
+        )).fetchall()
+        for schema, pipeline_type in rows:
+            safe = re.sub(r"[^a-zA-Z0-9_]", "", str(schema or ""))
+            if not safe:
+                continue
+            tables = {r[0] for r in conn.execute(text(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema=:s"
+            ), {"s": safe})}
+            for table_name, column, sql_type, _why in _ADDED_COLUMNS:
+                if table_name in tables and table_name in {"articles", "article_recommendations", "ingestion_jobs"}:
+                    conn.execute(text(f"ALTER TABLE {safe}.{table_name} ADD COLUMN IF NOT EXISTS {column} {sql_type}"))
+
+            common_indexes = (
+                ("articles_section_idx", "articles (section)"),
+                ("articles_date_idx", "articles (date)"),
+                ("articles_section_date_idx", "articles (section, date)"),
+            )
+            if "articles" in tables:
+                for name, target in common_indexes:
+                    conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {safe}.{target}"))
+                if pipeline_type == "live":
+                    conn.execute(text(f"CREATE INDEX IF NOT EXISTS articles_embedding_idx ON {safe}.articles USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64)"))
+                    conn.execute(text(f"CREATE INDEX IF NOT EXISTS articles_to_tsvector_idx ON {safe}.articles USING gin (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(description, '')))"))
+
+            if pipeline_type == "precomputed" and "article_recommendations" in tables:
+                seq = f"{safe}.article_recommendations_id_seq"
+                conn.execute(text(f"CREATE SEQUENCE IF NOT EXISTS {seq}"))
+                conn.execute(text(f"ALTER SEQUENCE {seq} OWNED BY {safe}.article_recommendations.id"))
+                conn.execute(text(f"ALTER TABLE {safe}.article_recommendations ALTER COLUMN id SET DEFAULT nextval('{seq}'::regclass)"))
+                max_id = conn.execute(text(f"SELECT COALESCE(MAX(id), 0) FROM {safe}.article_recommendations")).scalar() or 0
+                if max_id:
+                    conn.execute(text("SELECT setval(CAST(:seq AS regclass), :value, true)"), {"seq": seq, "value": max_id})
+            migrated += 1
+    return migrated
 
 
 def init_db():

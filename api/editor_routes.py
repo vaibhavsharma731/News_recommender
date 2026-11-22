@@ -41,6 +41,127 @@ router = APIRouter(prefix="/api/db", tags=["Database & Editor"])
 UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+# Cancel must actually stop the background worker, not just flip a DB flag.
+# The worker polls this set between stages and between embedding batches.
+_cancelled_jobs = set()
+_cancel_lock = threading.Lock()
+
+
+def _request_cancel(job_id: str) -> None:
+    with _cancel_lock:
+        _cancelled_jobs.add(job_id)
+
+
+def _is_cancelled(job_id: str) -> bool:
+    with _cancel_lock:
+        return job_id in _cancelled_jobs
+
+
+def _clear_cancel(job_id: str) -> None:
+    with _cancel_lock:
+        _cancelled_jobs.discard(job_id)
+
+
+def _check_cancel(job_id: str) -> None:
+    """Raise inside the worker the moment a user cancels the job."""
+    if _is_cancelled(job_id):
+        raise InterruptedError("Job cancelled by user.")
+
+
+class _LiveProgress:
+    """Thread-safe progress state persisted to the job row by a heartbeat.
+
+    Some operations (pandas CSV read, per-article token budgeting, model load)
+    cannot report sub-progress themselves.  Without a heartbeat the job row goes
+    quiet for minutes and the UI correctly reports "no new update" — which looks
+    identical to a dead worker.  The heartbeat rewrites the message with a live
+    elapsed counter every 2s so activity is always visible, while the worker
+    updates the real counts between chunks/batches.
+    """
+
+    # Each stage owns a slice of the bar so it only ever moves forward.
+    STAGE_WEIGHTS = {
+        "PARSE": (0.00, 0.08),
+        "CLEAN": (0.08, 0.45),
+        "STORAGE": (0.45, 0.60),
+        "EMBED": (0.60, 1.00),
+    }
+
+    def __init__(self, job_id: str, dataset_id: str, t_start: float):
+        self.job_id = job_id
+        self.dataset_id = dataset_id
+        self.t_start = t_start
+        self._lock = threading.Lock()
+        self.stage = "PARSE"
+        self.detail = "Reading and validating uploaded CSV..."
+        self.done = 0
+        self.total = 0
+        self.base_total = 0          # authoritative article count once known
+        self.w0, self.w1 = self.STAGE_WEIGHTS["PARSE"]
+        self._stop = threading.Event()
+        self._thread = None
+
+    def set(self, stage=None, detail=None, done=None, total=None, base_total=None):
+        with self._lock:
+            if stage is not None and stage != self.stage:
+                self.stage = stage
+                if stage in self.STAGE_WEIGHTS:
+                    self.w0, self.w1 = self.STAGE_WEIGHTS[stage]
+            if detail is not None:
+                self.detail = detail
+            if done is not None:
+                self.done = int(done)
+            if total is not None:
+                self.total = int(total)
+            if base_total is not None:
+                self.base_total = max(1, int(base_total))
+
+    def counts(self):
+        """Weighted, monotonic (processed, total) pair for the progress bar."""
+        with self._lock:
+            frac = min(1.0, max(0.0, self.done / self.total)) if self.total else 0.0
+            pct = self.w0 + (self.w1 - self.w0) * frac
+            return round(pct * self.base_total), self.base_total
+
+    def message(self):
+        with self._lock:
+            return f"STAGE:{self.stage}|{self.detail} · {int(time.time() - self.t_start)}s elapsed"
+
+    def start(self):
+        self.flush()
+        self._thread = threading.Thread(
+            target=self._beat, daemon=True, name=f"progress-{self.job_id}"
+        )
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3)
+
+    def _beat(self):
+        while not self._stop.wait(2.0):
+            self.flush()
+
+    def flush(self):
+        from db.connection import SessionLocal, resolve_schema, set_search_path
+        msg = self.message()
+        done, total = self.counts()
+        hb = None
+        try:
+            hb = SessionLocal()
+            set_search_path(hb, resolve_schema(hb, self.dataset_id))
+            ArticleRepository.update_job(
+                hb, self.job_id,
+                message=msg, processed_articles=done, total_articles=total or None,
+            )
+        except Exception as e:
+            print(f"[LiveProgress] heartbeat failed: {e}")
+        finally:
+            if hb is not None:
+                hb.close()
+
+
 # The precomputed path runs a cross-encoder over every article, so uploads stay small.
 # The live path only cleans + embeds, so it accepts ~100k-row CSVs (300-400 MB).
 # Both are env-overridable without a code change.
@@ -322,16 +443,24 @@ def preprocess_live(payload: LivePreprocessPayload, db: Session = Depends(get_db
 
 
 def _run_live_csv_worker(dataset_id: str, job_id: str, csv_source: Path, batch_size: int = 64):
-    """Background worker for live CSV ingestion: cleans articles, inserts to DB, and computes 384d embeddings only."""
+    """Background worker for live CSV ingestion: cleans, stores and embeds (never reranks)."""
     from db.connection import SessionLocal
     db = SessionLocal()
     t_start = time.time()
     resource_monitor = None
     exec_record_id = None
+    total_clean = 0
     schema = resolve_schema(db, dataset_id)
     set_search_path(db, schema)
 
+    # The heartbeat owns message/count columns so the UI always sees real
+    # activity, even while pandas or the tokenizer is busy for minutes.
+    progress = _LiveProgress(job_id, dataset_id, t_start)
+
     try:
+        progress.start()
+        ArticleRepository.update_job(db, job_id, status="processing")
+
         try:
             from monitoring.resource_monitor import BackgroundResourceMonitor
             resource_monitor = BackgroundResourceMonitor(interval_s=0.5)
@@ -348,26 +477,48 @@ def _run_live_csv_worker(dataset_id: str, job_id: str, csv_source: Path, batch_s
         except Exception as mon_err:
             print(f"[Live CSV Monitoring] {mon_err}")
 
-        # 1. Parse CSV
-        ArticleRepository.update_job(
-            db, job_id, status="processing", message="STAGE:PARSE|Reading and validating uploaded CSV..."
-        )
-        raw_df = pd.read_csv(csv_source, low_memory=False)
-        total_raw = len(raw_df)
+        # 1. PARSE — chunked read so the row count visibly climbs on a 132 MB file.
+        est_rows = 0
+        try:
+            with open(csv_source, "rb") as fh:
+                est_rows = max(1, sum(1 for _ in fh) - 1)
+        except Exception:
+            pass
+        if est_rows:
+            progress.set(base_total=est_rows)
+        frames = []
+        rows_read = 0
+        for chunk_df in pd.read_csv(csv_source, low_memory=False, chunksize=5000):
+            _check_cancel(job_id)
+            frames.append(chunk_df)
+            rows_read += len(chunk_df)
+            progress.set(
+                done=rows_read, total=est_rows or None,
+                detail=f"Reading CSV — {rows_read:,} / {est_rows:,} rows",
+            )
+        raw_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        del frames
+        _check_cancel(job_id)
 
-        # 2. Clean & Token Budget (live: no cross-encoder text is needed)
-        ArticleRepository.update_job(
-            db, job_id, total_articles=total_raw, message="STAGE:CLEAN|Applying text normalizations, deduplication, and token budgets..."
-        )
-        clean_df = clean_dataframe_live(raw_df)
+        # 2. CLEAN — the authoritative cleaner reports sub-progress via callback.
+        def on_clean(done, total, label):
+            _check_cancel(job_id)
+            progress.set(done=done, total=total, detail=f"{label} — {done:,} / {total:,}")
+
+        progress.set(stage="CLEAN", done=0, total=len(raw_df), detail="Preparing text...")
+        clean_df = clean_dataframe_live(raw_df, progress_callback=on_clean)
         total_clean = len(clean_df)
+        progress.set(base_total=total_clean)
+        del raw_df
+        _check_cancel(job_id)
 
-        # 3. Insert into Database
-        ArticleRepository.update_job(
-            db, job_id, total_articles=total_clean, message="STAGE:STORAGE|Upserting articles into PostgreSQL..."
+        # 3. STORAGE — report every 500-row upsert chunk (and during row build).
+        progress.set(
+            stage="STORAGE", done=0, total=total_clean,
+            detail=f"Preparing 0 / {total_clean:,} rows for storage",
         )
         rows_to_insert = []
-        for _, r in clean_df.iterrows():
+        for idx, (_, r) in enumerate(clean_df.iterrows(), start=1):
             rows_to_insert.append({
                 "id": str(r["id"]),
                 "title": str(r["title"]),
@@ -391,28 +542,39 @@ def _run_live_csv_worker(dataset_id: str, job_id: str, csv_source: Path, batch_s
                 "is_truncated": bool(r.get("is_truncated", False)),
                 "recipe_version": str(r.get("recipe_version", config.TEXT_RECIPE_VERSION)),
             })
+            if idx % 5000 == 0:
+                progress.set(done=idx, detail=f"Preparing {idx:,} / {total_clean:,} rows for storage")
 
         for chunk_start in range(0, len(rows_to_insert), 500):
+            _check_cancel(job_id)
             ArticleRepository.bulk_upsert_articles_fast(db, rows_to_insert[chunk_start:chunk_start + 500])
+            done = min(chunk_start + 500, len(rows_to_insert))
+            progress.set(done=done, detail=f"Upserting {done:,} / {len(rows_to_insert):,} articles into PostgreSQL")
 
-        # 4. Dense Embeddings
-        embedder = get_embedder()
-        ArticleRepository.update_job(
-            db, job_id, message="STAGE:EMBED|Generating 384d BGE dense embeddings..."
+        # 4. EMBED — keep the exact "Embedded N / M" wording the UI also parses.
+        progress.set(
+            stage="EMBED", done=0, total=total_clean,
+            detail="Loading BGE embedding model...",
         )
+        embedder = get_embedder()
+        progress.set(detail=f"Generating embeddings — 0 / {total_clean} articles (0.0%)")
         processed_count = 0
         for i in range(0, total_clean, batch_size):
+            _check_cancel(job_id)
             chunk = clean_df.iloc[i:i + batch_size]
             texts = chunk["text_embed"].tolist()
             ids = [str(x) for x in chunk["id"].tolist()]
             vecs = embedder.encode(texts, batch_size=len(texts), normalize_embeddings=True)
             ArticleRepository.bulk_set_embeddings(db, ids, vecs)
             processed_count += len(chunk)
-            ArticleRepository.update_job(
-                db, job_id, processed_articles=processed_count,
-                message=f"STAGE:EMBED|Embedded {processed_count} / {total_clean} articles ({round(processed_count / total_clean * 100, 1)}%)..."
+            progress.set(
+                done=processed_count,
+                detail=f"Embedded {processed_count} / {total_clean} articles ({round(processed_count / max(total_clean, 1) * 100, 1)}%)",
             )
 
+        # Stop the heartbeat before writing the terminal row so it cannot be
+        # overwritten by a late beat.
+        progress.stop()
         elapsed = round(time.time() - t_start, 2)
         throughput = round(total_clean / max(elapsed, 0.001), 1)
 
@@ -431,6 +593,7 @@ def _run_live_csv_worker(dataset_id: str, job_id: str, csv_source: Path, batch_s
         _reload_live_engine(dataset_id=dataset_id)
 
     except Exception as e:
+        progress.stop()
         print(f"[Live CSV Ingestion Error] {e}")
         ArticleRepository.update_job(
             db, job_id, status="failed", message=f"Live CSV ingestion failed: {e}", error=str(e)
@@ -442,6 +605,7 @@ def _run_live_csv_worker(dataset_id: str, job_id: str, csv_source: Path, batch_s
             except Exception:
                 pass
     finally:
+        progress.stop()
         db.close()
 
 
@@ -483,6 +647,7 @@ async def upload_live_csv(
     schema = resolve_schema(db, target_ds)
     set_search_path(db, schema)
     ArticleRepository.create_job(db, job_id=job_id, filename=safe_filename, pipeline_type="live")
+    _clear_cancel(job_id)  # fresh job id; drop any stale cancel marker
     threading.Thread(
         target=_run_live_csv_worker,
         args=(target_ds, job_id, saved_path, batch_size or 64),
@@ -566,6 +731,9 @@ def cancel_job(job_id: str, dataset: Optional[str] = Query(None), db: Session = 
         set_search_path(db, sch)
         j = ArticleRepository.get_job(db, job_id)
         if j and j.status in ("pending", "processing"):
+            # Tell the live daemon thread to stop at its next chunk/batch. A DB
+            # flag alone never stopped the worker — it kept embedding for minutes.
+            _request_cancel(job_id)
             j.status = "failed"
             j.error = "Canceled by user request."
             j.message = "Job manually stopped."

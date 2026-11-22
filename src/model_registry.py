@@ -46,6 +46,7 @@ class RemoteEmbedderClient:
         self.max_seq_length = getattr(config, "EMBED_MAX_SEQ_LEN", 256)
         self._local_fallback = None
         self.last_used_remote = True
+        self._remote_broken = False
 
     def _get_local(self):
         if self._local_fallback is None:
@@ -68,6 +69,17 @@ class RemoteEmbedderClient:
         if not batch:
             return np.zeros((0, config.EMBEDDING_DIM), dtype=np.float32)
 
+        # Once the tunnel has failed, never pay the 120s timeout again for the
+        # rest of this process — a dead quick tunnel stays dead.
+        if self._remote_broken:
+            return self._get_local().encode(
+                texts,
+                batch_size=batch_size,
+                normalize_embeddings=normalize_embeddings,
+                show_progress_bar=show_progress_bar,
+                **kwargs
+            )
+
         try:
             results = []
             chunk_size = 128  # Batch network requests to prevent timeout on huge payloads
@@ -79,7 +91,7 @@ class RemoteEmbedderClient:
                     data=payload,
                     headers=_remote_headers(content_type=True)
                 )
-                with urllib.request.urlopen(req, timeout=120) as resp:
+                with urllib.request.urlopen(req, timeout=30) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     results.extend(data["vectors"])
 
@@ -94,7 +106,8 @@ class RemoteEmbedderClient:
             return arr[0] if is_single else arr
         except Exception as e:
             self.last_used_remote = False
-            print(f"[ModelRegistry Warning] Remote embedder call failed ({e}). Falling back to local model.")
+            self._remote_broken = True
+            print(f"[ModelRegistry Warning] Remote embedder call failed ({e}). Switching to local model for the rest of this process.")
             return self._get_local().encode(
                 texts,
                 batch_size=batch_size,
@@ -113,6 +126,7 @@ class RemoteCrossEncoderClient:
         self.max_length = getattr(config, "RERANK_MAX_LEN", 512)
         self._local_fallback = None
         self.last_used_remote = True
+        self._remote_broken = False
 
     def _get_local(self):
         if self._local_fallback is None:
@@ -129,6 +143,15 @@ class RemoteCrossEncoderClient:
         if not pairs:
             return np.array([], dtype=np.float32)
 
+        if self._remote_broken:
+            return self._get_local().predict(
+                pairs,
+                batch_size=batch_size,
+                show_progress_bar=show_progress_bar,
+                activation_fn=activation_fn,
+                **kwargs
+            )
+
         try:
             pair_list = [[p[0], p[1]] for p in pairs]
             results = []
@@ -141,7 +164,7 @@ class RemoteCrossEncoderClient:
                     data=payload,
                     headers=_remote_headers(content_type=True)
                 )
-                with urllib.request.urlopen(req, timeout=120) as resp:
+                with urllib.request.urlopen(req, timeout=30) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     results.extend(data["logits"])
 
@@ -149,7 +172,8 @@ class RemoteCrossEncoderClient:
             return np.asarray(results, dtype=np.float32)
         except Exception as e:
             self.last_used_remote = False
-            print(f"[ModelRegistry Warning] Remote cross-encoder call failed ({e}). Falling back to local model.")
+            self._remote_broken = True
+            print(f"[ModelRegistry Warning] Remote cross-encoder call failed ({e}). Switching to local model for the rest of this process.")
             return self._get_local().predict(
                 pairs,
                 batch_size=batch_size,

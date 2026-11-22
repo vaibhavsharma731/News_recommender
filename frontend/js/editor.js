@@ -10,6 +10,8 @@ const Editor = (() => {
   let activeLiveJobId = null;
   let precompPollInterval = null;
   let livePollInterval = null;
+  let liveTicker = null;
+  const liveRuns = {};                 // jobId -> activity/stuck tracking
   const precompLogged = new Set();
   let currentStudio = 'precomputed';
 
@@ -95,6 +97,12 @@ const Editor = (() => {
     dom.liveCsvStatusText = document.getElementById('live-csv-status-text');
     dom.liveCsvProgressPct = document.getElementById('live-csv-progress-pct');
     dom.liveCsvProgressFill = document.getElementById('live-csv-progress-fill');
+    dom.liveCsvTimeStart = document.getElementById('live-csv-time-start');
+    dom.liveCsvTimeElapsed = document.getElementById('live-csv-time-elapsed');
+    dom.liveCsvTimeFinishWrap = document.getElementById('live-csv-time-finish-wrap');
+    dom.liveCsvTimeFinish = document.getElementById('live-csv-time-finish');
+    dom.liveCsvStuckBadge = document.getElementById('live-csv-stuck-badge');
+    dom.liveCsvLog = document.getElementById('live-csv-log-window');
     dom.btnCancelLiveCsv = document.getElementById('btn-cancel-live-csv');
     dom.btnResetLiveJobs = document.getElementById('btn-reset-live-jobs');
 
@@ -108,6 +116,12 @@ const Editor = (() => {
     dom.livePrepStatusText = document.getElementById('live-prep-status-text');
     dom.livePrepProgressPct = document.getElementById('live-prep-progress-pct');
     dom.livePrepProgressFill = document.getElementById('live-prep-progress-fill');
+    dom.livePrepTimeStart = document.getElementById('live-prep-time-start');
+    dom.livePrepTimeElapsed = document.getElementById('live-prep-time-elapsed');
+    dom.livePrepTimeFinishWrap = document.getElementById('live-prep-time-finish-wrap');
+    dom.livePrepTimeFinish = document.getElementById('live-prep-time-finish');
+    dom.livePrepStuckBadge = document.getElementById('live-prep-stuck-badge');
+    dom.livePrepLog = document.getElementById('live-prep-log-window');
     dom.livePrepRecompute = document.getElementById('live-prep-recompute-checkbox');
     dom.livePrepBatch = document.getElementById('live-prep-batch-select');
 
@@ -123,6 +137,26 @@ const Editor = (() => {
     loadInspectorArticles();
     loadRecentPrecompJobs();
     loadRecentLiveJobs();
+    await resumeActiveLiveJob();
+  }
+
+  // A page reload used to leave the progress card frozen at "Parse CSV" even
+  // though the background worker was still running. Pick up any active job.
+  async function resumeActiveLiveJob() {
+    const ds = dom.liveDsSelect?.value;
+    if (!ds) return;
+    try {
+      const data = await Api.recentJobs(ds, 'live');
+      const active = (data.jobs || []).find(j => j.status === 'pending' || j.status === 'processing');
+      if (!active) return;
+      activeLiveJobId = active.id;
+      if (dom.liveCsvProgress) dom.liveCsvProgress.style.display = 'block';
+      const startedAt = active.created_at ? new Date(active.created_at).getTime() : Date.now();
+      startLiveJobMonitor(active.id, ds, 'csv', startedAt);
+      appendLiveLog(liveUi('csv'), `▶ Resumed monitoring of running job ${active.id} after page reload`);
+    } catch (e) {
+      console.warn('Could not resume live job:', e);
+    }
   }
 
   function bindEvents() {
@@ -323,23 +357,18 @@ const Editor = (() => {
     if (dom.btnResetLiveJobs) {
       dom.btnResetLiveJobs.addEventListener('click', async () => {
         if (!confirm('Clear any stuck, pending, or interrupted jobs across all datasets?')) return;
-        try {
-          const res = await Api.resetStuckJobs();
-          showToast(`Cleared ${res.reset_count || 0} stuck jobs.`, 'success');
-          if (dom.liveCsvProgress) dom.liveCsvProgress.style.display = 'none';
-          if (dom.livePrepProgress) dom.livePrepProgress.style.display = 'none';
-          if (dom.liveUploadBtn && selectedLiveFile) dom.liveUploadBtn.disabled = false;
-          if (dom.startLivePrepBtn) {
-            dom.startLivePrepBtn.disabled = false;
-            dom.startLivePrepBtn.textContent = '⚡ Run Live Preprocessing';
-          }
-          await refreshLiveDbHealth();
-          loadRecentLiveJobs();
-        } catch (err) {
-          showToast(`Reset failed: ${err.message}`, 'error');
-        }
+        await resetStuckLiveJobs();
       });
     }
+
+    // The blinking badge is also a one-click escape hatch when a job vanished
+    // (server restarted mid-upload) and polling can never recover.
+    if (dom.liveCsvStuckBadge) dom.liveCsvStuckBadge.addEventListener('click', async () => {
+      await resetStuckLiveJobs();
+    });
+    if (dom.livePrepStuckBadge) dom.livePrepStuckBadge.addEventListener('click', async () => {
+      await resetStuckLiveJobs();
+    });
 
     // 12. Live Preprocessing Trigger
     if (dom.startLivePrepBtn) {
@@ -802,6 +831,7 @@ const Editor = (() => {
 
   async function handleLiveCsvUpload() {
     if (!selectedLiveFile) return;
+    const jobStartedAt = Date.now();
     const targetDs = dom.liveDsSelect?.value;
     if (!targetDs) {
       showToast('Please select or create a live dataset first.', 'warn');
@@ -827,7 +857,7 @@ const Editor = (() => {
       const res = await Api.uploadLiveCsv(selectedLiveFile, targetDs, batchSize);
       activeLiveJobId = res.job_id;
       showToast(`Fast live ingestion started: ${res.job_id}`, 'success');
-      startLiveJobMonitor(res.job_id, targetDs);
+      startLiveJobMonitor(res.job_id, targetDs, 'csv', jobStartedAt);
     } catch (err) {
       showToast(`Live upload failed: ${err.message}`, 'error');
       if (dom.liveCsvStatusText) {
@@ -886,6 +916,7 @@ const Editor = (() => {
   }
 
   async function handleLivePreprocessing() {
+    const jobStartedAt = Date.now();
     const targetDs = dom.liveDsSelect?.value;
     if (!targetDs) {
       showToast('Please select or create a live dataset first.', 'warn');
@@ -907,7 +938,7 @@ const Editor = (() => {
     try {
       const res = await Api.preprocessLive({ dataset: targetDs, batchSize, recomputeAll });
       showToast(`Started live preprocessing job: ${res.job_id}`, 'info');
-      startLiveJobMonitor(res.job_id);
+      startLiveJobMonitor(res.job_id, targetDs, 'prep', jobStartedAt);
     } catch (err) {
       showToast(`Preprocessing error: ${err.message}`, 'error');
       if (dom.livePrepStatusText) dom.livePrepStatusText.textContent = `Error: ${err.message}`;
@@ -1000,66 +1031,129 @@ const Editor = (() => {
     }, 1200);
   }
 
-  function startLiveJobMonitor(jobId, dataset = null) {
+  function startLiveJobMonitor(jobId, dataset = null, kind = 'csv', startedAt = null) {
     if (livePollInterval) clearInterval(livePollInterval);
+    if (liveTicker) clearInterval(liveTicker);
+
+    const ui = liveUi(kind);
+    const other = liveUi(kind === 'csv' ? 'prep' : 'csv');
+    const run = {
+      startedAt: startedAt || Date.now(),
+      lastChangeAt: Date.now(),
+      lastBeatAt: Date.now(),
+      lastPct: -1,
+      lastMsg: '',
+      lastStatus: '',
+      stage: 'PARSE',
+      misses: 0,
+      stuckReason: null,
+    };
+    liveRuns[jobId] = run;
+
+    const startTime = new Date(run.startedAt).toLocaleTimeString();
+    [ui, other].forEach(u => {
+      if (u.start) u.start.textContent = startTime;
+      if (u.elapsed) u.elapsed.textContent = '0s';
+      if (u.finishWrap) u.finishWrap.style.display = 'none';
+      if (u.stuck) u.stuck.style.display = 'none';
+    });
+    if (ui.log) ui.log.innerHTML = '';
+    setLiveStuck(run, ui, false);
+    appendLiveLog(ui, `▶ Job ${jobId} started in "${dataset || dom.liveDsSelect?.value || 'default'}"`);
+    startLiveTicker(jobId, kind);
 
     livePollInterval = setInterval(async () => {
+      let job;
       try {
-        const job = await Api.jobStatus(jobId, dataset);
-        const pct = job.progress_percent || 0;
-        const rawMsg = job.message || '';
-        let stage = 'PARSE';
-        let detail = rawMsg;
-        if (rawMsg.startsWith('STAGE:')) {
-          const parts = rawMsg.slice(6).split('|');
-          stage = parts[0] || 'PARSE';
-          detail = parts[1] || rawMsg;
+        job = await Api.jobStatus(jobId, dataset);
+        run.misses = 0;
+      } catch (err) {
+        // 404 means the job row is gone (server restart / cleared jobs).
+        // Report it loudly instead of silently spinning forever.
+        run.misses += 1;
+        if (run.misses >= 3) {
+          setLiveStuck(run, ui, true, `job status unavailable (${err.message}) — server may have restarted; click to reset`);
         }
+        return;
+      }
 
-        // Update pills based on current pipeline stage
-        if (stage === 'PARSE') {
-          setLivePillActive('live-node-parse');
-        } else if (stage === 'CLEAN') {
-          setLivePillDone('live-node-parse');
-          setLivePillActive('live-node-clean');
-        } else if (stage === 'STORAGE') {
-          setLivePillDone('live-node-parse');
-          setLivePillDone('live-node-clean');
-          setLivePillActive('live-node-storage');
-        } else if (stage === 'EMBED') {
-          setLivePillDone('live-node-parse');
-          setLivePillDone('live-node-clean');
-          setLivePillDone('live-node-storage');
-          setLivePillActive('live-node-embed');
+      const pct = liveProgress(job);
+      const rawMsg = job.message || '';
+      let stage = 'PARSE';
+      let detail = rawMsg;
+      if (rawMsg.startsWith('STAGE:')) {
+        const parts = rawMsg.slice(6).split('|');
+        stage = parts[0] || 'PARSE';
+        detail = parts[1] || rawMsg;
+      }
+      run.stage = stage;
+
+      // Update pills based on current pipeline stage
+      if (stage === 'PARSE') {
+        setLivePillActive('live-node-parse');
+      } else if (stage === 'CLEAN') {
+        setLivePillDone('live-node-parse');
+        setLivePillActive('live-node-clean');
+      } else if (stage === 'STORAGE') {
+        setLivePillDone('live-node-parse');
+        setLivePillDone('live-node-clean');
+        setLivePillActive('live-node-storage');
+      } else if (stage === 'EMBED') {
+        setLivePillDone('live-node-parse');
+        setLivePillDone('live-node-clean');
+        setLivePillDone('live-node-storage');
+        setLivePillActive('live-node-embed');
+      }
+
+      const spinnerHtml = `<span class="spinner" style="width:14px;height:14px;border:2px solid rgba(45,212,191,0.2);border-top-color:#2dd4bf;border-radius:50%;animation:spin 0.8s linear infinite;display:inline-block;vertical-align:middle;margin-right:6px;"></span>`;
+
+      // Both live cards mirror the same job; only the active one owns the log.
+      [ui, other].forEach(u => {
+        if (u.fill) u.fill.style.width = `${pct}%`;
+        if (u.pct) u.pct.textContent = `${pct}%`;
+        const terminal = job.status === 'completed' || job.status === 'failed';
+        if (u.status && !terminal) {
+          u.status.innerHTML = `${spinnerHtml} <span>${escHtml(detail)}</span>`;
         }
+      });
 
-        const spinnerHtml = `<span class="spinner" style="width:14px;height:14px;border:2px solid rgba(45,212,191,0.2);border-top-color:#2dd4bf;border-radius:50%;animation:spin 0.8s linear infinite;display:inline-block;vertical-align:middle;margin-right:6px;"></span>`;
+      const terminal = job.status === 'completed' || job.status === 'failed';
+      const statusChanged = job.status !== run.lastStatus;
+      if (statusChanged) {
+        run.lastStatus = job.status;
+        run.lastChangeAt = Date.now();          // pending -> processing is fresh activity
+        if (!terminal) setLiveStuck(run, ui, false);
+      }
+      // ANY non-terminal status counts as activity — a job may stay "pending"
+      // in the DB while its worker is actively embedding.
+      if (!terminal && (pct !== run.lastPct || detail !== run.lastMsg)) {
+        run.lastChangeAt = Date.now();
+        run.lastPct = pct;
+        run.lastMsg = detail;
+        setLiveStuck(run, ui, false);
+        appendLiveLog(ui, `[${stage}] ${detail} — ${pct}%`);
+      }
 
-        // Update Live CSV progress card (Card 1)
-        if (dom.liveCsvProgressFill) dom.liveCsvProgressFill.style.width = `${pct}%`;
-        if (dom.liveCsvProgressPct) dom.liveCsvProgressPct.textContent = `${pct}%`;
-        if (dom.liveCsvStatusText && job.status === 'processing') {
-          dom.liveCsvStatusText.innerHTML = `${spinnerHtml} <span>${escHtml(detail)}</span>`;
-        }
+      if (job.status === 'completed' || job.status === 'failed') {
+        if (livePollInterval) clearInterval(livePollInterval);
+        if (liveTicker) clearInterval(liveTicker);
+        livePollInterval = null;
+        liveTicker = null;
+        delete liveRuns[jobId];
+        activeLiveJobId = null;
 
-        // Update Live Corpus Embedder card (Card 3)
-        if (dom.livePrepProgressFill) dom.livePrepProgressFill.style.width = `${pct}%`;
-        if (dom.livePrepProgressPct) dom.livePrepProgressPct.textContent = `${pct}%`;
-        if (dom.livePrepStatusText && job.status === 'processing') {
-          dom.livePrepStatusText.innerHTML = `${spinnerHtml} <span>${escHtml(detail)}</span>`;
-        }
+        const finishedAt = new Date();
+        [ui, other].forEach(u => {
+          if (u.fill) u.fill.style.width = job.status === 'completed' ? '100%' : u.fill.style.width;
+          if (u.pct && job.status === 'completed') u.pct.textContent = '100%';
+          if (u.finishWrap) u.finishWrap.style.display = '';
+          if (u.finish) u.finish.textContent = finishedAt.toLocaleTimeString();
+          if (u.elapsed) u.elapsed.textContent = formatDuration((finishedAt - run.startedAt) / 1000);
+          if (u.stuck) u.stuck.style.display = 'none';
+        });
 
         if (job.status === 'completed') {
-          clearInterval(livePollInterval);
-          livePollInterval = null;
-          activeLiveJobId = null;
-
           ['live-node-parse', 'live-node-clean', 'live-node-storage', 'live-node-embed'].forEach(id => setLivePillDone(id));
-
-          if (dom.liveCsvProgressFill) dom.liveCsvProgressFill.style.width = '100%';
-          if (dom.liveCsvProgressPct) dom.liveCsvProgressPct.textContent = '100%';
-          if (dom.livePrepProgressFill) dom.livePrepProgressFill.style.width = '100%';
-          if (dom.livePrepProgressPct) dom.livePrepProgressPct.textContent = '100%';
 
           const durStr = formatDuration(job.duration_seconds);
           const whenStr = formatWhen(job.created_at);
@@ -1075,8 +1169,9 @@ const Editor = (() => {
             </div>
           `;
 
-          if (dom.liveCsvStatusText) dom.liveCsvStatusText.innerHTML = successHtml;
-          if (dom.livePrepStatusText) dom.livePrepStatusText.innerHTML = successHtml;
+          if (ui.status) ui.status.innerHTML = successHtml;
+          if (other.status) other.status.innerHTML = successHtml;
+          appendLiveLog(ui, `🎉 Completed in ${formatDuration((finishedAt - run.startedAt) / 1000)} — ${detail}`);
 
           showToast(`Live upload & embedding completed in ${durStr}!`, 'success');
 
@@ -1090,14 +1185,11 @@ const Editor = (() => {
           loadRecentLiveJobs();
           if (window.updateLiveStatsBadge) window.updateLiveStatsBadge(dataset || dom.liveDsSelect?.value);
 
-        } else if (job.status === 'failed') {
-          clearInterval(livePollInterval);
-          livePollInterval = null;
-          activeLiveJobId = null;
-
+        } else {
           const failHtml = `<span style="color:#ef4444;">❌ Failed: ${escHtml(job.error || 'Job failed')}</span>`;
-          if (dom.liveCsvStatusText) dom.liveCsvStatusText.innerHTML = failHtml;
-          if (dom.livePrepStatusText) dom.livePrepStatusText.innerHTML = failHtml;
+          if (ui.status) ui.status.innerHTML = failHtml;
+          if (other.status) other.status.innerHTML = failHtml;
+          appendLiveLog(ui, `❌ FAILED — ${job.error || 'Job failed'}`);
 
           showToast(`Live job failed: ${job.error}`, 'error');
           if (dom.startLivePrepBtn) {
@@ -1107,8 +1199,6 @@ const Editor = (() => {
           if (dom.liveUploadBtn && selectedLiveFile) dom.liveUploadBtn.disabled = false;
           loadRecentLiveJobs();
         }
-      } catch (e) {
-        console.warn('Live poll error:', e);
       }
     }, 1000);
   }
@@ -1166,6 +1256,119 @@ const Editor = (() => {
         if (st) st.textContent = '✓ Stored';
       }
     });
+  }
+
+  // ─── Live progress: activity log, elapsed clock, stuck detection ──────────
+  function liveUi(kind) {
+    if (kind === 'prep') {
+      return {
+        card: dom.livePrepProgress, status: dom.livePrepStatusText,
+        pct: dom.livePrepProgressPct, fill: dom.livePrepProgressFill,
+        start: dom.livePrepTimeStart, elapsed: dom.livePrepTimeElapsed,
+        finishWrap: dom.livePrepTimeFinishWrap, finish: dom.livePrepTimeFinish,
+        stuck: dom.livePrepStuckBadge, log: dom.livePrepLog,
+      };
+    }
+    return {
+      card: dom.liveCsvProgress, status: dom.liveCsvStatusText,
+      pct: dom.liveCsvProgressPct, fill: dom.liveCsvProgressFill,
+      start: dom.liveCsvTimeStart, elapsed: dom.liveCsvTimeElapsed,
+      finishWrap: dom.liveCsvTimeFinishWrap, finish: dom.liveCsvTimeFinish,
+      stuck: dom.liveCsvStuckBadge, log: dom.liveCsvLog,
+    };
+  }
+
+  // A job row can legitimately carry total_articles=0 while the worker is
+  // embedding (the message still says "Embedded N / M"). Derive the real
+  // percentage so the bar and the stuck detector both see genuine activity.
+  function liveProgress(job) {
+    if (job.total_articles > 0) return job.progress_percent || 0;
+    const m = /Embedded\s+(\d+)\s*\/\s*(\d+)/i.exec(job.message || '');
+    if (m && Number(m[2]) > 0) return Math.round((Number(m[1]) / Number(m[2])) * 1000) / 10;
+    if (job.status === 'completed') return 100;
+    return job.progress_percent || 0;
+  }
+
+  function appendLiveLog(ui, msg) {
+    if (!ui || !ui.log) return;
+    const line = document.createElement('div');
+    line.className = 'log-entry';
+    line.innerHTML = `<span class="log-time">[${new Date().toLocaleTimeString()}]</span> <span>${escHtml(msg)}</span>`;
+    ui.log.appendChild(line);
+    while (ui.log.childElementCount > 200) ui.log.removeChild(ui.log.firstChild);
+    ui.log.scrollTop = ui.log.scrollHeight;
+  }
+
+  function setLiveStuck(run, ui, stuck, reason) {
+    if (!ui || !ui.stuck) return;
+    ui.stuck.style.display = stuck ? 'inline-flex' : 'none';
+    if (stuck && reason && run.stuckReason !== reason) {
+      run.stuckReason = reason;
+      appendLiveLog(ui, `⚠ STUCK — ${reason}`);
+    }
+    if (!stuck) run.stuckReason = null;
+  }
+
+  // CLEAN legitimately takes minutes for a 100k-row file and does not report
+  // sub-progress, so each stage gets its own patience limit.
+  function stuckLimitMs(stage) {
+    if (stage === 'EMBED') return 2 * 60 * 1000;    // model load + first batch
+    if (stage === 'STORAGE') return 15 * 60 * 1000; // 100k rows in 500-row chunks
+    if (stage === 'CLEAN') return 30 * 60 * 1000;   // token budgeting, no sub-progress
+    if (stage === 'PARSE') return 5 * 60 * 1000;    // 300+ MB CSV read
+    return 5 * 60 * 1000;
+  }
+
+  function startLiveTicker(jobId, kind) {
+    if (liveTicker) clearInterval(liveTicker);
+    liveTicker = setInterval(() => {
+      const run = liveRuns[jobId];
+      if (!run) return;
+      const ui = liveUi(kind);
+      if (ui.elapsed) ui.elapsed.textContent = formatDuration((Date.now() - run.startedAt) / 1000);
+
+      const quietMs = Date.now() - run.lastChangeAt;
+      if (quietMs >= 20000 && Date.now() - run.lastBeatAt >= 20000) {
+        run.lastBeatAt = Date.now();
+        appendLiveLog(ui, `⏳ Still running — ${run.stage} stage, no new update for ${formatDuration(quietMs / 1000)}.`);
+      }
+      if (quietMs > stuckLimitMs(run.stage)) {
+        setLiveStuck(run, ui, true, `no update for ${formatDuration(quietMs / 1000)} during ${run.stage}`);
+      }
+    }, 1000);
+  }
+
+  function stopLiveMonitors() {
+    if (livePollInterval) clearInterval(livePollInterval);
+    if (liveTicker) clearInterval(liveTicker);
+    livePollInterval = null;
+    liveTicker = null;
+    Object.keys(liveRuns).forEach(k => delete liveRuns[k]);
+    activeLiveJobId = null;
+    ['csv', 'prep'].forEach(k => {
+      const ui = liveUi(k);
+      if (ui.stuck) ui.stuck.style.display = 'none';
+      if (ui.finishWrap) ui.finishWrap.style.display = 'none';
+    });
+  }
+
+  async function resetStuckLiveJobs() {
+    try {
+      const res = await Api.resetStuckJobs();
+      stopLiveMonitors();
+      showToast(`Cleared ${res.reset_count || 0} stuck jobs. You can retry the upload.`, 'success');
+      if (dom.liveCsvProgress) dom.liveCsvProgress.style.display = 'none';
+      if (dom.livePrepProgress) dom.livePrepProgress.style.display = 'none';
+      if (dom.liveUploadBtn && selectedLiveFile) dom.liveUploadBtn.disabled = false;
+      if (dom.startLivePrepBtn) {
+        dom.startLivePrepBtn.disabled = false;
+        dom.startLivePrepBtn.textContent = '⚡ Run Live Preprocessing';
+      }
+      await refreshLiveDbHealth();
+      loadRecentLiveJobs();
+    } catch (err) {
+      showToast(`Reset failed: ${err.message}`, 'error');
+    }
   }
 
   function appendPrecompLog(msg) {
